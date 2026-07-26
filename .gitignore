@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Windows build artifacts
+*.dll
+*.lib
+*.pdb
+*.exp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# APO runtime artifacts
+*.reg
+*.rollback_backup.reg
+*.backup.reg

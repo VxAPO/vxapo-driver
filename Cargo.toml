@@ -1,0 +1,45 @@
+[package]
+name = "vxapo-driver"
+version = "0.1.0"
+edition = "2021"
+description = "VxAPO audio processing driver (Windows APO DLL)"
+license = "GPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+log = "0.4"
+once_cell = "1"
+
+[dependencies.windows]
+version = "=0.62.2"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+]
+default-features = false
+
+[dependencies.windows-core]
+version = "=0.62.2"
+
+[dependencies.libloading]
+version = "0.8"
+optional = true
+
+[features]
+default = []
+vst = ["libloading"]
+
+[profile.release]
+panic = "abort"
+lto = true
+
+[profile.dev]
+panic = "unwind"
