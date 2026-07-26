@@ -1,11 +1,12 @@
-//! engine/rt_contract.rs — 实时安全（RT-safety）契约（Note 12/58）
+//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（Note 12/58）
 //!
-//! `engine/` 模块中的处理函数运行在 Windows 多媒体实时线程上。
+//! `pipeline/` 模块中的处理函数运行在 Windows 多媒体实时线程上。
 //! 任何违反 RT-safety 的操作都可能导致音频卡顿（glitch）甚至进程死锁。
 //!
 //! # RT-safety 规则
 //!
-//! 在实时路径（`Filter::process`、`pipeline.rs` 的 `process`、`chain.rs` 的遍历）中：
+//! 在实时路径（`Filter::process`、`pipeline/stream/process.rs` 的 `process`、
+//! `pipeline/stream/chain.rs` 的遍历）中：
 //!
 //! 1. 禁止堆分配：不得调用 `Vec::push`、`Vec::clone`、`.to_vec()`、`.to_string()`、
 //!    `format!()`、`Box::new()`、`HashMap::insert()`、`String::new()`（Note 58）

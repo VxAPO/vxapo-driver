@@ -1,9 +1,10 @@
-//! device/format.rs — WAVEFORMATEX / EXTENSIBLE 解析（Note 27）
+//! host/device/format.rs — WAVEFORMATEX / EXTENSIBLE 解析（Note 27）
 //!
 //! 从注册表二进制值解析音频格式，提取通道数、采样率、位深和通道掩码。
+//!
 //! 通道掩码兜底链（Note 27）：
-//! 1. WAVEFORMATEXTENSIBLE 的 dwChannelMask
-//! 2. 注册表 channelMaskValueName（DWORD）
+//! 1. `WAVEFORMATEXTENSIBLE` 的 `dwChannelMask`
+//! 2. 注册表 `channelMaskValueName`（DWORD）
 //! 3. `pipeline::stream::channel::default_channel_mask`（Note 17）
 //!
 //! 此模块只做查询，不执行任何写操作（Note 23）。

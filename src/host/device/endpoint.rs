@@ -1,14 +1,14 @@
-//! device/endpoint.rs — 音频端点状态查询
+//! host/device/endpoint.rs — 音频端点状态查询
 //!
 //! 查询 Windows 音频端点（渲染/采集）的设备 ID、友好名称与连接状态。
-//! 供 `device/info.rs` 组合查询层使用。
+//! 供 `host/device/info.rs` 组合查询层使用。
 //!
 //! 依赖：
-//! - `utils/reg_read`：注册表只读操作（Note 48）
+//! - `sys/registry/read`：注册表只读操作（Note 48）
 //! - `utils/error`：统一错误类型（Note 36）
 //! - `log` crate：日志记录
 //!
-//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `installation/`。
+//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `host/installation/`。
 
 use log::warn;
 

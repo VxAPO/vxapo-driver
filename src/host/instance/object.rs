@@ -1,12 +1,12 @@
-//! instance/object.rs — APO 对象常量与基础结构（Note 6）
+//! host/instance/object.rs — APO 对象常量与基础结构（Note 6）
 //!
 //! 定义 APO COM 对象的核心状态结构，以及 APOGUID 特殊值常量：
 //! - `APOGUID_NOKEY`：FxProperties 键不存在
 //! - `APOGUID_NOVALUE`：值为空或已被其他 APO 占据
 //!
 //! 依赖关系：
-//! - `instance/init.rs`：解析 `APOInitSystemEffects` 时使用（Note 7）
-//! - `instance/audio_proc_obj_conf.rs`：`LockForProcess` 判定时使用（Note 9）
+//! - `host/instance/init.rs`：解析 `APOInitSystemEffects` 时使用（Note 7）
+//! - `host/instance/apo_conf.rs`：`LockForProcess` 判定时使用（Note 9）
 //!
 //! 此模块仅提供常量与结构体定义，不包含 COM 接口实现。
 

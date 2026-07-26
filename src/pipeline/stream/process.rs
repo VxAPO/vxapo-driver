@@ -1,4 +1,4 @@
-//! engine/pipeline.rs — APOProcess 调度入口（Note 18）
+//! pipeline/stream/process.rs — APOProcess 调度入口（Note 18）
 //!
 //! 完整处理流程：
 //!
@@ -15,13 +15,12 @@
 //! 10. 输出标志控制
 //! ```
 //!
-//! `instance/audio_proc_obj_rt.rs` 中的 `APOProcess` 入口经 `catch_unwind` 包裹后
+//! `host/instance/apo_rt.rs` 中的 `APOProcess` 入口经 `catch_unwind` 包裹后
 //! 调用本模块的 `process` 函数执行实际音频处理（Note 60）。
 //!
 //! 此模块运行在实时音频线程中，禁止堆分配、互斥锁、I/O、panic（Note 12）。
 
 use crate::pipeline::stream::buffer::{self, BufferAction};
-use crate::pipeline::stream::chain::Chain;
 use crate::pipeline::stream::deinterleave;
 use crate::pipeline::stream::swap::SwapController;
 use crate::pipeline::realtime::contract::RtGuard;
@@ -193,7 +192,8 @@ impl Pipeline {
         }
 
         // ── Step 8: 过滤器链处理 ────────────────────────────────────────────
-        self.process_filter_chain(actual_frames);
+        let chain = self.swap.current_chain_mut().unwrap();
+        chain.process_filters(actual_frames);
 
         // ── Step 9: 过渡混合 ────────────────────────────────────────────────
         if self.swap.is_transitioning() {
@@ -210,59 +210,6 @@ impl Pipeline {
         );
 
         output_flags
-    }
-
-    // ── 过滤器链处理 ────────────────────────────────────────────────────────
-
-    /// 遍历过滤器链，逐个执行 process。
-    ///
-    /// 原地过滤器直接操作 allSamples，非原地使用 allSamples2 后交换。
-    fn process_filter_chain(&mut self, frame_count: usize) {
-        let chain = self.swap.current_chain_mut().unwrap();
-        let filter_count = chain.filter_count();
-
-        for i in 0..filter_count {
-            let (filters, samples, samples2) = unsafe {
-                // SAFETY: 我们需要同时访问 filters 和 buffers，
-                // 但 Filter::process 只操作 samples/samples2，
-                // 不修改 filters Vec 本身。
-                // 通过分离借用避免借用冲突。
-                let chain_ptr = chain as *mut Chain;
-                let filters = &mut *(*chain_ptr).filters_mut() as *mut [super::chain::FilterInfo];
-                let samples = (*chain_ptr).all_samples_mut() as *mut [Vec<f32>];
-                let samples2 = (*chain_ptr).all_samples2_mut() as *mut [Vec<f32>];
-                (&mut *filters, &mut *samples, &mut *samples2)
-            };
-
-            let filter_info = &mut filters[i];
-
-            if filter_info.in_place {
-                // Note 13b: 原地处理——直接操作主缓冲区
-                filter_info.filter.process(samples, frame_count);
-            } else {
-                // Note 13b: 非原地处理——使用辅助缓冲区后交换
-                // 1. 将主缓冲区的输入通道复制到辅助缓冲区
-                for (dst_idx, &src_idx) in filter_info.input_channels.iter().enumerate() {
-                    if dst_idx < samples2.len() && src_idx < samples.len() {
-                        for f in 0..frame_count {
-                            samples2[dst_idx][f] = samples[src_idx][f];
-                        }
-                    }
-                }
-
-                // 2. 在辅助缓冲区上执行过滤器
-                filter_info.filter.process(samples2, frame_count);
-
-                // 3. 将结果写回主缓冲区的输出通道
-                for (src_idx, &dst_idx) in filter_info.output_channels.iter().enumerate() {
-                    if src_idx < samples2.len() && dst_idx < samples.len() {
-                        for f in 0..frame_count {
-                            samples[dst_idx][f] = samples2[src_idx][f];
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // ── 过渡混合 ────────────────────────────────────────────────────────────

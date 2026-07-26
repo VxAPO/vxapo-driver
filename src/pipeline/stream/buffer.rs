@@ -1,4 +1,4 @@
-//! engine/buffer.rs — 缓冲区标志判定与静音缓冲区处理（Note 11）
+//! pipeline/stream/buffer.rs — 缓冲区标志判定与静音缓冲区处理（Note 11）
 //!
 //! `APOProcess` 的输入/输出 `APO_CONNECTION_PROPERTY` 携带 `flags` 字段，
 //! 指示缓冲区状态（`BUFFER_VALID` / `BUFFER_SILENT` / `BUFFER_INVALID`）。

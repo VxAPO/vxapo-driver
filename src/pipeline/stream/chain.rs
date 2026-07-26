@@ -1,4 +1,4 @@
-//! engine/chain.rs — 双缓冲区架构与过滤器链管理（Note 15/45）
+//! pipeline/stream/chain.rs — 双缓冲区架构与过滤器链管理（Note 15/45）
 //!
 //! `Chain` 维护以下状态：
 //!
@@ -260,7 +260,7 @@ impl Chain {
         // 检查缓存
         if self.current_channel_names == self.last_channel_names {
             if let Some(ref cached) = self.cached_channel_map {
-                return cached.clone();
+                return cached.clone(); // ← 堆分配
             }
         }
 
@@ -268,8 +268,8 @@ impl Chain {
         let map = self.compute_channel_map();
 
         // 更新缓存
-        self.last_channel_names = self.current_channel_names.clone();
-        self.cached_channel_map = Some(map.clone());
+        self.last_channel_names = self.current_channel_names.clone(); // ← 堆分配
+        self.cached_channel_map = Some(map.clone()); // ← 堆分配
 
         map
     }
@@ -297,9 +297,10 @@ impl Chain {
 
     /// 检查并添加新的辅助通道。
     ///
-    /// `Copy` 命令的 `initialize()` 可能创建新的通道名（如辅助通道）。
-    /// `chain.rs` 的 `addFilters` 检测到 `allChannelNames` 中不存在的新通道时，
-    /// 将其追加到末尾，扩大 `allSamples` / `allSamples2` 的通道数组（Note 52）。
+    /// **仅在配置加载阶段调用**（不在实时路径中，Note 12）。
+    /// `Copy` 命令的 `initialize()` 可能创建新的通道名（如辅助通道），
+    /// 检测到 `allChannelNames` 中不存在的新通道时将其追加到末尾，
+    /// 扩大 `allSamples` / `allSamples2` 的通道数组（Note 52）。
     pub fn ensure_channel_exists(&mut self, channel_name: &str) -> usize {
         if let Some(idx) = self.all_channel_names.iter().position(|n| n == channel_name) {
             return idx;
@@ -361,6 +362,10 @@ impl Chain {
     /// 内部解构字段，避免外部调用时的借用冲突。
     /// Note 13b：`inPlace` 过滤器直接操作主缓冲区，
     /// 非原地过滤器写入辅助缓冲区后交换。
+    ///
+    /// **Phase 3 简化**：当前按全部通道处理，未使用 FilterInfo 的
+    /// input_channels / output_channels 映射。Phase 7 实现 Channel:
+    /// 命令时需按映射通道子集操作。
     pub fn process_filters(&mut self, frame_count: usize) {
         let Chain {
             ref mut filters,

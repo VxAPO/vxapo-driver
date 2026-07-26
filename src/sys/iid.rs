@@ -1,13 +1,13 @@
-//! com/iid.rs — APO 相关接口 IID 常量
+//! sys/iid.rs — APO 相关接口 IID 常量
 //!
 //! 系统接口 IID 与 Windows 音频子系统常量。
-//! `com/apo_abi.rs` 提供 ABI 层的接口标识 GUID，
+//! `sys/com/apo_abi.rs` 提供 ABI 层的接口标识 GUID，
 //! 本模块补充 APO 注册与 Windows 音频子系统中使用的系统级 GUID
 //! （如 `IID_IAPO`、`KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE` 等）。
 //!
 //! 所有 GUID 使用 `GUID::from_values` 显式构造，避免字符串解析引入运行时开销。
 //!
-//! VxAPO 自身的 CLSID 定义在 `com/reg_props.rs`，不在此模块中。
+//! VxAPO 自身的 CLSID 定义在 `host/instance/reg_props.rs`，不在此模块中。
 //!
 //! 此模块为纯常量定义层，不包含任何运行时逻辑。
 

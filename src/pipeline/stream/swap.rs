@@ -1,4 +1,4 @@
-//! engine/swap.rs — 配置热重载交换机制（Note 19）
+//! pipeline/stream/swap.rs — 配置热重载交换机制（Note 19）
 //!
 //! 三指针架构与信号量协调：
 //!

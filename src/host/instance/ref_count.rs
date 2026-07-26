@@ -1,7 +1,7 @@
-//! instance/ref_count.rs — 活跃实例原子计数（Note 2）
+//! host/instance/ref_count.rs — 活跃实例原子计数（Note 2）
 //!
 //! `INST_COUNT` 原子计数器，追踪当前存活的 APO COM 对象实例数。
-//! 与 `com/factory.rs` 中的 `LOCK_COUNT`（客户端显式锁定）配合使用。
+//! 与 `host/instance/factory.rs` 中的 `LOCK_COUNT`（客户端显式锁定）配合使用。
 //!
 //! `DllCanUnloadNow` 判定条件：`INST_COUNT == 0 && LOCK_COUNT == 0` 时返回 `S_OK`。
 //!

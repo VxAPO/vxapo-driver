@@ -1,4 +1,4 @@
-//! device/info.rs — 设备组合查询层（Note 23/24）
+//! host/device/info.rs — 设备组合查询层（Note 23/24）
 //!
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口：
 //!
@@ -16,19 +16,20 @@
 //!
 //! 安装版本常量（Note 24）：
 //! - `INSTALL_VERSION = "2"`
-//! - `INSTALL_VERSION = "1"`
+//! - `INSTALL_VERSION_LEGACY = "1"`
 //! 写入 FxProperties 子键的 `version` 值。版本不匹配时需重新安装。
 //!
 //! 依赖：
-//! - `device/endpoint`：端点状态查询
-//! - `device/slots`：槽位管理
-//! - `device/format`：音频格式解析
-//! - `utils/reg_read`：注册表只读操作（Note 48）
+//! - `host/device/endpoint`：端点状态查询
+//! - `host/device/slots`：槽位管理
+//! - `host/device/format`：音频格式解析
+//! - `sys/registry/read`：注册表只读操作（Note 48）
 //! - `utils/error`：统一错误类型（Note 36）
-//! - `com/iid`：APO CLSID / GUID 常量
+//! - `sys/iid`：系统级 IID 常量
+//! - `host/instance/reg_props`：VxAPO 自身 CLSID
 //! - `log` crate
 //!
-//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `installation/`。
+//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `host/installation/`。
 
 use log::warn;
 

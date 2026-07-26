@@ -1,4 +1,4 @@
-//! com/clsid_reg.rs — CLSID 注册逻辑（Note 4/5/29/30）
+//! host/installation/clsid_entries.rs — CLSID 注册逻辑（Note 4/5/29/30）
 //!
 //! 定义 COM 类在 Windows 注册表中的注册路径与键值。
 //! `DllRegisterServer` 负责写入这些条目，`DllUnregisterServer` 负责删除。
@@ -11,6 +11,7 @@
 //! ```
 //!
 //! 此模块仅提供路径与常量定义，不执行实际注册表写入操作。
+//! 写入操作委托 `sys/registry/write.rs`，由 `host/installation/exports.rs` 调用。
 
 use crate::host::instance::reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
 

@@ -1,7 +1,7 @@
-//! com/vtable.rs — 编译期静态 vtable 布局验证（Note 1）
+//! sys/com/vtable.rs — 编译期静态 vtable 布局验证（Note 1）
 //!
-//! `com/apo_abi.rs` 的 `#[interface]` 宏与 `instance/object.rs` 的 `#[implement]` 宏
-//! 自动生成 vtable 结构体。本模块负责编译期验证：
+//! `sys/com/apo_abi.rs` 的 `#[interface]` 宏与 `host/instance/object.rs` 的
+//! `#[implement]` 宏自动生成 vtable 结构体。本模块负责编译期验证：
 //!
 //! 1. 生成的 vtable 结构体大小与对齐符合 Windows ABI 预期
 //! 2. 函数指针数量与对应接口方法数一致

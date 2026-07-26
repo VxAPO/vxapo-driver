@@ -1,9 +1,9 @@
-//! installation/rollback.rs — 分层事务与 .reg 备份（Note 32）
+//! host/installation/rollback.rs — 分层事务与 .reg 备份（Note 32）
 //!
 //! 安装前将原始 APO GUID 备份到 .reg 文件，用于卸载时回退。
 //! 文件名格式：`backup_{设备名}_{连接名}.reg`
 //!
-//! 实际的注册表导出由 `utils/reg_read.rs::save_to_file` 执行（Note 48）。
+//! 实际的注册表导出由 `sys/registry/read.rs::save_to_file` 执行（Note 48）。
 //!
 //! 此模块仅负责备份策略与文件命名，不直接操作注册表。
 
@@ -160,9 +160,9 @@ impl Transaction {
                 }
                 RollbackAction::UnregisterApo(guid) => {
                     // Note 30: 注销 APO。
-                    // UnregisterAPO 是 Windows APO 框架 API（mmdeviceapi）。
-                    // 当前 windows crate feature 集未启用此 API，
-                    // 记录 GUID 供手动清理或 Phase 6 补全。
+                    // UnregisterAPO 需要启用 windows crate 的 mmdeviceapi feature，
+                    // 当前未启用，记录 GUID 供后续补全。
+                    // TODO: 添加补全代码
                     log::warn!(
                         "Rollback: UnregisterAPO({}) — API not yet available, record for manual cleanup",
                         format_apo_guid(guid),

@@ -1,4 +1,4 @@
-//! engine/deinterleave.rs — 去交织 / 交织转换（Note 20）
+//! pipeline/stream/deinterleave.rs — 去交织 / 交织转换（Note 20）
 //!
 //! Windows APO 的 `APOProcess` 接收与输出交织格式缓冲区（`L0 R0 L1 R1 ...`），
 //! 引擎内部处理使用平面格式（`[ch][frame]`）。

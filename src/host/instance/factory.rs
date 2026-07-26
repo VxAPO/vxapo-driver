@@ -1,4 +1,4 @@
-//! com/factory.rs — COM ClassFactory 实现（Note 2/3/4/5）
+//! host/instance/factory.rs — COM ClassFactory 实现（Note 2/3/4/5）
 //!
 //! 职责：
 //! 1. 管理 `LOCK_COUNT` 原子计数，跟踪客户端显式锁定（Note 2）
@@ -9,7 +9,7 @@
 //! `DllCanUnloadNow` 判定条件：`INST_COUNT == 0 && LOCK_COUNT == 0` 时返回 `S_OK`。
 //!
 //! 此模块持有 ClassFactory 的 vtable 与 `CreateInstance` 入口，
-//! 实际对象创建委托 `instance/object.rs`。
+//! 实际对象创建委托 `host/instance/object.rs`。
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};

@@ -1,12 +1,12 @@
-//! installation/install.rs — 设备级 APO 安装与卸载（Note 47）
+//! host/installation/install.rs — 设备级 APO 安装与卸载（Note 47）
 //!
 //! 实现 Note 47 定义的完整 7 步安装流程，以及对应的卸载流程。
 //!
 //! 架构对应：
-//! | EAPO (C++)             | vxapo-driver (Rust)          |
-//! |------------------------|------------------------------|
-//! | DllRegisterServer      | installation/exports.rs      |
-//! | DeviceAPOInfo::install | installation/install.rs      |
+//! | EAPO (C++)             | vxapo-driver (Rust)            |
+//! |------------------------|--------------------------------|
+//! | DllRegisterServer      | host/installation/exports.rs   |
+//! | DeviceAPOInfo::install | host/installation/install.rs   |
 //!
 //! `DllRegisterServer`（`exports.rs`）负责 COM 类注册，随后遍历音频端点
 //! 调用 `install_endpoint`。本模块不直接参与 COM 注册。
@@ -21,12 +21,13 @@
 //! 7. 删除 DisableEnhancements
 //!
 //! 依赖：
-//! - `device/slots`：槽位查询与安装模式选择
-//! - `device/format`：格式解析
-//! - `installation/write`：注册表写入与权限提升（Note 31）
-//! - `installation/rollback`：事务回滚与 .reg 备份（Note 32）
-//! - `com/iid`：APO CLSID 常量
-//! - `utils/reg_read`：注册表只读操作（Note 48）
+//! - `host/device/slots`：槽位查询与安装模式选择
+//! - `host/device/format`：格式解析
+//! - `sys/registry/write`：注册表写入与权限提升（Note 31）
+//! - `host/installation/rollback`：事务回滚与 .reg 备份（Note 32）
+//! - `sys/iid`：系统级 IID 常量
+//! - `host/instance/reg_props`：VxAPO 自身 CLSID
+//! - `sys/registry/read`：注册表只读操作（Note 48）
 //! - `utils/error`：统一错误类型（Note 36）
 //! - `log` crate
 

@@ -1,7 +1,7 @@
-//! com/reg_props.rs — APO 注册属性定义（Note 42）
+//! host/instance/reg_props.rs — APO 注册属性定义（Note 42）
 //!
 //! VxAPO 自身的 CLSID 定义与 APO 注册属性。
-//! 系统级接口 IID 请见 `com/iid.rs`。
+//! 系统级接口 IID 请见 `sys/iid.rs`。
 //!
 //! 定义两个 APO 注册属性对象（PreMix / PostMix），各包含 CLSID、名称、版权信息
 //! 及 APO 标志位（`FRAMESPERSECOND_MUST_MATCH | BITSPERSAMPLE_MUST_MATCH | INPLACE`）。

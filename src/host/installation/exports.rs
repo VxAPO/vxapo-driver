@@ -1,4 +1,4 @@
-//! installation/exports.rs — 四个 COM DLL 导出函数 + DllMain（Note 28/29/30/59）
+//! host/installation/exports.rs — 四个 COM DLL 导出函数 + DllMain（Note 28/29/30/59）
 //!
 //! 导出函数：
 //! - `DllRegisterServer`：注册 COM 类与 APO（Note 29）
@@ -19,6 +19,8 @@
 //!
 //! 所有 COM 初始化与 APO 对象构造延迟到 `DllGetClassObject` 或
 //! `CreateInstance` 被首次调用时执行。
+//!
+//! 注册表写入委托 `sys/registry/write.rs`，安装流程委托 `host/installation/install.rs`。
 
 use std::ffi::c_void;
 use std::sync::atomic::AtomicPtr;

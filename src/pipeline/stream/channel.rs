@@ -1,12 +1,13 @@
-//! engine/channel.rs — 通道工具（Note 17）
+//! pipeline/stream/channel.rs — 通道工具（Note 17）
 //!
 //! 提供通道名称生成与默认掩码回退：
 //! - `get_channel_names(channel_count, channel_mask)`：根据通道数和掩码生成
 //!   L / R / C / LFE / SL / SR 等标准通道名称
 //! - `default_channel_mask(channel_count)`：掩码为 0 时生成对应通道数的默认掩码
 //!
-//! 本模块同时被 `device/` 与 `engine/` 引用——`device/format.rs` 通过
-//! `crate::engine::channel` 导入，作为通道掩码兜底链的最后一级（Note 27）。
+//! 本模块同时被 `host/device/` 与 `pipeline/stream/` 引用——
+//! `host/device/format.rs` 通过 `crate::pipeline::stream::channel` 导入，
+//! 作为通道掩码兜底链的最后一级（Note 27）。
 //!
 //! 此模块为纯函数，无状态，可在任意线程安全调用。
 
@@ -55,7 +56,7 @@ pub const SPEAKER_TOP_BACK_CENTER: u32 = 0x0001_0000;
 pub const SPEAKER_TOP_BACK_RIGHT: u32 = 0x0002_0000;
 
 // 标准预定义组合
-/// 5.1 环绕声 = FL | FR | FC | LFE | SL | SR
+/// 5.1 环绕声 = FL | FR | FC | LFE | RL | RR (SPEAKER_BACK_LEFT/RIGHT)
 pub const SPEAKER_5POINT1: u32 =
     SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER
     | SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;

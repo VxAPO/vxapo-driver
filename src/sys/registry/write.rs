@@ -1,10 +1,10 @@
-//! installation/reg_write.rs — 注册表写入与权限提升（Note 31）
+//! sys/registry/write.rs — 注册表写入与权限提升（Note 31）
 //!
 //! 提供注册表写入操作及权限提升功能：
 //! - `makeWritable`：修改 DACL，为 Administrators 添加完全控制权限
 //! - `takeOwnership`：获取注册表键所有权，需 `SE_TAKE_OWNERSHIP_NAME` 特权
 //!
-//! 只读操作位于 `utils/reg_read.rs`（Note 48），写入与权限操作集中在本模块。
+//! 只读操作位于 `sys/registry/read.rs`（Note 48），写入与权限操作集中在本模块。
 //!
 //! 所有 `unsafe` 块必须附带 `SAFETY` 注释，说明前提条件与安全保证（Note 40）。
 //! CI 启用 `#![deny(clippy::undocumented_unsafe_blocks)]` 强制检查。
@@ -385,7 +385,7 @@ fn create_administrators_sid() -> Result<Vec<u8>> {
 /// 特权恢复守卫（N1：最小权限原则）。
 ///
 /// 构造时保存原始特权状态，Drop 时自动恢复。
-pub(crate) struct PrivilegeGuard {
+pub struct PrivilegeGuard {
     token: windows::Win32::Foundation::HANDLE,
     original_privileges: TOKEN_PRIVILEGES,
 }
@@ -514,23 +514,23 @@ pub fn take_ownership(handle: HKEY) -> Result<()> {
     }
 
     // 设置新所有者
-    let mut new_desc = [0u8; 40]; // SECURITY_DESCRIPTOR 通常 40 字节
+    let mut new_security = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
 
     // SAFETY: 初始化安全描述符并设置所有者。
     unsafe {
         InitializeSecurityDescriptor(
-            PSECURITY_DESCRIPTOR(&mut new_desc as *mut _ as *mut _),
+            PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
             1u32,  // SECURITY_DESCRIPTOR_REVISION,
         )?;
         SetSecurityDescriptorOwner(
-            PSECURITY_DESCRIPTOR(&mut new_desc as *mut _ as *mut _),
+            PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
             Some(PSID(admin_sid.as_ptr() as *mut _)),
             false,
         )?;
         check_win32(RegSetKeySecurity(
             handle,
             OWNER_SECURITY_INFORMATION,
-            PSECURITY_DESCRIPTOR(&new_desc as *const _ as *mut _),
+            PSECURITY_DESCRIPTOR(&new_security as *const _ as *mut _),
         ))?;
     }
 

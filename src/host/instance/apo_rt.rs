@@ -1,4 +1,4 @@
-//! instance/audio_proc_obj_rt.rs — APOProcess + GetLatency + catch_unwind 防御（Note 60）
+//! host/instance/apo_rt.rs — APOProcess + GetLatency + catch_unwind 防御（Note 60）
 //!
 //! 实现 `IAudioProcessingObjectRT` 接口：
 //! - `APOProcess`：实时音频处理入口，整个 VxAPO 的热路径
@@ -8,13 +8,13 @@
 //!
 //! panic 防御（Note 60）：
 //! - 入口处用 `std::panic::catch_unwind` 包裹所有实时处理逻辑
-//! - 捕获到 panic 时：记录到 `logger.rs` 的 ring_logger → 输出缓冲区清零
+//! - 捕获到 panic 时：记录到 `host/telemetry/logger.rs` 的 ring_logger → 输出缓冲区清零
 //!   → 设置输出标志为 `BUFFER_SILENT` → 返回（不重新 panic）
 //! - `catch_unwind` 在 release（`panic = "abort"`）下为空操作，
-//!   真正防线为 `telemetry/panic.rs` 的 hook + `panic = "abort"` 进程终止
+//!   真正防线为 `host/telemetry/panic.rs` 的 hook + `panic = "abort"` 进程终止
 //! - debug / 测试环境下 `catch_unwind` 提供回溯信息与测试失败报告
 //!
-//! 此模块调用 `engine/pipeline.rs` 的 `process` 函数执行实际音频处理（Note 18）。
+//! 此模块调用 `pipeline/stream/process.rs` 的 `process` 函数执行实际音频处理（Note 18）。
 
 use crate::sys::com::apo_abi::BUFFER_SILENT;
 use crate::pipeline::stream::process::Pipeline;
@@ -135,6 +135,8 @@ pub fn get_latency(pipeline: &Pipeline, sample_rate: u32) -> i64 {
     }
 
     chain_latency_samples as i64 * 10_000_000 / sample_rate as i64
+    // 注意：子 APO 延迟已在 ApoObject::get_latency 中叠加，
+    // 本函数只计算 pipeline 过滤器链延迟。
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

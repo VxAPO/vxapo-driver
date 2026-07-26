@@ -1,4 +1,4 @@
-//! instance/audio_proc_obj_conf.rs — IAudioProcessingObjectConfiguration 实现
+//! host/instance/apo_conf.rs — IAudioProcessingObjectConfiguration 实现
 //!
 //! 实现 `IAudioProcessingObjectConfiguration` 接口：
 //! - `LockForProcess`：格式协商完成后锁定处理流程，确定通道数、采样率、位深与通道掩码（Note 9）
@@ -11,7 +11,7 @@
 //! - 无子 APO 时使用输入通道数
 //! - 采集设备使用输入掩码，回放使用输出掩码，优先非零
 //!
-//! 依赖 `APOGUID_NOKEY` / `APOGUID_NOVALUE` 常量（`instance/object.rs`，Note 6）。
+//! 依赖 `APOGUID_NOKEY` / `APOGUID_NOVALUE` 常量（`host/instance/object.rs`，Note 6）。
 
 use crate::sys::com::prelude;
 use crate::host::instance::apo_interface::ApoObject;
@@ -104,11 +104,25 @@ pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::co
         input.bits_per_sample,
     );
 
+    // Phase 6: 子 APO LockForProcess 委托
+    // 完整实现需要构造 APO_CONNECTION_DESCRIPTOR，Phase 8 补全。
+    // 当前：子 APO 在 init 阶段创建但不调用 LockForProcess。
+    if obj.child_apo.is_some() {
+        // TODO Phase 8: 子 APO LockForProcess
+        // let child = obj.child_apo.as_ref().unwrap();
+        // unsafe { child.lock_for_process(...); }
+    }
+
     prelude::S_OK
 }
 
 /// 解锁处理流程。
 pub fn unlock_for_process(obj: &mut ApoObject) -> windows::core::HRESULT {
+    // Phase 6: 子 APO UnlockForProcess
+    if let Some(ref child) = obj.child_apo {
+        let _ = child.unlock_for_process();
+    }
+
     if !obj.state.is_locked {
         return prelude::S_FALSE; // 未锁定，无需解锁
     }

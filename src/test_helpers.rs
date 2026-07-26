@@ -1,9 +1,9 @@
-//! utils/test_helpers.rs — 测试辅助工具
+//! test_helpers.rs — 测试辅助工具
 //!
 //! 提供跨模块共享的测试基础设施，避免各模块重复定义。
 //! 仅在 `#[cfg(test)]` 条件下编译，不进入 release 产物。
 //!
-//! 此模块为纯测试工具层，不依赖任何 Windows API。
+//! 此模块为纯测试工具层，不依赖任何 Windows API，可在非 Windows 环境下使用。
 
 /// 全局序列化锁。
 ///

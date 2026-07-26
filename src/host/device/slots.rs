@@ -1,4 +1,4 @@
-//! device/slots.rs — APO 槽位管理（Note 25/26/46）
+//! host/device/slots.rs — APO 槽位管理（Note 25/26/46）
 //!
 //! 管理 Windows 音频端点 FxProperties 注册表键下的 5 个 APO GUID 槽位，
 //! 提供安装模式选择与原始 APO GUID 回退查询。
@@ -31,11 +31,11 @@
 //! - `NoKey` 或无回退目标时返回空字符串
 //!
 //! 依赖：
-//! - `utils/reg_read`：注册表只读操作（Note 48）
+//! - `sys/registry/read`：注册表只读操作（Note 48）
 //! - `utils/error`：统一错误类型（Note 36）
 //! - `log` crate：日志记录
 //!
-//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `installation/`。
+//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `host/installation/`。
 
 use crate::sys::registry::read::RegKey;
 

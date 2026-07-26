@@ -1,7 +1,7 @@
-//! com/abi.rs — COM 基础 ABI 定义
+//! sys/com/prelude.rs — COM 基础 ABI 定义
 //!
-//! 提供 `com/` 层共用的类型重导出、常量与辅助函数。
-//! 所有 `com/` 子模块统一从此文件导入，避免在各处重复书写完整 `windows::` 路径。
+//! 提供 `sys/com/` 层共用的类型重导出、常量与辅助函数。
+//! 所有 `sys/com/` 子模块统一从此文件导入，避免在各处重复书写完整 `windows::` 路径。
 //!
 //! 此模块为纯定义层，不引入任何运行时逻辑或状态。
 
@@ -49,6 +49,9 @@ pub const E_FAIL: HRESULT = HRESULT(0x8000_4005u32 as i32);
 
 /// 未预期的错误。
 pub const E_UNEXPECTED: HRESULT = HRESULT(0x8000_FFFF_u32 as i32);
+
+/// 无效参数。
+pub const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057u32 as i32);
 
 /// 类工厂：请求的 CLSID 未注册（Note 4）。
 pub const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x8004_0111u32 as i32);

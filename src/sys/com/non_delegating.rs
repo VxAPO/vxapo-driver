@@ -1,4 +1,4 @@
-//! com/non_delegating.rs — INonDelegatingUnknown，COM 聚合支持（Note 3）
+//! sys/com/non_delegating.rs — INonDelegatingUnknown，COM 聚合支持（Note 3）
 //!
 //! COM 聚合模型中，内部对象持有外部对象的 `IUnknown` 指针（`pUnkOuter`），
 //! 并通过非委托版本的 `IUnknown` 方法维护自身的引用计数与接口查询。
@@ -8,6 +8,8 @@
 //! - `NonDelegatingAddRef` / `NonDelegatingRelease`：仅操作本对象的引用计数
 //!
 //! 当 `pUnkOuter` 为 null 时，非委托 `IUnknown` 退化为标准 `IUnknown` 行为。
+//!
+//! ⚠️ 此模块为临时手写实现，Phase 6 由 `#[implement]` 宏替代后删除。
 //!
 //! 此模块仅提供 trait 与方法签名定义，不包含引用计数的具体实现。
 

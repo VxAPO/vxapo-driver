@@ -1,14 +1,14 @@
-//! engine/filter.rs — 过滤器抽象接口（Note 13/53/58）
+//! dsp/filter.rs — 过滤器抽象接口（Note 13/53/58）
 //!
 //! 对应 EqualizerAPO 的 `IFilter` 接口。
 //! 纯 Rust trait 定义，不包含任何 Windows API 依赖。
 //!
-//! `dsp/` 模块仅依赖此文件，不依赖 `engine/` 的其他子模块。
+//! `dsp/filters/` 下的算法模块仅依赖此文件，不依赖 `host/` 或 `pipeline/`。
 //! 这使得 `dsp/` 的每个模块可使用标准 `#[test]` 编译测试，
 //! 无需 Windows 环境（Note 53）。
 //!
-//! 此文件同时定义 `EngineContext` 结构体，供 `context.rs` 构建，
-//! 避免 `dsp/` 通过 `engine/context.rs` 间接引入 Windows 依赖（Note 58）。
+//! 此文件同时定义 `PipelineContext` 结构体，供 `dsp/context.rs` 构建，
+//! 避免 `dsp/` 通过 `host/` 间接引入 Windows 依赖（Note 58）。
 //!
 //! `process` 方法运行在实时音频线程中，实现者必须遵守 RT-safety 约束（Note 12）：
 //! 禁止堆分配、互斥锁、I/O、panic。
@@ -156,7 +156,7 @@ pub trait FilterFactory: Send {
     fn create_filter(
         &self,
         params: &str,
-        ctx: &EngineContext,
+        ctx: &DspContext,
         loader: &dyn ConfigLoader,
     ) -> FilterCreateResult;
 
@@ -168,7 +168,7 @@ pub trait FilterFactory: Send {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// EngineContext — 引擎上下文（Note 44）
+// DspContext — 引擎上下文（Note 44）
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 引擎统一上下文，在 `engine.initialize()` 时构建，
@@ -176,13 +176,15 @@ pub trait FilterFactory: Send {
 ///
 /// 纯数据结构，不包含任何 Windows 类型——保持 `dsp/` 可测试性（Note 53）。
 #[derive(Debug, Clone)]
-pub struct EngineContext {
+pub struct DspContext {
     /// 采样率（Hz），如 44100、48000、96000
     pub sample_rate: u32,
     /// 通道数（如 2 = 立体声，8 = 7.1）
     pub channel_count: u32,
     /// 通道掩码（Windows `dwChannelMask` 格式，如 0x3 = FL|FR）
     pub channel_mask: u32,
+    /// 通道名称列表（如 ["L", "R", "C", "LFE", "RL", "RR"]）
+    pub channel_names: Vec<String>, // 由调用方预计算，dsp/ 不调用 channel::
     /// 最大帧数（每帧最大采样数，初始化时固定）
     pub max_frame_count: u32,
     /// 每样本位数（16、24、32）
@@ -235,7 +237,7 @@ pub trait ConfigLoader {
     fn load_config(
         &self,
         path: &str,
-        ctx: &EngineContext,
+        ctx: &DspContext,
     ) -> Vec<Box<dyn Filter>>;
 }
 
@@ -254,7 +256,7 @@ impl FilterFactory for PassthroughFactory {
     fn create_filter(
         &self,
         _params: &str,
-        _ctx: &EngineContext,
+        _ctx: &DspContext,
         _loader: &dyn ConfigLoader,
     ) -> FilterCreateResult {
         // 匹配一切，返回 NoFilter（passthrough 行为）
@@ -308,14 +310,15 @@ mod tests {
         assert!(format!("{:?}", FilterCreateResult::AbortFile).contains("AbortFile"));
     }
 
-    // ── EngineContext ───────────────────────────────────────────────────────
+    // ── DspContext ───────────────────────────────────────────────────────
 
     #[test]
     fn engine_context_defaults() {
-        let ctx = EngineContext {
+        let ctx = DspContext {
             sample_rate: 48000,
             channel_count: 2,
             channel_mask: 0x3,
+            channel_names: vec!["L".into(), "R".into()],
             max_frame_count: 480,
             bits_per_sample: 32,
             device_type: DeviceType::Render,
@@ -329,10 +332,11 @@ mod tests {
 
     #[test]
     fn engine_context_clone() {
-        let ctx = EngineContext {
+        let ctx = DspContext {
             sample_rate: 44100,
             channel_count: 6,
             channel_mask: 0x3F,
+            channel_names: vec!["L".into(), "R".into(), "C".into(), "LFE".into(), "RL".into(), "RR".into()],
             max_frame_count: 441,
             bits_per_sample: 16,
             device_type: DeviceType::Capture,
@@ -363,10 +367,11 @@ mod tests {
     #[test]
     fn passthrough_factory_returns_nofilter() {
         let factory = PassthroughFactory;
-        let ctx = EngineContext {
+        let ctx = DspContext {
             sample_rate: 48000,
             channel_count: 2,
             channel_mask: 0x3,
+            channel_names: vec!["L".into(), "R".into()],
             max_frame_count: 480,
             bits_per_sample: 32,
             device_type: DeviceType::Render,
@@ -375,7 +380,7 @@ mod tests {
 
         struct NullLoader;
         impl ConfigLoader for NullLoader {
-            fn load_config(&self, _path: &str, _ctx: &EngineContext) -> Vec<Box<dyn Filter>> {
+            fn load_config(&self, _path: &str, _ctx: &DspContext) -> Vec<Box<dyn Filter>> {
                 vec![]
             }
         }

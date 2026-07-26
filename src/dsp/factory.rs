@@ -31,7 +31,7 @@
 //! 返回 `NoMatch`，不使用 `Result`（Note 57）。
 
 use crate::dsp::filter::{
-    ConfigLoader, EngineContext, Filter, FilterCreateResult, FilterFactory, PassthroughFactory,
+    ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -124,7 +124,7 @@ impl Registry {
     pub fn try_create(
         &self,
         params: &str,
-        ctx: &EngineContext,
+        ctx: &DspContext,
         loader: &dyn ConfigLoader,
     ) -> TryCreateOutcome {
         for (i, factory) in self.factories.iter().enumerate() {
@@ -218,32 +218,519 @@ impl std::fmt::Debug for OutcomeKind {
 
 /// 创建默认工厂列表（15 个，按优先级排序）。
 ///
-/// Phase 3 初期全部用 `PassthroughFactory` 占位。
-/// 后续阶段逐个替换：
-///
-/// | 索引 | Phase | 工厂 |
-/// |------|-------|------|
-/// | 0    | 7     | `cmd_device::DeviceFactory` |
-/// | 1    | 7     | `cmd_cond::IfFactory` |
-/// | 2    | 7     | `cmd_expr::EvalFactory` |
-/// | 3    | 7     | `cmd_include::IncludeFactory` |
-/// | 4    | 7     | `cmd_stage::StageFactory` |
-/// | 5    | 7     | `cmd_channel::ChannelFactory` |
-/// | 6    | 8     | DSP IIR factory |
-/// | 7    | 8     | DSP BiQuad factory |
-/// | 8    | 8     | DSP Preamp factory |
-/// | 9    | 8     | DSP Delay factory |
-/// | 10   | 8     | DSP Copy factory |
-/// | 11   | 8     | DSP Convolution factory |
-/// | 12   | 8     | DSP GraphicEQ factory |
-/// | 13   | 8     | DSP VSTPlugin factory |
-/// | 14   | 8     | DSP LoudnessCorrection factory |
+/// Index 0–5 为命令工厂（由 parser.rs 直接处理，此处占位）。
+/// Index 6–14 为 DSP 工厂（Phase 8 实现）。
 pub fn create_default_registry() -> Vec<Box<dyn FilterFactory>> {
-    // Phase 3：全部占位
-    (0..FACTORY_COUNT)
-        .map(|_| Box::new(PassthroughFactory) as Box<dyn FilterFactory>)
-        .collect()
+    let mut factories: Vec<Box<dyn FilterFactory>> = Vec::with_capacity(FACTORY_COUNT);
+
+    // Index 0–5：命令工厂（parser.rs 直接处理，此处 NoMatch 占位）
+    for _ in 0..6 {
+        factories.push(Box::new(NoMatchFactory));
+    }
+
+    // Index 6–14：DSP 工厂
+    factories.push(Box::new(IirFactory));
+    factories.push(Box::new(BiquadFactory));
+    factories.push(Box::new(PreampFactory));
+    factories.push(Box::new(DelayFactory));
+    factories.push(Box::new(CopyFactory));
+    factories.push(Box::new(ConvolutionFactory));
+    factories.push(Box::new(GraphicEqFactory));
+    factories.push(Box::new(VstPluginFactory));
+    factories.push(Box::new(LoudnessCorrectionFactory));
+
+    debug_assert_eq!(factories.len(), FACTORY_COUNT);
+    factories
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DSP 工厂实现（Phase 8）
+//
+// Index 6–14 的真实工厂，替换 PassthroughFactory 占位。
+// ══════════════════════════════════════════════════════════════════════════════
+
+use crate::dsp::filters::biquad::{self, BiquadType};
+use crate::dsp::filters::gain::GainFilter;
+use crate::dsp::filters::delay::DelayFilter;
+use crate::dsp::filters::copy::{self, CopyFilter};
+use crate::dsp::filters::convolution::{self, ConvolutionFilter};
+use crate::dsp::filters::hp_lp::HighLowPassFilter;
+use crate::dsp::filters::graph_eq::{self, GraphicEqFilter};
+use crate::dsp::filters::loudness::{self, LoudnessFilter};
+use crate::dsp::filters::vst::{self, VstFilter};
+
+// ── IIR 工厂 (index 6) ───────────────────────────────────────────────────
+
+/// IIR 滤波器工厂。
+///
+/// 匹配 `IIR, HP, ...` / `IIR, LP, ...` / `IIR, PK, ...` 等格式。
+pub struct IirFactory;
+
+impl FilterFactory for IirFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        let upper = params.to_uppercase();
+        if !upper.starts_with("IIR") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        // 解析 "IIR, TYPE, Fc=X, Gain=Y, Q=Z"
+        let parts: Vec<&str> = params.splitn(2, ',').collect();
+        if parts.len() < 2 {
+            return FilterCreateResult::NoMatch;
+        }
+        let rest = parts[1].trim();
+
+        // 提取类型
+        let (type_str, rest) = if let Some(pos) = rest.find(',') {
+            (&rest[..pos].trim(), rest[pos + 1..].trim())
+        } else {
+            return FilterCreateResult::NoMatch;
+        };
+
+        let filter_type = match type_str.to_uppercase().as_str() {
+            "HP" => BiquadType::HighPass,
+            "LP" => BiquadType::LowPass,
+            "PK" | "PEQ" | "P" => BiquadType::Peaking,
+            "LS" => BiquadType::LowShelf,
+            "HS" => BiquadType::HighShelf,
+            "BP" => BiquadType::BandPass,
+            "NO" | "NOTCH" => BiquadType::Notch,
+            "AP" => BiquadType::AllPass,
+            _ => return FilterCreateResult::NoMatch,
+        };
+
+        // 解析键值对 "Fc=1000, Gain=3, Q=1.41"
+        let mut fc = 1000.0f32;
+        let mut gain = 0.0f32;
+        let mut q = 0.707f32;
+
+        for kv in rest.split(',') {
+            let kv = kv.trim();
+            let eq = match kv.find('=') {
+                Some(p) => p,
+                None => continue,
+            };
+            let key = kv[..eq].trim().to_uppercase();
+            let val = kv[eq + 1..].trim();
+
+            match key.as_str() {
+                "FC" | "F" => fc = val.parse().unwrap_or(1000.0),
+                "GAIN" | "G" => gain = val.parse().unwrap_or(0.0),
+                "Q" => q = val.parse().unwrap_or(0.707),
+                _ => {}
+            }
+        }
+
+        if fc <= 0.0 || !fc.is_finite() {
+            log::warn!("IIR: invalid Fc={}, skipping", fc);
+            return FilterCreateResult::NoMatch;
+        }
+
+        match filter_type {
+            BiquadType::HighPass | BiquadType::LowPass => {
+                let filter = HighLowPassFilter::new(filter_type, fc, q);
+                FilterCreateResult::Filter(Box::new(filter))
+            }
+            BiquadType::Peaking | BiquadType::LowShelf | BiquadType::HighShelf => {
+                let coeffs = biquad::compute_coeffs(
+                    filter_type, fc, gain, q, ctx.sample_rate,
+                );
+                let filter = biquad::BiquadFilter::new(
+                    coeffs,
+                    biquad::BiquadStructure::DirectFormIITransposed,
+                );
+                FilterCreateResult::Filter(Box::new(filter))
+            }
+            _ => {
+                let coeffs = biquad::compute_coeffs(
+                    filter_type, fc, gain, q, ctx.sample_rate,
+                );
+                let filter = biquad::BiquadFilter::new(
+                    coeffs,
+                    biquad::BiquadStructure::DirectFormIITransposed,
+                );
+                FilterCreateResult::Filter(Box::new(filter))
+            }
+        }
+    }
+
+    fn command_name(&self) -> &str {
+        "IIR:"
+    }
+}
+
+// ── Biquad 工厂 (index 7) ────────────────────────────────────────────────
+
+/// Biquad 直接系数工厂。
+///
+/// 匹配 `Biquad: b0=X, b1=Y, b2=Z, a1=W, a2=V` 格式。
+pub struct BiquadFactory;
+
+impl FilterFactory for BiquadFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("BIQUAD") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(',') {
+            Some(p) => params[p + 1..].trim(),
+            None => return FilterCreateResult::NoMatch,
+        };
+
+        let mut coeffs = biquad::BiquadCoeffs::BYPASS;
+        for kv in rest.split(',') {
+            let kv = kv.trim();
+            let eq = match kv.find('=') {
+                Some(p) => p,
+                None => continue,
+            };
+            let key = kv[..eq].trim().to_uppercase();
+            let val: f32 = match kv[eq + 1..].trim().parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            match key.as_str() {
+                "B0" => coeffs.b0 = val,
+                "B1" => coeffs.b1 = val,
+                "B2" => coeffs.b2 = val,
+                "A1" => coeffs.a1 = val,
+                "A2" => coeffs.a2 = val,
+                _ => {}
+            }
+        }
+
+        if !coeffs.is_valid() {
+            log::warn!("Biquad: invalid coefficients");
+            return FilterCreateResult::NoMatch;
+        }
+
+        let filter = biquad::BiquadFilter::new(
+            coeffs,
+            biquad::BiquadStructure::DirectFormIITransposed,
+        );
+        FilterCreateResult::Filter(Box::new(filter))
+    }
+
+    fn command_name(&self) -> &str {
+        "Biquad:"
+    }
+}
+
+// ── Preamp 工厂 (index 8) ────────────────────────────────────────────────
+
+/// 增益工厂。
+///
+/// 匹配 `Preamp: X dB` 或 `Preamp: X` 格式。
+pub struct PreampFactory;
+
+impl FilterFactory for PreampFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        let upper = params.to_uppercase();
+        if !upper.starts_with("PREAMP") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        // 解析 "6 dB" 或 "-3" 或 "0.5 dB"
+        let num_str = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or(rest);
+
+        let gain_db: f32 = match num_str.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                log::warn!("Preamp: invalid value '{}'", rest);
+                return FilterCreateResult::NoMatch;
+            }
+        };
+
+        FilterCreateResult::Filter(Box::new(GainFilter::new(gain_db)))
+    }
+
+    fn command_name(&self) -> &str {
+        "Preamp:"
+    }
+}
+
+// ── Delay 工厂 (index 9) ─────────────────────────────────────────────────
+
+/// 延迟线工厂。
+///
+/// 匹配 `Delay: X` 格式（毫秒）。
+pub struct DelayFactory;
+
+impl FilterFactory for DelayFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("DELAY") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        let delay_ms: f32 = match rest.split_whitespace().next().unwrap_or(rest).parse() {
+            Ok(v) => v,
+            Err(_) => {
+                log::warn!("Delay: invalid value '{}'", rest);
+                return FilterCreateResult::NoMatch;
+            }
+        };
+
+        if delay_ms < 0.0 {
+            log::warn!("Delay: negative value {} not supported", delay_ms);
+            return FilterCreateResult::NoMatch;
+        }
+
+        FilterCreateResult::Filter(Box::new(DelayFilter::new(delay_ms)))
+    }
+
+    fn command_name(&self) -> &str {
+        "Delay:"
+    }
+}
+
+// ── Copy 工厂 (index 10) ─────────────────────────────────────────────────
+
+/// 通道复制/混音工厂。
+///
+/// 匹配 `Copy: TARGET=SOURCE+...` 格式。
+pub struct CopyFactory;
+
+impl FilterFactory for CopyFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("COPY") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        match copy::parse_copy_ops(rest, &ctx.channel_names) {
+            Some(ops) => FilterCreateResult::Filter(Box::new(CopyFilter::new(ops))),
+            None => {
+                log::warn!("Copy: failed to parse '{}'", rest);
+                FilterCreateResult::NoMatch
+            }
+        }
+    }
+
+    fn command_name(&self) -> &str {
+        "Copy:"
+    }
+}
+
+// ── Convolution 工厂 (index 11) ──────────────────────────────────────────
+
+/// 卷积工厂。
+///
+/// 匹配 `Convolution: path [gain_dB]` 格式。
+pub struct ConvolutionFactory;
+
+impl FilterFactory for ConvolutionFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("CONVOLUTION") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        match convolution::parse_convolution_params(rest) {
+            Some((path, gain)) => {
+                FilterCreateResult::Filter(Box::new(ConvolutionFilter::new(&path, gain)))
+            }
+            None => {
+                log::warn!("Convolution: failed to parse '{}'", rest);
+                FilterCreateResult::NoMatch
+            }
+        }
+    }
+
+    fn command_name(&self) -> &str {
+        "Convolution:"
+    }
+}
+
+// ── GraphicEQ 工厂 (index 12) ────────────────────────────────────────────
+
+/// 图形均衡器工厂。
+///
+/// 匹配 `GraphicEQ: freq1 gain1; freq2 gain2; ...` 格式。
+pub struct GraphicEqFactory;
+
+impl FilterFactory for GraphicEqFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("GRAPHICEQ") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        match graph_eq::parse_graphic_eq_params(rest) {
+            Some(bands) => {
+                FilterCreateResult::Filter(Box::new(GraphicEqFilter::new(bands)))
+            }
+            None => {
+                log::warn!("GraphicEQ: failed to parse '{}'", rest);
+                FilterCreateResult::NoMatch
+            }
+        }
+    }
+
+    fn command_name(&self) -> &str {
+        "GraphicEQ:"
+    }
+}
+
+// ── VSTPlugin 工厂 (index 13) ────────────────────────────────────────────
+
+/// VST 插件工厂。
+///
+/// 匹配 `VSTPlugin: "name" "path.dll"` 格式。
+pub struct VstPluginFactory;
+
+impl FilterFactory for VstPluginFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("VSTPLUGIN") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        match vst::parse_vst_params(rest) {
+            Some((name, path, _raw)) => {
+                FilterCreateResult::Filter(Box::new(VstFilter::new(&path, &name)))
+            }
+            None => {
+                log::warn!("VSTPlugin: failed to parse '{}'", rest);
+                FilterCreateResult::NoMatch
+            }
+        }
+    }
+
+    fn command_name(&self) -> &str {
+        "VSTPlugin:"
+    }
+}
+
+// ── LoudnessCorrection 工厂 (index 14) ───────────────────────────────────
+
+/// 等响曲线工厂。
+///
+/// 匹配 `LoudnessCorrection: phon [reference_phon]` 格式。
+pub struct LoudnessCorrectionFactory;
+
+impl FilterFactory for LoudnessCorrectionFactory {
+    fn create_filter(
+        &self,
+        params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        if !params.to_uppercase().starts_with("LOUDNESSCORRECTION") {
+            return FilterCreateResult::NoMatch;
+        }
+
+        let rest = match params.find(':') {
+            Some(p) => params[p + 1..].trim(),
+            None => match params.find(' ') {
+                Some(p) => params[p..].trim(),
+                None => return FilterCreateResult::NoMatch,
+            },
+        };
+
+        match loudness::parse_loudness_params(rest) {
+            Some((phon, ref_phon)) => {
+                FilterCreateResult::Filter(Box::new(LoudnessFilter::new(phon, ref_phon)))
+            }
+            None => {
+                log::warn!("LoudnessCorrection: failed to parse '{}'", rest);
+                FilterCreateResult::NoMatch
+            }
+        }
+    }
+
+    fn command_name(&self) -> &str {
+        "LoudnessCorrection:"
+    }
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 测试用 Mock 工厂
@@ -271,7 +758,7 @@ impl FilterFactory for MockFactory {
     fn create_filter(
         &self,
         params: &str,
-        _ctx: &EngineContext,
+        _ctx: &DspContext,
         _loader: &dyn ConfigLoader,
     ) -> FilterCreateResult {
         if params.starts_with(&self.keyword) {
@@ -290,16 +777,39 @@ impl FilterFactory for MockFactory {
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// 占位工厂：永不匹配。
+///
+/// 用于 index 0–5（命令工厂），这些命令由 parser.rs 直接处理，
+/// 不通过 registry 匹配。
+#[derive(Debug)]
+pub struct NoMatchFactory;
+
+impl FilterFactory for NoMatchFactory {
+    fn create_filter(
+        &self,
+        _params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        FilterCreateResult::NoMatch
+    }
+
+    fn command_name(&self) -> &str {
+        "<command>"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dsp::filter::{DeviceType, PassthroughFilter, ProcessingStage};
 
-    fn test_ctx() -> EngineContext {
-        EngineContext {
+    fn test_ctx() -> DspContext {
+        DspContext {
             sample_rate: 48000,
             channel_count: 2,
             channel_mask: 0x3,
+            channel_names: vec!["L".into(), "R".into()],
             max_frame_count: 480,
             bits_per_sample: 32,
             device_type: DeviceType::Render,
@@ -309,7 +819,7 @@ mod tests {
 
     struct NullLoader;
     impl ConfigLoader for NullLoader {
-        fn load_config(&self, _path: &str, _ctx: &EngineContext) -> Vec<Box<dyn Filter>> {
+        fn load_config(&self, _path: &str, _ctx: &DspContext) -> Vec<Box<dyn Filter>> {
             vec![]
         }
     }
@@ -328,8 +838,19 @@ mod tests {
         let reg = Registry::default_registry();
         let names = reg.factory_names();
         assert_eq!(names.len(), FACTORY_COUNT);
-        // Phase 3 全部占位，都是 "*"
-        assert!(names.iter().all(|n| *n == "*"));
+        // Index 0–5 命令占位
+        for i in 0..6 {
+            assert_eq!(names[i], "<command>", "index {} should be NoMatch", i);
+        }
+        assert_eq!(names[6], "IIR:");
+        assert_eq!(names[7], "Biquad:");
+        assert_eq!(names[8], "Preamp:");
+        assert_eq!(names[9], "Delay:");
+        assert_eq!(names[10], "Copy:");
+        assert_eq!(names[11], "Convolution:");
+        assert_eq!(names[12], "GraphicEQ:");
+        assert_eq!(names[13], "VSTPlugin:");
+        assert_eq!(names[14], "LoudnessCorrection:");
     }
 
     #[test]
@@ -343,31 +864,55 @@ mod tests {
     #[test]
     fn registry_command_name_at() {
         let reg = Registry::default_registry();
-        assert_eq!(reg.command_name_at(0), Some("*"));
+        assert_eq!(reg.command_name_at(0), Some("<command>"));
         assert_eq!(reg.command_name_at(99), None);
     }
 
-    // ── try_create — 占位阶段（全部 PassthroughFactory）──────────────────────
+    // ── try_create — （Index 6–14）──────────────────────
 
     #[test]
-    fn try_create_all_passthrough_returns_nofilter() {
+    fn try_create_preamp() {
         let reg = Registry::default_registry();
         let ctx = test_ctx();
-        let outcome = reg.try_create("anything", &ctx, &NullLoader);
-
-        // PassthroughFactory 匹配一切返回 NoFilter
-        assert!(matches!(outcome.result, OutcomeKind::MatchedNoFilter));
-        assert_eq!(outcome.factory_index, Some(0));
+        let outcome = reg.try_create("Preamp: -6", &ctx, &NullLoader);
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+        assert_eq!(outcome.factory_index, Some(index::PREAMP));
     }
 
     #[test]
-    fn try_create_nofilter_stops_at_first_factory() {
+    fn try_create_delay() {
         let reg = Registry::default_registry();
         let ctx = test_ctx();
-        let outcome = reg.try_create("Preamp: 6", &ctx, &NullLoader);
+        let outcome = reg.try_create("Delay: 5", &ctx, &NullLoader);
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+        assert_eq!(outcome.factory_index, Some(index::DELAY));
+    }
 
-        // 第一个工厂（index 0）就返回了 NoFilter，不会走到后面的工厂
-        assert_eq!(outcome.factory_index, Some(0));
+    #[test]
+    fn try_create_iir_lp() {
+        let reg = Registry::default_registry();
+        let ctx = test_ctx();
+        let outcome = reg.try_create("Iir, LP, Fc=1000, Q=0.707", &ctx, &NullLoader);
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+        assert_eq!(outcome.factory_index, Some(index::IIR));
+    }
+
+    #[test]
+    fn try_create_graphic_eq() {
+        let reg = Registry::default_registry();
+        let ctx = test_ctx();
+        let outcome = reg.try_create("GraphicEQ: 100 0; 1000 3; 10000 -3", &ctx, &NullLoader);
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+        assert_eq!(outcome.factory_index, Some(index::GRAPHIC_EQ));
+    }
+
+    #[test]
+    fn try_create_unknown_returns_unmatched() {
+        let reg = Registry::default_registry();
+        let ctx = test_ctx();
+        let outcome = reg.try_create("Foobar: something", &ctx, &NullLoader);
+        // 命令工厂 NoMatch → DSP 工厂 NoMatch → Unmatched
+        assert!(matches!(outcome.result, OutcomeKind::Unmatched));
     }
 
     // ── try_create — Mock 工厂测试 ──────────────────────────────────────────

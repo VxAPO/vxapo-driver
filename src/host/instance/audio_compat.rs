@@ -1,4 +1,4 @@
-//! instance/audio_format.rs — 音频格式约束检查（Note 8/9）
+//! host/instance/audio_compat.rs — 音频格式约束检查（Note 8/9）
 //!
 //! 实现以下接口的格式验证逻辑：
 //! - `IsInputFormatSupported` / `IsOutputFormatSupported`：采样率与位深匹配校验

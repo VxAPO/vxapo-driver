@@ -1,12 +1,12 @@
-//! realtime/ring.rs — 无锁环形缓冲区（Note 22）
+//! pipeline/realtime/ring.rs — 无锁环形缓冲区（Note 22）
 //!
 //! 单生产者单消费者（SPSC）无锁环形缓冲区。
 //!
 //! 被两个模块共同使用：
-//! - `engine/`：信号量抽象，`swap.rs` 中的配置交换协调（Note 19）
-//! - `telemetry/`：无锁日志，`logger.rs` 的实时安全日志写入（Note 34）
+//! - `pipeline/stream/`：信号量抽象，`swap.rs` 中的配置交换协调（Note 19）
+//! - `host/telemetry/`：无锁日志，`logger.rs` 的实时安全日志写入（Note 34）
 //!
-//! 本模块位于 `realtime/` 目录下，定位为"实时安全基础设施"。
+//! 本模块位于 `pipeline/realtime/` 目录下，定位为"实时安全基础设施"。
 //! 未来扩展更多无锁数据结构时保持一致性。
 //!
 //! 实时安全：
@@ -18,7 +18,7 @@
 //! - 写入端：`store(write_pos, Release)` — 保证数据写入对读端可见
 //! - 读取端：`load(read_pos, Acquire)` + `load(write_pos, Acquire)` — 保证读到最新写入
 //!
-//! 此模块与 `engine/`、`telemetry/` 无耦合，可在任意上下文安全使用。
+//! 此模块与 `pipeline/`、`host/` 无耦合，可在任意上下文安全使用。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

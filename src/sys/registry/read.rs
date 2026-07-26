@@ -1,4 +1,4 @@
-//! utils/reg_read.rs — 只读注册表操作（Note 48）
+//! sys/registry/read.rs — 只读注册表操作（Note 48）
 //!
 //! 提供注册表只读查询功能：
 //! - `split_key`：拆分注册表路径为根键 `HKEY` + 子键路径
@@ -16,7 +16,7 @@
 //!   `HKEY_CURRENT_USER` / `HKEY_LOCAL_MACHINE` / `HKEY_USERS`
 //! - 未知根键返回错误
 //!
-//! 写入与权限操作位于 `installation/reg_write.rs`（Note 31）。
+//! 写入与权限操作位于 `sys/registry/write.rs`（Note 31）。
 //!
 //! 此模块为纯工具层，与引擎、DSP、COM 实例无耦合。
 

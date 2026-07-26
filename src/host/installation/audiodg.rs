@@ -1,4 +1,4 @@
-//! installation/audiodg.rs — DisableProtectedAudioDG 检查与修复（Note 33）
+//! host/installation/audiodg.rs — DisableProtectedAudioDG 检查与修复（Note 33）
 //!
 //! `DisableProtectedAudioDG` 注册表值不存在或不为 1 时，
 //! Windows 阻止第三方 APO 加载到 audiodg.exe 进程中。
@@ -6,7 +6,7 @@
 //! 检查逻辑：读取该值，不存在或 ≠1 则判定为阻止加载。
 //! 修复逻辑：写入 1，允许第三方 APO 加载。
 //!
-//! 此模块涉及注册表写入，实际操作委托 `installation/reg_write.rs`。
+//! 此模块涉及注册表写入，实际操作委托 `sys/registry/write.rs`。
 
 use windows::Win32::System::Registry::{HKEY, HKEY_LOCAL_MACHINE};
 

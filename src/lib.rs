@@ -21,11 +21,11 @@
 
 // ======================== 模块声明 ========================
 
-mod dsp;
-mod host;
-mod pipeline;
-mod sys;
-mod utils;
+pub mod dsp;
+pub mod host;
+pub mod pipeline;
+pub mod sys;
+pub mod utils;
 
 #[cfg(test)]
 mod test_helpers;

@@ -1,4 +1,4 @@
-//! com/apo_abi.rs — APO COM 接口 ABI 定义（Phase 1）
+//! sys/com/apo_abi.rs — APO COM 接口 ABI 定义（Phase 1）
 //!
 //! 定义 Windows Audio APO 所需的三个核心 COM 接口及配套 POD 类型。
 //! 所有结构体采用 `#[repr(C)]` 布局，函数指针顺序与 Windows ABI 严格一致（Note 1）。
