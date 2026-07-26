@@ -1,10 +1,5 @@
-pub mod biquad;
-pub mod peq;
-pub mod hp_lp;
-pub mod graph_eq;
-pub mod gain;
-pub mod delay;
-pub mod convolution;
-pub mod vst;
-pub mod loudness;
-pub mod copy;
+pub mod context;
+pub mod factory;
+pub mod filter;
+pub mod filters;
+pub mod transition;
