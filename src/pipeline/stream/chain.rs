@@ -345,9 +345,18 @@ impl Chain {
         self.last_channel_names.clear();
         self.cached_channel_map = None;
 
-        // 重置缓冲区（保留已分配的 Vec 容量，只截断长度）
+        // 截断多余通道
         self.all_samples.truncate(self.all_channel_count);
         self.all_samples2.truncate(self.all_channel_count);
+
+        // 扩展不足通道（9R.6: 大→小→大通道路径导致缓冲区长度不足）
+        while self.all_samples.len() < self.all_channel_count {
+            self.all_samples.push(vec![0.0f32; self.max_frame_count]);
+        }
+        while self.all_samples2.len() < self.all_channel_count {
+            self.all_samples2.push(vec![0.0f32; self.max_frame_count]);
+        }
+
         for ch in self.all_samples.iter_mut().chain(self.all_samples2.iter_mut()) {
             for s in ch.iter_mut() {
                 *s = 0.0;
@@ -796,5 +805,27 @@ mod tests {
         let debug = format!("{info:?}");
         assert!(debug.contains("FilterInfo"));
         assert!(debug.contains("in_place"));
+    }
+
+    #[test]
+    fn reset_expand_after_shrink() {
+        let mut chain = Chain::new(8, 480, vec![
+            "FL".into(), "FR".into(), "FC".into(), "LFE".into(),
+            "SL".into(), "SR".into(), "BL".into(), "BR".into(),
+        ]);
+        assert_eq!(chain.all_samples().len(), 8);
+
+        // 8 → 2
+        chain.reset(stereo_names());
+        assert_eq!(chain.all_samples().len(), 2);
+
+        // 2 → 6（必须能扩展回来）
+        chain.reset(surround_names());
+        assert_eq!(chain.all_samples().len(), 6);
+        assert_eq!(chain.all_samples2().len(), 6);
+        // 缓冲区应全部清零
+        for ch in chain.all_samples() {
+            assert!(ch.iter().all(|&v| v == 0.0));
+        }
     }
 }

@@ -225,7 +225,7 @@ impl DspContext {
     /// 7.1 环绕声 48kHz 回放。
     pub fn surround_71_48k() -> Self {
         Self::builder(
-            48000, 8, 0x3F, 480,
+            48000, 8, 0x063F, 480,
             vec!["L".into(), "R".into(), "C".into(), "LFE".into(),
                  "SL".into(), "SR".into(), "RL".into(), "RR".into()],
         )
@@ -455,7 +455,7 @@ mod tests {
     fn surround_71_preset() {
         let ctx = DspContext::surround_71_48k();
         assert_eq!(ctx.channel_count, 8);
-        assert_eq!(ctx.channel_mask, 0x3F);
+        assert_eq!(ctx.channel_mask, 0x063F);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use windows::core::{GUID, HRESULT, IUnknown};
 
 use crate::sys::com::apo_abi::{
     IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, REFERENCE_TIME,
+    APO_CONNECTION_DESCRIPTOR,
 };
 use crate::sys::com::base;
 
@@ -191,6 +192,35 @@ impl ChildApo {
     }
 
     // ── IAudioProcessingObjectConfiguration 委托 ─────────────────────────────
+
+    /// 锁定子 APO（`LockForProcess`，vtable[3]）。
+    ///
+    /// # Safety
+    ///
+    /// `pp_inputs` / `pp_outputs` 必须指向有效的 `APO_CONNECTION_DESCRIPTOR` 指针数组，
+    /// 且描述符中的 `format`（`IAudioMediaType*`）和 `buffer` 在调用期间保持有效。
+    pub unsafe fn lock_for_process(
+        &self,
+        num_input: u32,
+        pp_inputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
+        num_output: u32,
+        pp_outputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
+    ) -> HRESULT {
+        if self.iapo_cfg_ptr.is_null() {
+            return base::E_POINTER;
+        }
+        unsafe {
+            let fn_ptr = self.vtbl_method(self.iapo_cfg_ptr, 3);
+            let lock_fn: unsafe extern "system" fn(
+                *mut c_void,
+                u32,
+                *mut *mut APO_CONNECTION_DESCRIPTOR,
+                u32,
+                *mut *mut APO_CONNECTION_DESCRIPTOR,
+            ) -> HRESULT = std::mem::transmute(fn_ptr);
+            lock_fn(self.iapo_cfg_ptr, num_input, pp_inputs, num_output, pp_outputs)
+        }
+    }
 
     /// 解锁子 APO（`UnlockForProcess`，vtable[4]）。
     pub fn unlock_for_process(&self) -> HRESULT {

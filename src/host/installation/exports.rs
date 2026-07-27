@@ -27,14 +27,16 @@ use std::sync::atomic::AtomicPtr;
 
 use windows::core::{BOOL, GUID, HRESULT};
 use windows::Win32::Foundation::HMODULE;
+use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::Registry::*;
 
 use crate::sys::com::base;
-use crate::host::instance::factory::{self};
+use crate::host::instance::factory;
 use crate::host::instance::ref_count as inst_count;
 
-use super::clsid_entries::{self, ClsidEntry};
+use super::clsid_entries;
 
+/// 将字符串转换为注册表所需的 null-terminated UTF-16 字节数组。
 fn to_registry_bytes(s: &str) -> Vec<u8> {
     let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
@@ -47,6 +49,7 @@ fn to_registry_bytes(s: &str) -> Vec<u8> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// DLL 模块句柄（DllMain 中保存，Note 59）。
+/// 用于 `GetModuleFileNameW` 获取 DLL 路径，供注册/注销使用。
 static MODULE_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -86,7 +89,7 @@ pub unsafe extern "system" fn DllMain(
     match ul_reason_for_call {
         DLL_PROCESS_ATTACH => {
             // Note 59：仅保存模块句柄，不做任何其他操作。
-            // MODULE_HANDLE 是 OnceLock，set 只执行一次，无复杂初始化。
+            // MODULE_HANDLE 是 AtomicPtr，store 只执行原子写入，无复杂初始化。
             MODULE_HANDLE.store(h_module.0, std::sync::atomic::Ordering::SeqCst);
         }
         DLL_PROCESS_DETACH => {
@@ -106,11 +109,13 @@ pub unsafe extern "system" fn DllMain(
 // DllGetClassObject（Note 4）
 //
 // 只接受 PreMix / PostMix 两个 CLSID，其余返回 CLASS_E_CLASSNOTAVAILABLE。
+// 使用 `#[implement]` 自动管理 COM 生命周期，无需 `Box` 泄漏。
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 创建指定 CLSID 的 ClassFactory。
 ///
 /// COM 运行时（`CoCreateInstance` 内部）调用此函数获取工厂。
+/// Phase 4：使用 `#[implement]` COM 智能指针，自动管理引用计数。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllGetClassObject(
@@ -118,40 +123,48 @@ pub unsafe extern "system" fn DllGetClassObject(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    // ── 输入验证 ────────────────────────────────────────────────────────────
+    // ── 参数校验 ──────────────────────────────────────────
+    // SAFETY: COM 运行时保证传入有效指针或 null。
 
     if rclsid.is_null() || riid.is_null() || ppv.is_null() {
         return base::E_POINTER;
     }
 
-    // SAFETY: 由调用方（COM 运行时）保证 rclsid/riid 有效。
+    // 预置 null，调用方可以据此判断失败（Note 2）
+    unsafe { *ppv = std::ptr::null_mut(); }
+
+    // SAFETY: 由调用方（COM 运行时）保证 rclsid 有效。
     let clsid = unsafe { *rclsid };
 
-    // ── CLSID 路由（Note 4） ────────────────────────────────────────────────
+    // ── CLSID 路由（Note 4） ────────────────────────────────
 
-    // Phase 2: Box 分配到堆上，确保 *ppv 在函数返回后仍然有效。
-    // Phase 4: 切换到 #[implement] COM 生命周期管理后可移除 Box。
-    let fac = Box::new(match factory::create_factory(&clsid) {
+    // 创建工厂（#[implement] COM 智能指针，ref_count 初始 = 1）
+    let factory: IClassFactory = match factory::create_factory(&clsid) {
         Some(f) => f,
         None => return base::CLASS_E_CLASSNOTAVAILABLE,
-    });
+    };
 
-    // ── QueryInterface 获取请求的接口 ───────────────────────────────────────
+    // ── QueryInterface 获取请求的接口 ──────────────────────
+    // windows-interface 0.59.3 跨模块方法不可见，使用原始 vtable 调用 QI。
+    // Phase 5: 升级 windows-rs 后可移除 vtable 直调，改用 factory.query(&riid, ppv)。
+    let raw_ptr: *mut c_void = unsafe { std::mem::transmute_copy(&factory) };
+    let vtbl = unsafe { *(raw_ptr as *const *const usize) };
+    type QIFn = unsafe extern "system" fn(
+        *mut c_void, *const GUID, *mut *mut c_void,
+    ) -> HRESULT;
+    // vtable[0] = QueryInterface
+    let qi: QIFn = unsafe { std::mem::transmute(*vtbl.add(0)) };
 
-    let hr = fac.query_interface(riid, ppv);
+    let hr = unsafe { qi(raw_ptr, &*riid, ppv as *mut *mut c_void) };
 
-    if base::failed(hr) {
-        drop(fac);
-        return hr;
+    // 释放工厂的临时引用（drop 触发 Release）
+    drop(factory);
+    // QI 成功时 ref_count 2 → 1，客户端持有 *ppv
+    // QI 失败时 ref_count 1 → 0，对象自动释放
+
+    if hr.is_err() {
+        unsafe { *ppv = std::ptr::null_mut() };
     }
-
-    // QI 成功后 factory 的 ref_count = 2（构造 1 + QI +1）。
-    // 释放工厂自身的引用 → ref_count = 1 归客户端。
-    fac.release();
-
-    // 泄漏 Box — 堆内存保持存活，*ppv 仍然有效。
-    // Phase 4 用 #[implement] 宏管理 COM 生命周期后可移除此泄漏。
-    let _ = Box::into_raw(fac);
 
     hr
 }
@@ -164,7 +177,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 
 /// 检查 DLL 是否可以安全卸载。
 ///
-/// COM 运行时定期调用此函数。两者均零时可以卸载。
+/// COM 运行时定期调用此函数。INST_COUNT 与 LOCK_COUNT 均为零时可以卸载。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
@@ -178,17 +191,18 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 // ══════════════════════════════════════════════════════════════════════════════
 // DllRegisterServer（Note 29）
 //
-// 注册顺序：PostMix APO → 失败回滚 PostMix → PreMix APO → 失败回滚两者 →
-// COM 类注册 → 失败回滚两者 + 删除 COM 类键。
+// 注册顺序：PostMix → PreMix。
+// 注册失败时回滚已注册的条目。
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 注册 APO 和 COM 类。
+/// 注册 COM 类。
 ///
 /// 由 `regsvr32 vxapo.dll` 调用。
+/// 注册顺序：PostMix → PreMix（Note 29）。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
-    // 获取 DLL 路径
+    // 获取 DLL 路径 — 需要 HMODULE（DllMain 中保存）。
     let dll_path = match get_dll_path() {
         Some(p) => p,
         None => return base::E_FAIL,
@@ -213,23 +227,24 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
 // ══════════════════════════════════════════════════════════════════════════════
 // DllUnregisterServer（Note 30）
 //
-// 先删 InprocServer32 子键再删 CLSID 父键，然后注销 APO。
+// 先删 InprocServer32 子键再删 CLSID 父键。
 // 注销顺序：PreMix → PostMix（与注册相反）。
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 注销 APO 和 COM 类。
+/// 注销 COM 类。
 ///
 /// 由 `regsvr32 /u vxapo.dll` 调用。
+/// 注销顺序：PreMix → PostMix（与注册相反，Note 30）。
+/// 尽力清理，即使某条目注销失败也继续。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
+    // 注销顺序：PreMix → PostMix（与注册相反）
     let entries = clsid_entries::unregistration_order();
-
     for entry in &entries {
-        // 即使某条目注销失败也继续（尽力清理）
+        // 尽力清理，即使某条目注销失败也继续（Note 30）
         let _ = unregister_com_class(entry);
     }
-
     base::S_OK
 }
 
@@ -250,23 +265,21 @@ fn get_dll_path() -> Option<String> {
     let mut buf = vec![0u16; 1024];
     // SAFETY: h_module 由 DllMain 保存，buf 容量足够。
     let len = unsafe {
-        windows::Win32::System::LibraryLoader::GetModuleFileNameW(
-            Some(h_module),
-            &mut buf,
-        )
+        windows::Win32::System::LibraryLoader::GetModuleFileNameW(Some(h_module), &mut buf)
     };
-
     if len == 0 {
         return None;
     }
-
     Some(String::from_utf16_lossy(&buf[..len as usize]))
 }
 
 /// 注册单个 CLSID 的 COM 类。
 ///
 /// 写入 `HKCR\CLSID\{GUID}\InprocServer32` 路径和 ThreadingModel。
-fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT> {
+fn register_com_class(
+    entry: &clsid_entries::ClsidEntry,
+    dll_path: &str,
+) -> Result<(), HRESULT> {
     let inproc_path = entry.inproc_server_path();
 
     // 创建 InprocServer32 键
@@ -305,6 +318,7 @@ fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT>
     };
 
     if write_result.is_err() {
+        // SAFETY: hkey 由 RegCreateKeyExW 成功打开。
         unsafe { let _ = RegCloseKey(hkey); }
         return Err(base::E_FAIL);
     }
@@ -323,9 +337,7 @@ fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT>
 
     // 关闭键句柄
     // SAFETY: hkey 由 RegCreateKeyExW 成功打开。
-    unsafe {
-        let _ = RegCloseKey(hkey);
-    }
+    unsafe { let _ = RegCloseKey(hkey); }
 
     if tm_result.is_err() {
         return Err(base::E_FAIL);
@@ -337,7 +349,7 @@ fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT>
 /// 注销单个 CLSID 的 COM 类。
 ///
 /// 先删 InprocServer32 子键，再删 CLSID 父键（Note 30）。
-fn unregister_com_class(entry: &ClsidEntry) -> Result<(), HRESULT> {
+fn unregister_com_class(entry: &clsid_entries::ClsidEntry) -> Result<(), HRESULT> {
     let inproc_path = entry.inproc_server_path();
     let clsid_path = entry.clsid_key_path();
 
@@ -349,6 +361,7 @@ fn unregister_com_class(entry: &ClsidEntry) -> Result<(), HRESULT> {
     }
 
     // 删除 CLSID 父键
+    // SAFETY: 删除注册表键。路径由 ClsidEntry 生成，格式安全。
     unsafe {
         let sub_key = windows::core::HSTRING::from(&clsid_path);
         let _ = RegDeleteTreeW(HKEY_CLASSES_ROOT, &sub_key);
@@ -364,30 +377,26 @@ fn unregister_com_class(entry: &ClsidEntry) -> Result<(), HRESULT> {
 #[cfg(test)]
 mod tests {
     use windows::core::{GUID, IUnknown, Interface};
-    use crate::host::instance::factory::VxApoClassFactory;
     use crate::host::instance::reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
     use super::*;
 
-    /// 释放 DllGetClassObject 返回的 Phase 2 工厂指针。
+    /// 释放 COM 接口指针（通过 vtable 调用 Release）。
     ///
-    /// SAFETY: `ppv` 必须是从 DllGetClassObject 获得的合法指针。
-    ///         Phase 4 切换到 #[implement] COM 对象后改用 release_com_ptr。
-    unsafe fn release_factory_ptr(ppv: *mut c_void) {
-        let boxed = Box::from_raw(ppv as *mut VxApoClassFactory);
-        boxed.release();
-        drop(boxed);
-    }
-
-    /// 释放 create_instance 返回的 Phase 2 APO 对象指针。
+    /// Phase 4：使用 `#[implement]` COM 智能指针，通过 vtable 释放。
+    /// Phase 5: windows-rs 方法可见后可改用 `.release()`。
     ///
-    /// SAFETY: `ppv` 必须是从 create_instance 获得的合法指针。
-    ///         Phase 4 切换到 #[implement] COM 对象后改用 release_com_ptr。
-    unsafe fn release_apo_ptr(ppv: *mut c_void) {
-        let boxed = Box::from_raw(ppv as *mut crate::host::instance::factory::ApoObject);
-        let (_, should_drop) = boxed.release();
-        if should_drop {
-            drop(boxed);
+    /// # Safety
+    ///
+    /// `ptr` 必须是有效的 COM 接口指针，或 null。
+    unsafe fn release_com_ptr(ptr: *mut c_void) {
+        if ptr.is_null() {
+            return;
         }
+        let vtbl = *(ptr as *const *const usize);
+        type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
+        // vtable[2] = Release
+        let release: ReleaseFn = std::mem::transmute(*vtbl.add(2));
+        release(ptr);
     }
 
     // ── DllCanUnloadNow ─────────────────────────────────────────────────────
@@ -404,12 +413,13 @@ mod tests {
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
 
-        let _obj = crate::host::instance::object::ApoObjectState::new(CLSID_VXAPO_PRE_MIX);
-        inst_count::increment();
-
+        // 创建 APO 对象实例，INST_COUNT + 1
+        let _apo = crate::host::instance::apo_interface::ApoObject::new(CLSID_VXAPO_PRE_MIX);
+        assert_eq!(inst_count::get(), 1);
         assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
-        inst_count::decrement();
+        // drop 时析构函数调用 Release，INST_COUNT - 1
+        drop(_apo);
         assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
 
@@ -434,9 +444,11 @@ mod tests {
         factory::lock_increment();
         assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
+        // 仅释放实例，仍有锁定
         inst_count::decrement();
         assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
+        // 释放锁定后全部清零
         factory::lock_decrement();
         assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
@@ -461,7 +473,8 @@ mod tests {
         assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
 
-        unsafe { release_factory_ptr(ppv); }
+        // Phase 4：通过 vtable 调用 Release 释放
+        unsafe { release_com_ptr(ppv); }
     }
 
     #[test]
@@ -482,7 +495,8 @@ mod tests {
         assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
 
-        unsafe { release_factory_ptr(ppv); }
+        // Phase 4：通过 vtable 调用 Release 释放
+        unsafe { release_com_ptr(ppv); }
     }
 
     #[test]
@@ -519,7 +533,7 @@ mod tests {
 
     #[test]
     fn dll_main_attach_returns_true() {
-        // SAFETY: 模拟 DLL_PROCESS_ATTACH
+        // DLL_PROCESS_ATTACH = 1
         let result = unsafe {
             DllMain(HMODULE::default(), 1, std::ptr::null_mut())
         };
@@ -528,6 +542,7 @@ mod tests {
 
     #[test]
     fn dll_main_detach_returns_true() {
+        // DLL_PROCESS_DETACH = 0
         let result = unsafe {
             DllMain(HMODULE::default(), 0, std::ptr::null_mut())
         };
@@ -536,20 +551,21 @@ mod tests {
 
     #[test]
     fn dll_main_unknown_reason() {
+        // 未定义的 reason 值也始终返回 TRUE
         let result = unsafe {
             DllMain(HMODULE::default(), 999, std::ptr::null_mut())
         };
         assert!(result.as_bool());
     }
 
-    // ── 端到端：注册 → 获取工厂 → 注销 ─────────────────────────────────────
+    // ── 端到端：获取工厂 → 释放 → 确认可卸载 ────────────────
 
     #[test]
     fn full_lifecycle_simulation() {
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
 
-        // 1. 获取 ClassFactory
+        // 1. 获取 ClassFactory（通过 DllGetClassObject → QI IUnknown）
         let clsid = CLSID_VXAPO_PRE_MIX;
         let iid = IUnknown::IID;
         let mut ppv: *mut c_void = std::ptr::null_mut();
@@ -564,8 +580,8 @@ mod tests {
         assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
 
-        // 2. 释放工厂 — Phase 2 用 Box::from_raw，Phase 4 改用 release_com_ptr。
-        unsafe { release_factory_ptr(ppv); }
+        // 2. 释放工厂 — Phase 4 已用 #[implement] COM 智能指针
+        unsafe { release_com_ptr(ppv); }
 
         // 3. 确认可卸载
         assert_eq!(DllCanUnloadNow(), base::S_OK);

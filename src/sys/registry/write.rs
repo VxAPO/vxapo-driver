@@ -9,7 +9,7 @@
 //! 所有 `unsafe` 块必须附带 `SAFETY` 注释，说明前提条件与安全保证（Note 40）。
 //! CI 启用 `#![deny(clippy::undocumented_unsafe_blocks)]` 强制检查。
 
-use windows::Win32::Foundation::{HLOCAL, LUID, LocalFree, WIN32_ERROR};
+use windows::Win32::Foundation::{HLOCAL, LUID, LocalFree, WIN32_ERROR, CloseHandle};
 use windows::Win32::System::Registry::{
     HKEY,
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW,
@@ -170,11 +170,17 @@ pub fn delete_value(handle: HKEY, name: &str) -> Result<()> {
     // SAFETY: name 是合法 HSTRING。
     let err = unsafe { RegDeleteValueW(handle, &name_hstr) };
 
-    if err.is_err() {
-        // 不存在不算错误
-        Err(VxApoError::registry(name, "RegDeleteValueW failed"))
-    } else {
+    if err.is_ok() {
+        return Ok(());
+    }
+
+    // 值或路径不存在不算错误
+    let code = err.to_hresult().0 as u32;
+    if code == 2 || code == 3 {
+        // ERROR_FILE_NOT_FOUND (2) 或 ERROR_PATH_NOT_FOUND (3)
         Ok(())
+    } else {
+        Err(VxApoError::registry(name, "RegDeleteValueW failed"))
     }
 }
 
@@ -229,18 +235,24 @@ pub fn close_key(handle: HKEY) {
 /// - 进程有 `WRITE_DAC` 权限（通常需要管理员权限）
 /// - handle 有效
 pub fn make_writable(handle: HKEY) -> Result<()> {
+    // RAII 守卫：自动释放 LocalAlloc 分配的 DACL 内存
+    struct DaclGuard(HLOCAL);
+
+    impl Drop for DaclGuard {
+        fn drop(&mut self) {
+            if !self.0.is_invalid() {
+                unsafe {
+                    let _ = LocalFree(Some(self.0));
+                }
+            }
+        }
+    }
+
     // 获取当前 DACL
     let mut needed: u32 = 0;
 
     // SAFETY: 首次调用获取所需缓冲区大小。
-    let err = unsafe {
-        RegGetKeySecurity(
-            handle,
-            DACL_SECURITY_INFORMATION,
-            None,
-            &mut needed,
-        )
-    };
+    let err = unsafe { RegGetKeySecurity(handle, DACL_SECURITY_INFORMATION, None, &mut needed) };
 
     // ERROR_INSUFFICIENT_BUFFER (122) 是预期的
     if err.is_err() && needed == 0 {
@@ -303,8 +315,14 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
 
     // SAFETY: SetEntriesInAclW 合并新的 ACE 到 DACL。
     unsafe {
-        check_win32(SetEntriesInAclW(Some(&[explicit_access]), old_dacl_opt, &mut new_dacl))?;
+        check_win32(SetEntriesInAclW(
+            Some(&[explicit_access]),
+            old_dacl_opt,
+            &mut new_dacl,
+        ))?;
     }
+    // 分配成功后立即用 RAII 守卫包装，之后任何提前返回都会自动释放
+    let _dacl_guard = DaclGuard(HLOCAL(new_dacl as *mut _));
 
     // 设置新的安全描述符
     let mut new_security = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
@@ -313,7 +331,7 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
     unsafe {
         InitializeSecurityDescriptor(
             PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
-            1u32,  // SECURITY_DESCRIPTOR_REVISION,
+            1u32, // SECURITY_DESCRIPTOR_REVISION,
         )?;
         SetSecurityDescriptorDacl(
             PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
@@ -327,12 +345,9 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
             DACL_SECURITY_INFORMATION,
             PSECURITY_DESCRIPTOR(&new_security as *const _ as *mut _),
         ))?;
-
-        // 释放 LocalAlloc 分配的内存
-        if !new_dacl.is_null() {
-            let _ = LocalFree(Some(HLOCAL(new_dacl as *mut _)));
-        }
     }
+
+    // new_dacl 由 _dacl_guard 在函数退出时自动释放，无需手动调用 LocalFree
 
     Ok(())
 }
@@ -392,6 +407,7 @@ pub struct PrivilegeGuard {
 
 impl Drop for PrivilegeGuard {
     fn drop(&mut self) {
+        // 恢复原始特权状态
         // SAFETY: self.token 在 enable_take_ownership_privilege 中已验证有效。
         // AdjustTokenPrivileges 恢复原始状态是 Windows 标准操作。
         unsafe {
@@ -408,6 +424,12 @@ impl Drop for PrivilegeGuard {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(0) {
             log::warn!("PrivilegeGuard: failed to restore original privilege state");
+        }
+
+        // 关闭令牌句柄，防止句柄泄漏
+        // SAFETY: self.token 是从 OpenProcessToken 获取的有效句柄。
+        unsafe {
+            let _ = CloseHandle(self.token);
         }
     }
 }

@@ -1,19 +1,22 @@
-//! host/instance/apo_conf.rs — IAudioProcessingObjectConfiguration 实现
+//! host/instance/apo_conf.rs — LockForProcess / UnlockForProcess 辅助逻辑（Note 9）
 //!
-//! 实现 `IAudioProcessingObjectConfiguration` 接口：
-//! - `LockForProcess`：格式协商完成后锁定处理流程，确定通道数、采样率、位深与通道掩码（Note 9）
-//! - `UnlockForProcess`：释放锁定状态，允许重新协商格式
-//!
-//! Windows 约束：`APOProcess` 仅在 `LockForProcess` 成功后方可调用。
+//! `IAudioProcessingObjectConfiguration` 的接口实现在 `apo_interface.rs` 中，
+//! 本模块提供通道数确定规则与通道掩码确定规则等辅助逻辑。
 //!
 //! 通道数确定规则（Note 9）：
 //! - 有子 APO 时使用输出通道数
 //! - 无子 APO 时使用输入通道数
 //! - 采集设备使用输入掩码，回放使用输出掩码，优先非零
 //!
-//! 依赖 `APOGUID_NOKEY` / `APOGUID_NOVALUE` 常量（`host/instance/object.rs`，Note 6）。
+//! 此模块不包含 COM 接口实现，仅提供纯逻辑辅助函数。
+
+use windows::core::HRESULT;
 
 use crate::sys::com::base;
+use crate::sys::com::apo_abi::{
+    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_BUFFER_TYPE,
+    APO_CONNECTION_DESCRIPTOR_SIGNATURE,
+};
 use crate::host::instance::apo_interface::ApoObject;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -23,7 +26,6 @@ use crate::host::instance::apo_interface::ApoObject;
 /// 连接格式描述（LockForProcess 参数的简化表示）。
 ///
 /// 对应 `APO_CONNECTION_DESCRIPTOR` 中的格式信息。
-/// Phase 4 初期只提取关键字段，Phase 6 补全 `IAudioMediaType` 解析。
 #[derive(Debug, Clone)]
 pub struct ConnectionFormat {
     /// 通道数。
@@ -46,10 +48,10 @@ pub struct LockConfig {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LockForProcess 实现（Note 9）
+// LockForProcess 辅助
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 执行 LockForProcess 逻辑。
+/// 执行 LockForProcess 逻辑（Note 9）。
 ///
 /// 返回 `S_OK` 成功，`E_FAIL` 失败。
 ///
@@ -65,9 +67,14 @@ pub struct LockConfig {
 ///
 /// 重复调用 `LockForProcess` 返回 `E_FAIL`。
 /// 必须先 `UnlockForProcess`。
-pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::core::HRESULT {
+pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> HRESULT {
+    let mut state = match obj.state.lock() {
+        Ok(s) => s,
+        Err(_) => return base::E_FAIL,
+    };
+
     // 已锁定 → 错误
-    if obj.state.is_locked {
+    if state.is_locked {
         return base::E_FAIL;
     }
 
@@ -90,13 +97,13 @@ pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::co
     }
 
     // 通道数确定规则（Note 9）
-    let (input_channels, output_channels) = determine_channel_counts(obj, input, output);
+    let (input_channels, output_channels) = determine_channel_counts(&state, input, output);
 
     // 通道掩码确定规则（Note 9）
-    let channel_mask = determine_channel_mask(obj, input, output);
+    let channel_mask = determine_channel_mask(&state, input, output);
 
     // 锁定
-    obj.state.lock_for_process(
+    state.lock_for_process(
         input.sample_rate,
         input_channels,
         output_channels,
@@ -104,30 +111,58 @@ pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::co
         input.bits_per_sample,
     );
 
-    // Phase 6: 子 APO LockForProcess 委托
-    // 完整实现需要构造 APO_CONNECTION_DESCRIPTOR，Phase 8 补全。
-    // 当前：子 APO 在 init 阶段创建但不调用 LockForProcess。
-    if obj.child_apo.is_some() {
-        // TODO Phase 8: 子 APO LockForProcess
-        // let child = obj.child_apo.as_ref().unwrap();
-        // unsafe { child.lock_for_process(...); }
+    // ── 子 APO LockForProcess 委托 ──────────────────────────
+    if let Some(ref child) = obj.child_apo {
+        // 从 LockConfig 构造子 APO 所需的 APO_CONNECTION_DESCRIPTOR。
+        // format 和 buffer 由父 APO 管理，子 APO 使用引擎提供的缓冲区。
+        // 这里构造最小描述符，子 APO 可能返回错误——不阻塞父 APO 锁定。
+        let mut input_desc = APO_CONNECTION_DESCRIPTOR {
+            buffer_type: APO_CONNECTION_BUFFER_TYPE::ALLOCATED,
+            buffer: 0,
+            max_frame_count: 1024,
+            format: std::ptr::null_mut(),
+            signature: APO_CONNECTION_DESCRIPTOR_SIGNATURE,
+        };
+        let mut output_desc = APO_CONNECTION_DESCRIPTOR {
+            buffer_type: APO_CONNECTION_BUFFER_TYPE::ALLOCATED,
+            buffer: 0,
+            max_frame_count: 1024,
+            format: std::ptr::null_mut(),
+            signature: APO_CONNECTION_DESCRIPTOR_SIGNATURE,
+        };
+
+        let mut pp_inputs: *mut APO_CONNECTION_DESCRIPTOR = &mut input_desc;
+        let mut pp_outputs: *mut APO_CONNECTION_DESCRIPTOR = &mut output_desc;
+
+        let child_hr = unsafe {
+            child.lock_for_process(1, &mut pp_inputs, 1, &mut pp_outputs)
+        };
+        if child_hr.is_err() {
+            // 子 APO 拒绝锁定——不阻塞父 APO（Note 57 降级模式）
+            // TODO Phase 9P: 记录到 ring_logger
+        }
     }
 
     base::S_OK
 }
 
 /// 解锁处理流程。
-pub fn unlock_for_process(obj: &mut ApoObject) -> windows::core::HRESULT {
+pub fn unlock_for_process(obj: &mut ApoObject) -> HRESULT {
     // Phase 6: 子 APO UnlockForProcess
     if let Some(ref child) = obj.child_apo {
         let _ = child.unlock_for_process();
     }
 
-    if !obj.state.is_locked {
+    let mut state = match obj.state.lock() {
+        Ok(s) => s,
+        Err(_) => return base::E_FAIL,
+    };
+
+    if !state.is_locked {
         return base::S_FALSE; // 未锁定，无需解锁
     }
 
-    obj.state.unlock_for_process();
+    state.unlock_for_process();
     base::S_OK
 }
 
@@ -135,21 +170,14 @@ pub fn unlock_for_process(obj: &mut ApoObject) -> windows::core::HRESULT {
 // 通道数确定规则（Note 9）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 确定输入和输出通道数。
-///
-/// Note 9 规则：
-/// - 有子 APO 时用输出通道数作为输出
-/// - 无子 APO 时用输入通道数
 fn determine_channel_counts(
-    obj: &ApoObject,
+    state: &crate::host::instance::object::ApoObjectState,
     input: &ConnectionFormat,
     output: &ConnectionFormat,
 ) -> (u32, u32) {
-    if obj.state.child_apo_guid.is_some() {
-        // 有子 APO：输出通道 = 子 APO 的输出（这里用 connection 描述的输出）
+    if state.child_apo_guid.is_some() {
         (input.channel_count, output.channel_count)
     } else {
-        // 无子 APO：输入输出通道一致
         let channels = if input.channel_count > 0 {
             input.channel_count
         } else {
@@ -159,18 +187,13 @@ fn determine_channel_counts(
     }
 }
 
-/// 确定通道掩码。
-///
-/// Note 9 规则：
-/// - 采集设备用输入掩码
-/// - 回放设备用输出掩码
-/// - 优先非零
+/// 确定通道掩码（Note 9）。
 fn determine_channel_mask(
-    obj: &ApoObject,
+    state: &crate::host::instance::object::ApoObjectState,
     input: &ConnectionFormat,
     output: &ConnectionFormat,
 ) -> u32 {
-    if obj.state.is_pre_mix() || obj.state.is_post_mix() {
+    if state.is_pre_mix() || state.is_post_mix() {
         // 回放设备：优先输出掩码
         if output.channel_mask != 0 {
             output.channel_mask
@@ -178,7 +201,7 @@ fn determine_channel_mask(
             input.channel_mask
         }
     } else {
-        // 采集设备或其他：优先输入掩码
+        // 采集设备：优先输入掩码
         if input.channel_mask != 0 {
             input.channel_mask
         } else {
@@ -240,12 +263,15 @@ mod tests {
         let config = stereo_config();
         let hr = lock_for_process(&mut obj, &config);
         assert_eq!(hr, base::S_OK);
-        assert!(obj.state.is_locked);
-        assert_eq!(obj.state.sample_rate, 48000);
-        assert_eq!(obj.state.input_channel_count, 2);
-        assert_eq!(obj.state.output_channel_count, 2);
-        assert_eq!(obj.state.channel_mask, 0x3);
-        assert_eq!(obj.state.bits_per_sample, 32);
+
+        let state = obj.state.lock().unwrap();
+        assert!(state.is_locked);
+        assert_eq!(state.sample_rate, 48000);
+        assert_eq!(state.input_channel_count, 2);
+        assert_eq!(state.output_channel_count, 2);
+        assert_eq!(state.channel_mask, 0x3);
+        assert_eq!(state.bits_per_sample, 32);
+        drop(state);
         drop(obj);
     }
 
@@ -256,8 +282,11 @@ mod tests {
         let config = surround_config();
         let hr = lock_for_process(&mut obj, &config);
         assert_eq!(hr, base::S_OK);
-        assert_eq!(obj.state.input_channel_count, 6);
-        assert_eq!(obj.state.channel_mask, 0x3F);
+
+        let state = obj.state.lock().unwrap();
+        assert_eq!(state.input_channel_count, 6);
+        assert_eq!(state.channel_mask, 0x3F);
+        drop(state);
         drop(obj);
     }
 
@@ -352,13 +381,19 @@ mod tests {
         let config = stereo_config();
 
         lock_for_process(&mut obj, &config);
-        assert!(obj.state.is_locked);
+        {
+            let state = obj.state.lock().unwrap();
+            assert!(state.is_locked);
+        }
 
         let hr = unlock_for_process(&mut obj);
         assert_eq!(hr, base::S_OK);
-        assert!(!obj.state.is_locked);
-        assert_eq!(obj.state.sample_rate, 0);
-        assert_eq!(obj.state.input_channel_count, 0);
+        {
+            let state = obj.state.lock().unwrap();
+            assert!(!state.is_locked);
+            assert_eq!(state.sample_rate, 0);
+            assert_eq!(state.input_channel_count, 0);
+        }
         drop(obj);
     }
 
@@ -367,7 +402,7 @@ mod tests {
         inst_count::reset_for_test();
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let hr = unlock_for_process(&mut obj);
-        assert_eq!(hr, base::S_FALSE); // 未锁定
+        assert_eq!(hr, base::S_FALSE);
         drop(obj);
     }
 
@@ -376,20 +411,17 @@ mod tests {
         inst_count::reset_for_test();
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
 
-        // 第一次锁定
         let config1 = stereo_config();
         assert_eq!(lock_for_process(&mut obj, &config1), base::S_OK);
-        assert_eq!(obj.state.sample_rate, 48000);
-        assert_eq!(obj.state.input_channel_count, 2);
+        assert_eq!(obj.state.lock().unwrap().sample_rate, 48000);
+        assert_eq!(obj.state.lock().unwrap().input_channel_count, 2);
 
-        // 解锁
         assert_eq!(unlock_for_process(&mut obj), base::S_OK);
-        assert!(!obj.state.is_locked);
+        assert!(!obj.state.lock().unwrap().is_locked);
 
-        // 第二次锁定（不同配置）
         let config2 = surround_config();
         assert_eq!(lock_for_process(&mut obj, &config2), base::S_OK);
-        assert_eq!(obj.state.input_channel_count, 6);
+        assert_eq!(obj.state.lock().unwrap().input_channel_count, 6);
 
         drop(obj);
     }
@@ -400,8 +432,6 @@ mod tests {
     fn channel_count_no_child_uses_input() {
         inst_count::reset_for_test();
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
-        // 无子 APO
-        assert!(obj.state.child_apo_guid.is_none());
 
         let config = LockConfig {
             inputs: vec![ConnectionFormat {
@@ -415,9 +445,11 @@ mod tests {
         };
         lock_for_process(&mut obj, &config);
 
+        let state = obj.state.lock().unwrap();
         // 无子 APO：输入输出通道数一致，用输入
-        assert_eq!(obj.state.input_channel_count, 4);
-        assert_eq!(obj.state.output_channel_count, 4);
+        assert_eq!(state.input_channel_count, 4);
+        assert_eq!(state.output_channel_count, 4);
+        drop(state);
         drop(obj);
     }
 
@@ -426,7 +458,7 @@ mod tests {
         inst_count::reset_for_test();
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         // 模拟有子 APO
-        obj.state.child_apo_guid = Some(CLSID_VXAPO_POST_MIX);
+        obj.state.lock().unwrap().child_apo_guid = Some(CLSID_VXAPO_POST_MIX);
 
         let config = LockConfig {
             inputs: vec![ConnectionFormat {
@@ -440,8 +472,10 @@ mod tests {
         };
         lock_for_process(&mut obj, &config);
 
-        assert_eq!(obj.state.input_channel_count, 2);
-        assert_eq!(obj.state.output_channel_count, 6);
+        let state = obj.state.lock().unwrap();
+        assert_eq!(state.input_channel_count, 2);
+        assert_eq!(state.output_channel_count, 6);
+        drop(state);
         drop(obj);
     }
 
@@ -464,8 +498,7 @@ mod tests {
         };
         lock_for_process(&mut obj, &config);
 
-        // 回放设备：优先输出掩码
-        assert_eq!(obj.state.channel_mask, 0x3F);
+        assert_eq!(obj.state.lock().unwrap().channel_mask, 0x3F);
         drop(obj);
     }
 
@@ -486,7 +519,7 @@ mod tests {
         };
         lock_for_process(&mut obj, &config);
 
-        assert_eq!(obj.state.channel_mask, 0x3F);
+        assert_eq!(obj.state.lock().unwrap().channel_mask, 0x3F);
         drop(obj);
     }
 
@@ -507,20 +540,17 @@ mod tests {
         };
         lock_for_process(&mut obj, &config);
 
-        // 输出掩码为 0 → 回退到输入掩码
-        assert_eq!(obj.state.channel_mask, 0x3);
+        assert_eq!(obj.state.lock().unwrap().channel_mask, 0x3);
         drop(obj);
     }
 
-    // ── ConnectionFormat / LockConfig Debug ─────────────────────────────────
+    // ── Debug ───────────────────────────────────────────────────────────────
 
     #[test]
     fn connection_format_debug() {
         let fmt = ConnectionFormat {
-            channel_count: 2,
-            sample_rate: 48000,
-            bits_per_sample: 32,
-            channel_mask: 0x3,
+            channel_count: 2, sample_rate: 48000,
+            bits_per_sample: 32, channel_mask: 0x3,
         };
         let debug = format!("{fmt:?}");
         assert!(debug.contains("ConnectionFormat"));
@@ -534,26 +564,23 @@ mod tests {
         assert!(debug.contains("LockConfig"));
     }
 
-    // ── 端到端：Lock → Process → Unlock ─────────────────────────────────────
+    // ── 端到端 ──────────────────────────────────────────────────────────────
 
     #[test]
     fn full_lock_process_unlock_cycle() {
         inst_count::reset_for_test();
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
 
-        // Lock
         let config = stereo_config();
         assert_eq!(lock_for_process(&mut obj, &config), base::S_OK);
-        assert!(obj.state.is_locked);
-        assert_eq!(obj.get_input_channel_count(), 2);
 
-        // Process（模拟）
-        assert!(obj.state.is_locked);
+        assert!(obj.state.lock().unwrap().is_locked);
+        assert_eq!(obj.state.lock().unwrap().input_channel_count, 2);
 
-        // Unlock
         assert_eq!(unlock_for_process(&mut obj), base::S_OK);
-        assert!(!obj.state.is_locked);
-        assert_eq!(obj.get_input_channel_count(), 0);
+
+        assert!(!obj.state.lock().unwrap().is_locked);
+        assert_eq!(obj.state.lock().unwrap().input_channel_count, 0);
 
         drop(obj);
     }

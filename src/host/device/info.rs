@@ -580,12 +580,16 @@ mod tests {
 
     #[test]
     fn has_fx_properties_nonexistent_key() {
-        // 不存在的键 → 应返回 false（非 panic）
-        let result = RegKey::open(
+        // 打开一个确实存在但没有 FX_PROPERTIES 子键的键
+        let key = RegKey::open(
             windows::Win32::System::Registry::HKEY_CURRENT_USER,
-            "SOFTWARE\\VxAPO_Test_NonExistent_FxProps_12345",
-        );
-        assert!(result.is_err());
+            "SOFTWARE",
+        )
+        .expect("HKCU\\SOFTWARE should always exist");
+
+        // HKCU\SOFTWARE 下不存在 FX_PROPERTIES_KEY 子键
+        let result = has_fx_properties(&key);
+        assert!(!result, "has_fx_properties should return false when FxProperties subkey is absent");
     }
 
     // ── SlotValue + InstallMode 交互 ──────────────────────────────────────

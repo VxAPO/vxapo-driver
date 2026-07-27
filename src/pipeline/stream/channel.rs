@@ -279,6 +279,7 @@ mod tests {
     #[test]
     fn surround_71_names() {
         let names = get_channel_names(8, 0x063F);
+        println!("实际: {:?}", names);
         assert_eq!(names, ["L", "R", "C", "LFE", "RL", "RR", "SL", "SR"]);
     }
 

@@ -1,6 +1,6 @@
-//! engine/registry.rs — 工厂注册机制（Note 14）
+//! dsp/factory.rs — 工厂注册机制（Note 14）
 //!
-//! 按硬编码顺序注册 15 个工厂。`parser.rs` 按下标顺序遍历，
+//! 按硬编码顺序注册 15 个工厂。`host/parse/parser.rs` 按下标顺序遍历，
 //! 第一个返回 `Filter` 或 `NoFilter` 的工厂胜出。
 //!
 //! 工厂优先级（高 → 低）：
@@ -776,6 +776,27 @@ impl FilterFactory for MockFactory {
 // ══════════════════════════════════════════════════════════════════════════════
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
+
+/// 占位工厂：永远匹配，返回 `NoFilter`（消费行但不产生过滤器）。
+///
+/// 用于测试中作为兜底/后备工厂。
+#[derive(Debug)]
+pub struct PassthroughFactory;
+
+impl FilterFactory for PassthroughFactory {
+    fn create_filter(
+        &self,
+        _params: &str,
+        _ctx: &DspContext,
+        _loader: &dyn ConfigLoader,
+    ) -> FilterCreateResult {
+        FilterCreateResult::NoFilter
+    }
+
+    fn command_name(&self) -> &str {
+        "<passthrough>"
+    }
+}
 
 /// 占位工厂：永不匹配。
 ///
