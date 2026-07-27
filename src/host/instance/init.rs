@@ -23,7 +23,7 @@
 
 use windows::core::HRESULT;
 
-use crate::sys::com::prelude;
+use crate::sys::com::base;
 use crate::host::instance::object::APOGUID_NOKEY;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -102,13 +102,13 @@ pub unsafe fn parse_apo_init_data(
     const MIN_INIT_SIZE: u32 = 36; // cbSize(4) + APO CLSID(16) + endpoint GUID(16)
 
     if p_init_data.is_null() || cb_data_size < MIN_INIT_SIZE {
-        return Err(prelude::E_INVALIDARG);
+        return Err(base::E_INVALIDARG);
     }
 
     // Step 1: 读取 cbDataSize
     let reported_size = std::ptr::read_unaligned(p_init_data as *const u32);
     if reported_size < MIN_INIT_SIZE {
-        return Err(prelude::E_INVALIDARG);
+        return Err(base::E_INVALIDARG);
     }
 
     // Step 2: APO CLSID（由调用方传入，确定 PreMix/PostMix 模式）
@@ -255,7 +255,7 @@ mod tests {
         let result = unsafe {
             parse_apo_init_data(CLSID_VXAPO_PRE_MIX, std::ptr::null(), 0)
         };
-        assert_eq!(result.unwrap_err(), prelude::E_INVALIDARG);
+        assert_eq!(result.unwrap_err(), base::E_INVALIDARG);
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
         let result = unsafe {
             parse_apo_init_data(CLSID_VXAPO_PRE_MIX, data.as_ptr(), 10)
         };
-        assert_eq!(result.unwrap_err(), prelude::E_INVALIDARG);
+        assert_eq!(result.unwrap_err(), base::E_INVALIDARG);
     }
 
     #[test]

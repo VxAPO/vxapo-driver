@@ -13,7 +13,7 @@
 //!
 //! 依赖 `APOGUID_NOKEY` / `APOGUID_NOVALUE` 常量（`host/instance/object.rs`，Note 6）。
 
-use crate::sys::com::prelude;
+use crate::sys::com::base;
 use crate::host::instance::apo_interface::ApoObject;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -68,12 +68,12 @@ pub struct LockConfig {
 pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::core::HRESULT {
     // 已锁定 → 错误
     if obj.state.is_locked {
-        return prelude::E_FAIL;
+        return base::E_FAIL;
     }
 
     // 至少需要一个输入和一个输出
     if config.inputs.is_empty() || config.outputs.is_empty() {
-        return prelude::E_FAIL;
+        return base::E_FAIL;
     }
 
     let input = &config.inputs[0];
@@ -81,12 +81,12 @@ pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::co
 
     // 采样率必须匹配
     if input.sample_rate != output.sample_rate {
-        return prelude::E_FAIL;
+        return base::E_FAIL;
     }
 
     // 位深必须匹配
     if input.bits_per_sample != output.bits_per_sample {
-        return prelude::E_FAIL;
+        return base::E_FAIL;
     }
 
     // 通道数确定规则（Note 9）
@@ -113,7 +113,7 @@ pub fn lock_for_process(obj: &mut ApoObject, config: &LockConfig) -> windows::co
         // unsafe { child.lock_for_process(...); }
     }
 
-    prelude::S_OK
+    base::S_OK
 }
 
 /// 解锁处理流程。
@@ -124,11 +124,11 @@ pub fn unlock_for_process(obj: &mut ApoObject) -> windows::core::HRESULT {
     }
 
     if !obj.state.is_locked {
-        return prelude::S_FALSE; // 未锁定，无需解锁
+        return base::S_FALSE; // 未锁定，无需解锁
     }
 
     obj.state.unlock_for_process();
-    prelude::S_OK
+    base::S_OK
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -239,7 +239,7 @@ mod tests {
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let config = stereo_config();
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(obj.state.is_locked);
         assert_eq!(obj.state.sample_rate, 48000);
         assert_eq!(obj.state.input_channel_count, 2);
@@ -255,7 +255,7 @@ mod tests {
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let config = surround_config();
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert_eq!(obj.state.input_channel_count, 6);
         assert_eq!(obj.state.channel_mask, 0x3F);
         drop(obj);
@@ -269,7 +269,7 @@ mod tests {
 
         lock_for_process(&mut obj, &config);
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::E_FAIL);
+        assert_eq!(hr, base::E_FAIL);
         drop(obj);
     }
 
@@ -285,7 +285,7 @@ mod tests {
             }],
         };
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::E_FAIL);
+        assert_eq!(hr, base::E_FAIL);
         drop(obj);
     }
 
@@ -301,7 +301,7 @@ mod tests {
             outputs: vec![],
         };
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::E_FAIL);
+        assert_eq!(hr, base::E_FAIL);
         drop(obj);
     }
 
@@ -320,7 +320,7 @@ mod tests {
             }],
         };
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::E_FAIL);
+        assert_eq!(hr, base::E_FAIL);
         drop(obj);
     }
 
@@ -339,7 +339,7 @@ mod tests {
             }],
         };
         let hr = lock_for_process(&mut obj, &config);
-        assert_eq!(hr, prelude::E_FAIL);
+        assert_eq!(hr, base::E_FAIL);
         drop(obj);
     }
 
@@ -355,7 +355,7 @@ mod tests {
         assert!(obj.state.is_locked);
 
         let hr = unlock_for_process(&mut obj);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!obj.state.is_locked);
         assert_eq!(obj.state.sample_rate, 0);
         assert_eq!(obj.state.input_channel_count, 0);
@@ -367,7 +367,7 @@ mod tests {
         inst_count::reset_for_test();
         let mut obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let hr = unlock_for_process(&mut obj);
-        assert_eq!(hr, prelude::S_FALSE); // 未锁定
+        assert_eq!(hr, base::S_FALSE); // 未锁定
         drop(obj);
     }
 
@@ -378,17 +378,17 @@ mod tests {
 
         // 第一次锁定
         let config1 = stereo_config();
-        assert_eq!(lock_for_process(&mut obj, &config1), prelude::S_OK);
+        assert_eq!(lock_for_process(&mut obj, &config1), base::S_OK);
         assert_eq!(obj.state.sample_rate, 48000);
         assert_eq!(obj.state.input_channel_count, 2);
 
         // 解锁
-        assert_eq!(unlock_for_process(&mut obj), prelude::S_OK);
+        assert_eq!(unlock_for_process(&mut obj), base::S_OK);
         assert!(!obj.state.is_locked);
 
         // 第二次锁定（不同配置）
         let config2 = surround_config();
-        assert_eq!(lock_for_process(&mut obj, &config2), prelude::S_OK);
+        assert_eq!(lock_for_process(&mut obj, &config2), base::S_OK);
         assert_eq!(obj.state.input_channel_count, 6);
 
         drop(obj);
@@ -543,7 +543,7 @@ mod tests {
 
         // Lock
         let config = stereo_config();
-        assert_eq!(lock_for_process(&mut obj, &config), prelude::S_OK);
+        assert_eq!(lock_for_process(&mut obj, &config), base::S_OK);
         assert!(obj.state.is_locked);
         assert_eq!(obj.get_input_channel_count(), 2);
 
@@ -551,7 +551,7 @@ mod tests {
         assert!(obj.state.is_locked);
 
         // Unlock
-        assert_eq!(unlock_for_process(&mut obj), prelude::S_OK);
+        assert_eq!(unlock_for_process(&mut obj), base::S_OK);
         assert!(!obj.state.is_locked);
         assert_eq!(obj.get_input_channel_count(), 0);
 

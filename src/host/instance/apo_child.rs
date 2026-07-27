@@ -18,7 +18,7 @@ use windows::core::{GUID, HRESULT, IUnknown};
 use crate::sys::com::apo_abi::{
     IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, REFERENCE_TIME,
 };
-use crate::sys::com::prelude;
+use crate::sys::com::base;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // COM vtable 布局常量
@@ -146,7 +146,7 @@ impl ChildApo {
     /// 重置子 APO（`Reset`，vtable[3]）。
     pub fn reset(&self) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return prelude::E_POINTER;
+            return base::E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 3);
@@ -195,7 +195,7 @@ impl ChildApo {
     /// 解锁子 APO（`UnlockForProcess`，vtable[4]）。
     pub fn unlock_for_process(&self) -> HRESULT {
         if self.iapo_cfg_ptr.is_null() {
-            return prelude::E_POINTER;
+            return base::E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_cfg_ptr, 4);
@@ -319,13 +319,13 @@ mod tests {
     #[test]
     fn null_child_reset_returns_error() {
         let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.reset(), prelude::E_POINTER);
+        assert_eq!(apo.reset(), base::E_POINTER);
     }
 
     #[test]
     fn null_child_unlock_returns_error() {
         let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.unlock_for_process(), prelude::E_POINTER);
+        assert_eq!(apo.unlock_for_process(), base::E_POINTER);
     }
 
     #[test]

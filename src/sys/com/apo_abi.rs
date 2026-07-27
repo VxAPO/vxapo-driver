@@ -8,7 +8,7 @@
 use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, interface};
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 接口 GUIDs（来自 audioenginebaseapo.h）
+// 接口 GUIDs（来自 audioenginebaseapo.h / audiomediatype.h）
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// `IAudioProcessingObject` — 基础 APO 接口
@@ -29,18 +29,18 @@ pub const IID_IAPO_RT: GUID = GUID::from_values(
 
 /// `IAudioProcessingObjectConfiguration` — 配置接口
 pub const IID_IAPO_CONFIG: GUID = GUID::from_values(
-    0x0E5D4480,
-    0x149E,
-    0x4842,
-    [0xB6, 0xE0, 0x74, 0xB9, 0x0A, 0x48, 0x59, 0xDE],
+    0x0E5ED805,
+    0xABA6,
+    0x49C3,
+    [0x8F, 0x9A, 0x2B, 0x8C, 0x88, 0x9C, 0x4F, 0xA8],
 );
 
 /// `IAudioMediaType` — 音频媒体类型（格式协商）
 pub const IID_IAUDIO_MEDIA_TYPE: GUID = GUID::from_values(
-    0x4E9966C0,
-    0xE244,
-    0x4908,
-    [0xA5, 0x87, 0x3D, 0x28, 0x8C, 0x22, 0x3F, 0x24],
+    0x4E997F73,
+    0xB71F,
+    0x4798,
+    [0x87, 0x3B, 0xED, 0x7D, 0xFC, 0xF1, 0x5B, 0x4D],
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -71,8 +71,8 @@ impl APO_FLAG {
     pub const BITSPERSAMPLE_MUST_MATCH: Self = Self(0x0000_0008);
     /// 混音器 APO
     pub const MIXER: Self = Self(0x0000_0010);
-    /// 默认标志
-    pub const DEFAULT: Self = Self(0x0000_0020);
+    /// 默认标志（SAMPLESPERFRAME | FRAMESPERSECOND | BITSPERSAMPLE = 0xE）
+    pub const DEFAULT: Self = Self(0x0000_000E);
 }
 
 impl std::ops::BitOr for APO_FLAG {
@@ -95,6 +95,12 @@ impl std::ops::BitAnd for APO_FLAG {
     }
 }
 
+impl std::ops::BitAndAssign for APO_FLAG {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 枚举类型
 // ══════════════════════════════════════════════════════════════════════════════
@@ -103,24 +109,22 @@ impl std::ops::BitAnd for APO_FLAG {
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AUDIO_FLOW_TYPE {
-    /// 渲染（回放）路径 — 应用 → 扬声器
-    RENDER = 0,
-    /// 捕获路径 — 麦克风 → 应用
-    CAPTURE = 1,
+    /// 渲染（回放）路径 — 拉模式
+    PULL = 0,
+    /// 捕获路径 — 推模式
+    PUSH = 1,
 }
 
-/// APO 连接缓冲区类型（`LockForProcess` 时描述缓冲区状态）。
-#[repr(u32)]
+/// APO 连接缓冲区类型（`LockForProcess` 时描述缓冲区分配方式）。
+#[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum APO_BUFFER_TYPE {
-    /// 缓冲区无效
-    INVALID = 0,
-    /// 常量缓冲区
-    CONSTANT = 1,
-    /// 静音缓冲区
-    SILENT = 2,
-    /// 零内存缓冲区
-    ZERO_MEMORY = 3,
+pub enum APO_CONNECTION_BUFFER_TYPE {
+    /// 由 APO 引擎分配的缓冲区
+    ALLOCATED = 0,
+    /// 外部提供的缓冲区
+    EXTERNAL = 1,
+    /// 依赖型缓冲区
+    DEPENDANT = 2,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +139,50 @@ pub const BUFFER_VALID: u32 = 0x01;
 pub const BUFFER_SILENT: u32 = 0x02;
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 缓冲区签名常量（APO_CONNECTION_DESCRIPTOR / APO_CONNECTION_PROPERTY 验证用）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// `APO_CONNECTION_DESCRIPTOR` 签名（'ACDS'）。
+pub const APO_CONNECTION_DESCRIPTOR_SIGNATURE: u32 = u32::from_le_bytes(*b"ACDS");
+/// `APO_CONNECTION_PROPERTY` 签名（'ACPS'）。
+pub const APO_CONNECTION_PROPERTY_SIGNATURE: u32 = u32::from_le_bytes(*b"ACPS");
+/// `APO_CONNECTION_PROPERTY` V2 签名（'ACP2'）。
+pub const APO_CONNECTION_PROPERTY_V2_SIGNATURE: u32 = u32::from_le_bytes(*b"ACP2");
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 比较标志常量（IAudioMediaType::IsEqual 返回值解释）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 格式类型 GUID 相等。
+pub const AUDIOMEDIATYPE_EQUAL_FORMAT_TYPES: u32 = 0x0000_0002;
+/// 格式数据相等。
+pub const AUDIOMEDIATYPE_EQUAL_FORMAT_DATA: u32 = 0x0000_0004;
+/// 用户数据相等。
+pub const AUDIOMEDIATYPE_EQUAL_FORMAT_USER_DATA: u32 = 0x0000_0008;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// APO 专用 HRESULT（facility 0x87D）
+//
+// 注意：HRESULT::message() 涉及系统调用和堆分配，
+// 禁止在 APOProcess 实时路径中使用。实时路径中仅使用 is_ok() / is_err() 进行判断。
+// ══════════════════════════════════════════════════════════════════════════════
+
+pub const APOERR_ALREADY_INITIALIZED:          HRESULT = HRESULT(0x887D_0001u32 as i32);
+pub const APOERR_NOT_INITIALIZED:              HRESULT = HRESULT(0x887D_0002u32 as i32);
+pub const APOERR_FORMAT_NOT_SUPPORTED:         HRESULT = HRESULT(0x887D_0003u32 as i32);
+pub const APOERR_INVALID_APO_CLSID:            HRESULT = HRESULT(0x887D_0004u32 as i32);
+pub const APOERR_BUFFERS_OVERLAP:              HRESULT = HRESULT(0x887D_0005u32 as i32);
+pub const APOERR_ALREADY_UNLOCKED:             HRESULT = HRESULT(0x887D_0006u32 as i32);
+pub const APOERR_NUM_CONNECTIONS_INVALID:      HRESULT = HRESULT(0x887D_0007u32 as i32);
+pub const APOERR_INVALID_OUTPUT_MAXFRAMECOUNT: HRESULT = HRESULT(0x887D_0008u32 as i32);
+pub const APOERR_INVALID_CONNECTION_FORMAT:    HRESULT = HRESULT(0x887D_0009u32 as i32);
+pub const APOERR_APO_LOCKED:                   HRESULT = HRESULT(0x887D_000Au32 as i32);
+pub const APOERR_INVALID_COEFFCOUNT:           HRESULT = HRESULT(0x887D_000Bu32 as i32);
+pub const APOERR_INVALID_COEFFICIENT:          HRESULT = HRESULT(0x887D_000Cu32 as i32);
+pub const APOERR_INVALID_CURVE_PARAM:          HRESULT = HRESULT(0x887D_000Du32 as i32);
+pub const APOERR_INVALID_INPUTID:              HRESULT = HRESULT(0x887D_000Eu32 as i32);
+
+// ══════════════════════════════════════════════════════════════════════════════
 // POD 结构体
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -142,6 +190,7 @@ pub const BUFFER_SILENT: u32 = 0x02;
 ///
 /// 对应 `com/reg_props.rs` 中的实际属性实例（Note 42）。
 #[repr(C)]
+#[derive(Clone)]
 pub struct APO_REG_PROPERTIES {
     pub clsid: GUID,
     pub flags: APO_FLAG,
@@ -156,15 +205,19 @@ pub struct APO_REG_PROPERTIES {
     pub min_output_connections: u32,
     pub max_output_connections: u32,
     pub max_instances: u32,
-    pub audio_flow_type: AUDIO_FLOW_TYPE,
+    /// APO 支持的 COM 接口数量
+    pub num_apo_interfaces: u32,
+    /// APO 支持的 COM 接口 IID 列表
+    pub iid_apo_interface_list: [GUID; 1],
 }
 
 /// APO 连接描述符（`LockForProcess` 参数）。
 ///
 /// 描述一个输入或输出连接的缓冲区、帧数上限和格式。
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct APO_CONNECTION_DESCRIPTOR {
-    pub buffer_type: APO_BUFFER_TYPE,
+    pub buffer_type: APO_CONNECTION_BUFFER_TYPE,
     /// 缓冲区指针（`UINT_PTR`，用 `usize` 匹配平台位宽）
     pub buffer: usize,
     pub max_frame_count: u32,
@@ -177,6 +230,7 @@ pub struct APO_CONNECTION_DESCRIPTOR {
 ///
 /// `flags` 使用 `BUFFER_INVALID` / `BUFFER_VALID` / `BUFFER_SILENT`（Note 11）。
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct APO_CONNECTION_PROPERTY {
     /// 缓冲区指针（`UINT_PTR`）
     pub buffer: usize,
@@ -184,6 +238,26 @@ pub struct APO_CONNECTION_PROPERTY {
     pub size: u32,
     /// `BUFFER_*` 标志
     pub flags: u32,
+}
+
+/// 未压缩音频格式描述（`GetUncompressedAudioFormat` 输出结构）。
+///
+/// `fFramesPerSecond` 是 `f32`（`FLOAT`），不是 `f64`。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UNCOMPRESSED_AUDIO_FORMAT {
+    /// 格式类型 GUID（如 `KSDATAFORMAT_SUBTYPE_PCM`）
+    pub guid_format_type: GUID,
+    /// 每帧采样数
+    pub dw_samples_per_frame: u32,
+    /// 每个样本容器字节数
+    pub dw_bytes_per_sample_container: u32,
+    /// 每个样本有效位数
+    pub dw_valid_bits_per_sample: u32,
+    /// 采样率（`FLOAT` = `f32`）
+    pub f_frames_per_second: f32,
+    /// 声道掩码
+    pub dw_channel_mask: u32,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -196,12 +270,16 @@ pub struct APO_CONNECTION_PROPERTY {
 /// 音频媒体类型接口 — 格式协商用。
 ///
 /// `GetAudioFormat()` 返回底层 `WAVEFORMATEX` 的只读指针。
-#[interface("4e9966c0-e244-4908-a587-3d288c223f24")]
+#[interface("4e997f73-b71f-4798-873b-ed7dfcf15b4d")]
 pub unsafe trait IAudioMediaType: IUnknown {
-    /// 返回只读 `WAVEFORMATEX*`。生命周期由 COM 对象管理。
-    fn GetAudioFormat(&self) -> *const std::ffi::c_void;
+    /// 判断是否为压缩格式。结果写入 `*pf_compressed`（`BOOL` 用 `u32`）。
+    fn IsCompressedFormat(&self, pf_compressed: *mut u32) -> HRESULT;
     /// 比较两个媒体类型，结果写入 `*pdw_flags`。
     fn IsEqual(&self, p_type: *mut IAudioMediaType, pdw_flags: *mut u32) -> HRESULT;
+    /// 返回只读 `WAVEFORMATEX*`。生命周期由 COM 对象管理。
+    fn GetAudioFormat(&self) -> *const std::ffi::c_void;
+    /// 获取未压缩格式描述。仅当 `IsCompressedFormat` 返回 TRUE 时调用。
+    fn GetUncompressedAudioFormat(&self, p_format: *mut UNCOMPRESSED_AUDIO_FORMAT) -> HRESULT;
 }
 
 /// 基础 APO 接口 — 注册、格式协商、延迟查询。
@@ -213,17 +291,19 @@ pub unsafe trait IAudioProcessingObject: IUnknown {
     fn GetLatency(&self, p_latency: *mut REFERENCE_TIME) -> HRESULT;
     /// 获取 APO 注册属性。调用方负责 `CoTaskMemFree` 释放。
     fn GetRegistrationProperties(&self, pp_props: *mut *mut APO_REG_PROPERTIES) -> HRESULT;
+    /// 初始化 APO。引擎实例化后调用，传入初始化数据。
+    fn Initialize(&self, cb_data_size: u32, pby_data: *mut u8) -> HRESULT;
     /// 查询输入格式支持。返回 `S_FALSE` 时表示返回替代格式。
     fn IsInputFormatSupported(
         &self,
-        p_output_format: *mut IAudioMediaType,
+        p_opposite_format: *mut IAudioMediaType,
         p_requested: *mut IAudioMediaType,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT;
     /// 查询输出格式支持。返回 `S_FALSE` 时表示返回替代格式。
     fn IsOutputFormatSupported(
         &self,
-        p_input_format: *mut IAudioMediaType,
+        p_opposite_format: *mut IAudioMediaType,
         p_requested: *mut IAudioMediaType,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT;
@@ -254,7 +334,7 @@ pub unsafe trait IAudioProcessingObjectRT: IUnknown {
 ///
 /// `LockForProcess` 在格式协商完成后调用，将连接描述符固化；
 /// `UnlockForProcess` 释放锁定状态。
-#[interface("0e5d4480-149e-4842-b6e0-74b90a4859de")]
+#[interface("0e5ed805-aba6-49c3-8f9a-2b8c889c4fa8")]
 pub unsafe trait IAudioProcessingObjectConfiguration: IUnknown {
     /// 锁定处理流程，传入输入输出连接描述符。
     fn LockForProcess(
@@ -270,34 +350,110 @@ pub unsafe trait IAudioProcessingObjectConfiguration: IUnknown {
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 编译期断言（Note 1）
+//
+// 精确值断言 + offset_of 偏移校验，确保 ABI 布局与 Windows SDK 完全一致。
+// 含指针的结构体通过 cfg(target_pointer_width) 区分 32/64 位预期值。
 // ══════════════════════════════════════════════════════════════════════════════
 
 const _: () = {
-    // POD 类型大小验证
+    // ── 基础类型大小 ──────────────────────────────────────────────────────
     assert!(std::mem::size_of::<APO_FLAG>() == 4, "APO_FLAG must be 4 bytes");
     assert!(
         std::mem::size_of::<AUDIO_FLOW_TYPE>() == 4,
         "AUDIO_FLOW_TYPE must be 4 bytes"
     );
     assert!(
-        std::mem::size_of::<APO_BUFFER_TYPE>() == 4,
-        "APO_BUFFER_TYPE must be 4 bytes"
+        std::mem::size_of::<APO_CONNECTION_BUFFER_TYPE>() == 4,
+        "APO_CONNECTION_BUFFER_TYPE must be 4 bytes"
     );
-    // APO_REG_PROPERTIES 至少包含 GUID(16) + flags(4) + padding(?) + 2×[u16;256](1024) + 7×u32(28) + flow(4)
+
+    // ── 枚举 repr 语义（确保 repr(i32) 生效，C 侧期望有符号 32 位值）──
+    assert!(APO_CONNECTION_BUFFER_TYPE::ALLOCATED as i32 == 0);
+    assert!(APO_CONNECTION_BUFFER_TYPE::EXTERNAL as i32 == 1);
+    assert!(APO_CONNECTION_BUFFER_TYPE::DEPENDANT as i32 == 2);
+
+    // ── UNCOMPRESSED_AUDIO_FORMAT（无指针，跨平台一致）────────────────────
+    // GUID(16) + 4×u32(16) + f32(4) + u32(4) = 36
     assert!(
-        std::mem::size_of::<APO_REG_PROPERTIES>() > 1024,
-        "APO_REG_PROPERTIES too small"
+        std::mem::size_of::<UNCOMPRESSED_AUDIO_FORMAT>() == 36,
+        "UNCOMPRESSED_AUDIO_FORMAT must be 36 bytes"
     );
-    // APO_CONNECTION_DESCRIPTOR 至少包含 enum(4) + ptr(8) + u32(4) + ptr(8) + u32(4) + padding
+    assert!(std::mem::offset_of!(UNCOMPRESSED_AUDIO_FORMAT, guid_format_type) == 0);
+    assert!(std::mem::offset_of!(UNCOMPRESSED_AUDIO_FORMAT, dw_samples_per_frame) == 16);
     assert!(
-        std::mem::size_of::<APO_CONNECTION_DESCRIPTOR>() >= 24,
-        "APO_CONNECTION_DESCRIPTOR too small"
+        std::mem::offset_of!(UNCOMPRESSED_AUDIO_FORMAT, dw_bytes_per_sample_container) == 20
     );
-    // APO_CONNECTION_PROPERTY 至少包含 ptr(8) + u32(4) + u32(4) = 16
     assert!(
-        std::mem::size_of::<APO_CONNECTION_PROPERTY>() >= 16,
-        "APO_CONNECTION_PROPERTY too small"
+        std::mem::offset_of!(UNCOMPRESSED_AUDIO_FORMAT, dw_valid_bits_per_sample) == 24
     );
+    assert!(std::mem::offset_of!(UNCOMPRESSED_AUDIO_FORMAT, f_frames_per_second) == 28);
+    assert!(std::mem::offset_of!(UNCOMPRESSED_AUDIO_FORMAT, dw_channel_mask) == 32);
+
+    // ── APO_REG_PROPERTIES（无指针，跨平台一致）───────────────────────────
+    // GUID(16) + FLAG(4) + 2×[u16;256](1024) + 8×u32(32) + IID[1](16) = 1092
+    // GUID 对齐为 4（内部最大成员 u32），1092 % 4 == 0，无需尾部填充。
+    assert!(
+        std::mem::size_of::<APO_REG_PROPERTIES>() == 1092,
+        "APO_REG_PROPERTIES must be 1092 bytes"
+    );
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, clsid) == 0);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, flags) == 16);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, sz_name) == 20);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, sz_copyright) == 532);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, major_version) == 1044);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, minor_version) == 1048);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, min_input_connections) == 1052);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, max_input_connections) == 1056);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, min_output_connections) == 1060);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, max_output_connections) == 1064);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, max_instances) == 1068);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, num_apo_interfaces) == 1072);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, iid_apo_interface_list) == 1076);
+
+    // ── 含指针的结构体：平台感知 ──────────────────────────────────────────
+    #[cfg(target_pointer_width = "64")]
+    {
+        // APO_CONNECTION_DESCRIPTOR (40 bytes on x64):
+        //   buffer_type[0..4] + pad[4..8] + buffer[8..16] + max_frame_count[16..20]
+        //   + pad[20..24] + format[24..32] + signature[32..36] + tail_pad[36..40]
+        assert!(
+            std::mem::size_of::<APO_CONNECTION_DESCRIPTOR>() == 40,
+            "APO_CONNECTION_DESCRIPTOR must be 40 bytes on x64"
+        );
+        assert!(std::mem::offset_of!(APO_CONNECTION_DESCRIPTOR, buffer_type) == 0);
+        assert!(std::mem::offset_of!(APO_CONNECTION_DESCRIPTOR, buffer) == 8);
+        assert!(std::mem::offset_of!(APO_CONNECTION_DESCRIPTOR, max_frame_count) == 16);
+        assert!(std::mem::offset_of!(APO_CONNECTION_DESCRIPTOR, format) == 24);
+        assert!(std::mem::offset_of!(APO_CONNECTION_DESCRIPTOR, signature) == 32);
+
+        // APO_CONNECTION_PROPERTY (16 bytes on x64):
+        //   buffer[0..8] + size[8..12] + flags[12..16]
+        assert!(
+            std::mem::size_of::<APO_CONNECTION_PROPERTY>() == 16,
+            "APO_CONNECTION_PROPERTY must be 16 bytes on x64"
+        );
+        assert!(std::mem::offset_of!(APO_CONNECTION_PROPERTY, buffer) == 0);
+        assert!(std::mem::offset_of!(APO_CONNECTION_PROPERTY, size) == 8);
+        assert!(std::mem::offset_of!(APO_CONNECTION_PROPERTY, flags) == 12);
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    {
+        // APO_CONNECTION_DESCRIPTOR (20 bytes on x32):
+        //   buffer_type[0..4] + buffer[4..8] + max_frame_count[8..12]
+        //   + format[12..16] + signature[16..20]
+        assert!(
+            std::mem::size_of::<APO_CONNECTION_DESCRIPTOR>() == 20,
+            "APO_CONNECTION_DESCRIPTOR must be 20 bytes on x32"
+        );
+
+        // APO_CONNECTION_PROPERTY (12 bytes on x32):
+        //   buffer[0..4] + size[4..8] + flags[8..12]
+        assert!(
+            std::mem::size_of::<APO_CONNECTION_PROPERTY>() == 12,
+            "APO_CONNECTION_PROPERTY must be 12 bytes on x32"
+        );
+    }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -307,6 +463,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_core::Interface;
 
     // ── GUID 格式验证 ────────────────────────────────────────────────────────
 
@@ -330,26 +487,36 @@ mod tests {
 
     #[test]
     fn guid_iapo_config_is_correct() {
-        // 0E5D4480-149E-4842-B6E0-74B90A4859DE
-        assert_eq!(IID_IAPO_CONFIG.data1, 0x0E5D4480);
-        assert_eq!(IID_IAPO_CONFIG.data2, 0x149E);
-        assert_eq!(IID_IAPO_CONFIG.data3, 0x4842);
+        // 0E5ED805-ABA6-49C3-8F9A-2B8C889C4FA8
+        assert_eq!(IID_IAPO_CONFIG.data1, 0x0E5ED805);
+        assert_eq!(IID_IAPO_CONFIG.data2, 0xABA6);
+        assert_eq!(IID_IAPO_CONFIG.data3, 0x49C3);
         assert_eq!(
             IID_IAPO_CONFIG.data4,
-            [0xB6, 0xE0, 0x74, 0xB9, 0x0A, 0x48, 0x59, 0xDE]
+            [0x8F, 0x9A, 0x2B, 0x8C, 0x88, 0x9C, 0x4F, 0xA8]
         );
     }
 
     #[test]
     fn guid_iaudio_media_type_is_correct() {
-        // 4E9966C0-E244-4908-A587-3D288C223F24
-        assert_eq!(IID_IAUDIO_MEDIA_TYPE.data1, 0x4E9966C0);
-        assert_eq!(IID_IAUDIO_MEDIA_TYPE.data2, 0xE244);
-        assert_eq!(IID_IAUDIO_MEDIA_TYPE.data3, 0x4908);
+        // 4E997F73-B71F-4798-873B-ED7DFCF15B4D
+        assert_eq!(IID_IAUDIO_MEDIA_TYPE.data1, 0x4E997F73);
+        assert_eq!(IID_IAUDIO_MEDIA_TYPE.data2, 0xB71F);
+        assert_eq!(IID_IAUDIO_MEDIA_TYPE.data3, 0x4798);
         assert_eq!(
             IID_IAUDIO_MEDIA_TYPE.data4,
-            [0xA5, 0x87, 0x3D, 0x28, 0x8C, 0x22, 0x3F, 0x24]
+            [0x87, 0x3B, 0xED, 0x7D, 0xFC, 0xF1, 0x5B, 0x4D]
         );
+    }
+
+    // ── GUID 一致性：IID_* 常量与 #[interface] 宏生成的 IID 匹配 ───────────
+
+    #[test]
+    fn interface_guids_match_constants() {
+        assert_eq!(IID_IAPO, IAudioProcessingObject::IID);
+        assert_eq!(IID_IAPO_RT, IAudioProcessingObjectRT::IID);
+        assert_eq!(IID_IAPO_CONFIG, IAudioProcessingObjectConfiguration::IID);
+        assert_eq!(IID_IAUDIO_MEDIA_TYPE, IAudioMediaType::IID);
     }
 
     // ── APO_FLAG 位操作 ──────────────────────────────────────────────────────
@@ -375,20 +542,32 @@ mod tests {
         assert_eq!(flags.0, 0x0000_0003);
     }
 
+    #[test]
+    fn apo_flag_bitand_assign() {
+        let mut flags = APO_FLAG::INPLACE | APO_FLAG::BITSPERSAMPLE_MUST_MATCH;
+        flags &= APO_FLAG::INPLACE;
+        assert_eq!(flags, APO_FLAG::INPLACE);
+    }
+
+    #[test]
+    fn apo_flag_default_value() {
+        // DEFAULT = SAMPLESPERFRAME(0x2) | FRAMESPERSECOND(0x4) | BITSPERSAMPLE(0x8) = 0xE
+        assert_eq!(APO_FLAG::DEFAULT.0, 0x0000_000E);
+    }
+
     // ── 枚举值验证 ──────────────────────────────────────────────────────────
 
     #[test]
     fn audio_flow_type_values() {
-        assert_eq!(AUDIO_FLOW_TYPE::RENDER as u32, 0);
-        assert_eq!(AUDIO_FLOW_TYPE::CAPTURE as u32, 1);
+        assert_eq!(AUDIO_FLOW_TYPE::PULL as u32, 0);
+        assert_eq!(AUDIO_FLOW_TYPE::PUSH as u32, 1);
     }
 
     #[test]
-    fn apo_buffer_type_values() {
-        assert_eq!(APO_BUFFER_TYPE::INVALID as u32, 0);
-        assert_eq!(APO_BUFFER_TYPE::CONSTANT as u32, 1);
-        assert_eq!(APO_BUFFER_TYPE::SILENT as u32, 2);
-        assert_eq!(APO_BUFFER_TYPE::ZERO_MEMORY as u32, 3);
+    fn apo_connection_buffer_type_values() {
+        assert_eq!(APO_CONNECTION_BUFFER_TYPE::ALLOCATED as i32, 0);
+        assert_eq!(APO_CONNECTION_BUFFER_TYPE::EXTERNAL as i32, 1);
+        assert_eq!(APO_CONNECTION_BUFFER_TYPE::DEPENDANT as i32, 2);
     }
 
     // ── 缓冲区标志位 ────────────────────────────────────────────────────────
@@ -400,10 +579,53 @@ mod tests {
         assert_eq!(BUFFER_SILENT, 0x02);
     }
 
-    // ── 结构体布局验证 ──────────────────────────────────────────────────────
+    // ── 缓冲区签名常量 ──────────────────────────────────────────────────────
+
     #[test]
-    fn apo_connection_property_sizes() {
-        assert_eq!(std::mem::size_of::<APO_CONNECTION_PROPERTY>(), 16);
+    fn signature_constants() {
+        assert_eq!(APO_CONNECTION_DESCRIPTOR_SIGNATURE, u32::from_le_bytes(*b"ACDS"));
+        assert_eq!(APO_CONNECTION_PROPERTY_SIGNATURE, u32::from_le_bytes(*b"ACPS"));
+        assert_eq!(APO_CONNECTION_PROPERTY_V2_SIGNATURE, u32::from_le_bytes(*b"ACP2"));
+    }
+
+    // ── 比较标志常量 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn comparison_flag_values() {
+        assert_eq!(AUDIOMEDIATYPE_EQUAL_FORMAT_TYPES, 0x0000_0002);
+        assert_eq!(AUDIOMEDIATYPE_EQUAL_FORMAT_DATA, 0x0000_0004);
+        assert_eq!(AUDIOMEDIATYPE_EQUAL_FORMAT_USER_DATA, 0x0000_0008);
+        // 完全相等时三个标志全部设置 = 0xE
+        let all_equal = AUDIOMEDIATYPE_EQUAL_FORMAT_TYPES
+            | AUDIOMEDIATYPE_EQUAL_FORMAT_DATA
+            | AUDIOMEDIATYPE_EQUAL_FORMAT_USER_DATA;
+        assert_eq!(all_equal, 0x0000_000E);
+    }
+
+    // ── 结构体布局验证（平台感知）───────────────────────────────────────────
+
+    #[test]
+    fn apo_connection_descriptor_size() {
+        let expected = if cfg!(target_pointer_width = "64") { 40 } else { 20 };
+        assert_eq!(std::mem::size_of::<APO_CONNECTION_DESCRIPTOR>(), expected);
+    }
+
+    #[test]
+    fn apo_connection_property_size() {
+        let expected = if cfg!(target_pointer_width = "64") { 16 } else { 12 };
+        assert_eq!(std::mem::size_of::<APO_CONNECTION_PROPERTY>(), expected);
+    }
+
+    #[test]
+    fn uncompressed_audio_format_size() {
+        // GUID(16) + u32(4)×4 + f32(4) = 36 字节
+        assert_eq!(std::mem::size_of::<UNCOMPRESSED_AUDIO_FORMAT>(), 36);
+    }
+
+    #[test]
+    fn apo_reg_properties_size() {
+        // GUID(16) + FLAG(4) + 2×[u16;256](1024) + 8×u32(32) + IID[1](16) = 1092
+        assert_eq!(std::mem::size_of::<APO_REG_PROPERTIES>(), 1092);
     }
 
     // ── REFERENCE_TIME 别名 ─────────────────────────────────────────────────

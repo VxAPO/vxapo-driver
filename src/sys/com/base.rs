@@ -1,4 +1,4 @@
-//! sys/com/prelude.rs — COM 基础 ABI 定义
+//! sys/com/base.rs — COM 基础 ABI 定义
 //!
 //! 提供 `sys/com/` 层共用的类型重导出、常量与辅助函数。
 //! 所有 `sys/com/` 子模块统一从此文件导入，避免在各处重复书写完整 `windows::` 路径。
@@ -55,6 +55,12 @@ pub const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057u32 as i32);
 
 /// 类工厂：请求的 CLSID 未注册（Note 4）。
 pub const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x8004_0111u32 as i32);
+
+/// 内存分配失败。
+pub const E_OUTOFMEMORY: HRESULT = HRESULT(0x8007_000Eu32 as i32);
+
+/// 类不支持聚合。
+pub const CLASS_E_NOAGGREGATION: HRESULT = HRESULT(0x8004_0110u32 as i32);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 辅助函数

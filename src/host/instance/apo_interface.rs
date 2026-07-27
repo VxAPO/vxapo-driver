@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::core::{GUID, HRESULT, IUnknown};
 use windows_core::Interface;
 
-use crate::sys::com::prelude;
+use crate::sys::com::base;
 use crate::sys::com::apo_abi::{APO_REG_PROPERTIES, REFERENCE_TIME};
 use crate::host::instance::reg_props::{props_for_clsid};
 use crate::host::instance::object::ApoObjectState;
@@ -129,7 +129,7 @@ impl ApoObject {
                 *ppv = self as *const Self as *mut c_void;
             }
             self.add_ref();
-            prelude::S_OK
+            base::S_OK
         } else if iid == crate::sys::com::apo_abi::IID_IAPO_RT
             || iid == crate::sys::com::apo_abi::IID_IAPO_CONFIG
         {
@@ -138,12 +138,12 @@ impl ApoObject {
                 *ppv = self as *const Self as *mut c_void;
             }
             self.add_ref();
-            prelude::S_OK
+            base::S_OK
         } else {
             unsafe {
                 *ppv = std::ptr::null_mut();
             }
-            prelude::E_NOINTERFACE
+            base::E_NOINTERFACE
         }
     }
 
@@ -292,7 +292,7 @@ mod tests {
         let obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = obj.query_interface(&IUnknown::IID, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
         assert_eq!(obj.ref_count(), 2);
         obj.release();
@@ -305,7 +305,7 @@ mod tests {
         let obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = obj.query_interface(&crate::sys::com::apo_abi::IID_IAPO, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
         obj.release();
         drop(obj);
@@ -317,7 +317,7 @@ mod tests {
         let obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = obj.query_interface(&crate::sys::com::apo_abi::IID_IAPO_RT, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         obj.release();
         drop(obj);
     }
@@ -328,7 +328,7 @@ mod tests {
         let obj = ApoObject::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = obj.query_interface(&crate::sys::com::apo_abi::IID_IAPO_CONFIG, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         obj.release();
         drop(obj);
     }
@@ -341,7 +341,7 @@ mod tests {
         let unknown = GUID::from_values(0xDEADBEEF, 0x1234, 0x5678,
             [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         let hr = obj.query_interface(&unknown, &mut ppv);
-        assert_eq!(hr, prelude::E_NOINTERFACE);
+        assert_eq!(hr, base::E_NOINTERFACE);
         assert!(ppv.is_null());
         drop(obj);
     }

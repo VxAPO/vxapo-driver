@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::core::{GUID, HRESULT, IUnknown, Interface, BOOL};
 use windows::Win32::System::Com::IClassFactory;
 
-use crate::sys::com::prelude;
+use crate::sys::com::base;
 use crate::host::instance::reg_props::{is_vxapo_clsid, CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
 use crate::host::instance::object::ApoObjectState;
 use crate::host::instance::ref_count as inst_count;
@@ -164,13 +164,13 @@ impl VxApoClassFactory {
                 *ppv = self as *const Self as *mut c_void;
             }
             self.add_ref();
-            prelude::S_OK
+            base::S_OK
         } else {
             // SAFETY: ppv 输出参数，置空表示不支持。
             unsafe {
                 *ppv = std::ptr::null_mut();
             }
-            prelude::E_NOINTERFACE
+            base::E_NOINTERFACE
         }
     }
 
@@ -216,7 +216,7 @@ impl VxApoClassFactory {
         // ── 输入验证 ────────────────────────────────────────────────────────
 
         if ppv.is_null() {
-            return prelude::E_POINTER;
+            return base::E_POINTER;
         }
 
         // SAFETY: ppv 保证可写，先置空防止悬挂指针。
@@ -231,7 +231,7 @@ impl VxApoClassFactory {
             // SAFETY: riid 由调用方保证有效。
             let iid = unsafe { *riid };
             if iid != IUnknown::IID {
-                return prelude::E_NOINTERFACE;
+                return base::E_NOINTERFACE;
             }
         }
 
@@ -245,7 +245,7 @@ impl VxApoClassFactory {
         // QueryInterface 成功后 +1
         let hr = query_apo_object(&*boxed, riid, ppv);
 
-        if prelude::failed(hr) {
+        if base::failed(hr) {
             // QI 失败，boxed 被 drop，ref_count 归零时 INST_COUNT 递减。
             drop(boxed);
             return hr;
@@ -256,7 +256,7 @@ impl VxApoClassFactory {
         let (count, _should_drop) = boxed.release();
         if count == 0 {
             // 不应走到这里（QI 刚成功，至少还有客户端持有）
-            return prelude::E_UNEXPECTED;
+            return base::E_UNEXPECTED;
         }
 
         // Note 3: 最终 ref_count = 1，归客户端。
@@ -264,7 +264,7 @@ impl VxApoClassFactory {
         // Phase 4 用 #[implement] 宏管理 COM 生命周期后可移除此泄漏。
         let _ = Box::into_raw(boxed);
 
-        prelude::S_OK
+        base::S_OK
     }
 
     /// 锁定/解锁服务器（Note 2）。
@@ -276,7 +276,7 @@ impl VxApoClassFactory {
         } else {
             lock_decrement();
         }
-        prelude::S_OK
+        base::S_OK
     }
 }
 
@@ -298,14 +298,14 @@ fn query_apo_object(
             *ppv = obj as *const ApoObject as *mut c_void;
         }
         obj.add_ref(); // Note 3: QI 成功 +1
-        prelude::S_OK
+        base::S_OK
     } else {
         // Phase 4 将在此添加 IAudioProcessingObject / RT / Config 的匹配
         // SAFETY: ppv 输出参数，置空。
         unsafe {
             *ppv = std::ptr::null_mut();
         }
-        prelude::E_NOINTERFACE
+        base::E_NOINTERFACE
     }
 }
 
@@ -371,7 +371,7 @@ mod tests {
         lock_reset_for_test();
         let factory = VxApoClassFactory::new(CLSID_VXAPO_PRE_MIX);
         let hr = factory.lock_server(BOOL::from(true));
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert_eq!(lock_count(), 1);
         lock_decrement(); // cleanup
     }
@@ -382,7 +382,7 @@ mod tests {
         lock_increment();
         let factory = VxApoClassFactory::new(CLSID_VXAPO_PRE_MIX);
         let hr = factory.lock_server(BOOL::from(false));
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert_eq!(lock_count(), 0);
     }
 
@@ -421,7 +421,7 @@ mod tests {
         let factory = VxApoClassFactory::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = factory.query_interface(&IUnknown::IID, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
         // release the extra ref from QI
         factory.release();
@@ -432,7 +432,7 @@ mod tests {
         let factory = VxApoClassFactory::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = factory.query_interface(&IClassFactory::IID, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
         factory.release();
     }
@@ -448,7 +448,7 @@ mod tests {
             [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         );
         let hr = factory.query_interface(&unknown_guid, &mut ppv);
-        assert_eq!(hr, prelude::E_NOINTERFACE);
+        assert_eq!(hr, base::E_NOINTERFACE);
         assert!(ppv.is_null());
     }
 
@@ -479,7 +479,7 @@ mod tests {
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = factory.create_instance(None, &IUnknown::IID, &mut ppv);
 
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
         // INST_COUNT 应该 +1
         assert_eq!(inst_count::get(), 1);
@@ -499,7 +499,7 @@ mod tests {
     fn create_instance_null_ppv() {
         let factory = VxApoClassFactory::new(CLSID_VXAPO_PRE_MIX);
         let hr = factory.create_instance(None, &IUnknown::IID, std::ptr::null_mut());
-        assert_eq!(hr, prelude::E_POINTER);
+        assert_eq!(hr, base::E_POINTER);
     }
 
     #[test]
@@ -509,7 +509,7 @@ mod tests {
         let factory = VxApoClassFactory::new(CLSID_VXAPO_PRE_MIX);
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = factory.create_instance(None, &IUnknown::IID, &mut ppv);
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
 
         // cleanup
         unsafe {

@@ -103,7 +103,7 @@ impl AggregationController {
             None => {
                 // 独立模式不应调用委托版——这是编程错误。
                 // 返回 E_NOINTERFACE 让调用方知道出问题了。
-                super::prelude::E_NOINTERFACE
+                super::base::E_NOINTERFACE
             }
         }
     }
@@ -183,7 +183,7 @@ mod tests {
                 &mut ptr
             },
         );
-        assert_eq!(hr, super::super::prelude::E_NOINTERFACE);
+        assert_eq!(hr, super::super::base::E_NOINTERFACE);
     }
 
     #[test]

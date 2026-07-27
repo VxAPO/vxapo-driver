@@ -29,7 +29,7 @@ use windows::core::{BOOL, GUID, HRESULT};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Registry::*;
 
-use crate::sys::com::prelude;
+use crate::sys::com::base;
 use crate::host::instance::factory::{self};
 use crate::host::instance::ref_count as inst_count;
 
@@ -121,7 +121,7 @@ pub unsafe extern "system" fn DllGetClassObject(
     // ── 输入验证 ────────────────────────────────────────────────────────────
 
     if rclsid.is_null() || riid.is_null() || ppv.is_null() {
-        return prelude::E_POINTER;
+        return base::E_POINTER;
     }
 
     // SAFETY: 由调用方（COM 运行时）保证 rclsid/riid 有效。
@@ -133,14 +133,14 @@ pub unsafe extern "system" fn DllGetClassObject(
     // Phase 4: 切换到 #[implement] COM 生命周期管理后可移除 Box。
     let fac = Box::new(match factory::create_factory(&clsid) {
         Some(f) => f,
-        None => return prelude::CLASS_E_CLASSNOTAVAILABLE,
+        None => return base::CLASS_E_CLASSNOTAVAILABLE,
     });
 
     // ── QueryInterface 获取请求的接口 ───────────────────────────────────────
 
     let hr = fac.query_interface(riid, ppv);
 
-    if prelude::failed(hr) {
+    if base::failed(hr) {
         drop(fac);
         return hr;
     }
@@ -169,9 +169,9 @@ pub unsafe extern "system" fn DllGetClassObject(
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     if inst_count::is_zero() && factory::lock_is_zero() {
-        prelude::S_OK
+        base::S_OK
     } else {
-        prelude::S_FALSE
+        base::S_FALSE
     }
 }
 
@@ -191,7 +191,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
     // 获取 DLL 路径
     let dll_path = match get_dll_path() {
         Some(p) => p,
-        None => return prelude::E_FAIL,
+        None => return base::E_FAIL,
     };
 
     // 注册顺序（Note 29）：PostMix → PreMix
@@ -207,7 +207,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
         }
     }
 
-    prelude::S_OK
+    base::S_OK
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +230,7 @@ pub extern "system" fn DllUnregisterServer() -> HRESULT {
         let _ = unregister_com_class(entry);
     }
 
-    prelude::S_OK
+    base::S_OK
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -286,7 +286,7 @@ fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT>
             None,
         );
         if result.is_err() {
-            return Err(prelude::E_FAIL);
+            return Err(base::E_FAIL);
         }
         hkey
     };
@@ -306,7 +306,7 @@ fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT>
 
     if write_result.is_err() {
         unsafe { let _ = RegCloseKey(hkey); }
-        return Err(prelude::E_FAIL);
+        return Err(base::E_FAIL);
     }
 
     // 写入 ThreadingModel = "Both"（Note 5）
@@ -328,7 +328,7 @@ fn register_com_class(entry: &ClsidEntry, dll_path: &str) -> Result<(), HRESULT>
     }
 
     if tm_result.is_err() {
-        return Err(prelude::E_FAIL);
+        return Err(base::E_FAIL);
     }
 
     Ok(())
@@ -396,7 +396,7 @@ mod tests {
     fn can_unload_when_empty() {
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
-        assert_eq!(DllCanUnloadNow(), prelude::S_OK);
+        assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
 
     #[test]
@@ -407,10 +407,10 @@ mod tests {
         let _obj = crate::host::instance::object::ApoObjectState::new(CLSID_VXAPO_PRE_MIX);
         inst_count::increment();
 
-        assert_eq!(DllCanUnloadNow(), prelude::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
         inst_count::decrement();
-        assert_eq!(DllCanUnloadNow(), prelude::S_OK);
+        assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
 
     #[test]
@@ -419,10 +419,10 @@ mod tests {
         factory::lock_reset_for_test();
 
         factory::lock_increment();
-        assert_eq!(DllCanUnloadNow(), prelude::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
         factory::lock_decrement();
-        assert_eq!(DllCanUnloadNow(), prelude::S_OK);
+        assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
 
     #[test]
@@ -432,13 +432,13 @@ mod tests {
 
         inst_count::increment();
         factory::lock_increment();
-        assert_eq!(DllCanUnloadNow(), prelude::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
         inst_count::decrement();
-        assert_eq!(DllCanUnloadNow(), prelude::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
 
         factory::lock_decrement();
-        assert_eq!(DllCanUnloadNow(), prelude::S_OK);
+        assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
 
     // ── DllGetClassObject ───────────────────────────────────────────────────
@@ -458,7 +458,7 @@ mod tests {
             )
         };
 
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
 
         unsafe { release_factory_ptr(ppv); }
@@ -479,7 +479,7 @@ mod tests {
             )
         };
 
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
 
         unsafe { release_factory_ptr(ppv); }
@@ -499,7 +499,7 @@ mod tests {
             )
         };
 
-        assert_eq!(hr, prelude::CLASS_E_CLASSNOTAVAILABLE);
+        assert_eq!(hr, base::CLASS_E_CLASSNOTAVAILABLE);
         assert!(ppv.is_null());
     }
 
@@ -512,7 +512,7 @@ mod tests {
                 std::ptr::null_mut(),
             )
         };
-        assert_eq!(hr, prelude::E_POINTER);
+        assert_eq!(hr, base::E_POINTER);
     }
 
     // ── DllMain ─────────────────────────────────────────────────────────────
@@ -561,13 +561,13 @@ mod tests {
                 &mut ppv as *mut *mut c_void,
             )
         };
-        assert_eq!(hr, prelude::S_OK);
+        assert_eq!(hr, base::S_OK);
         assert!(!ppv.is_null());
 
         // 2. 释放工厂 — Phase 2 用 Box::from_raw，Phase 4 改用 release_com_ptr。
         unsafe { release_factory_ptr(ppv); }
 
         // 3. 确认可卸载
-        assert_eq!(DllCanUnloadNow(), prelude::S_OK);
+        assert_eq!(DllCanUnloadNow(), base::S_OK);
     }
 }
