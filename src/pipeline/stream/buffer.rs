@@ -1,35 +1,22 @@
 //! pipeline/stream/buffer.rs — 缓冲区标志判定与静音缓冲区处理（Note 11）
 //!
 //! `APOProcess` 的输入/输出 `APO_CONNECTION_PROPERTY` 携带 `flags` 字段，
-//! 指示缓冲区状态（`BUFFER_VALID` / `BUFFER_SILENT` / `BUFFER_INVALID`）。
+//! 指示缓冲区状态（`APO_BUFFER_FLAGS::Valid` / `APO_BUFFER_FLAGS::Silent` / `APO_BUFFER_FLAGS::Invalid`）。
 //!
 //! `allowSilentBufferModification` 在 `APOInitSystemEffects` 初始化阶段读取，
 //! 控制 APO 是否可快速跳过静音帧处理。
 //!
 //! 处理逻辑（Note 11）：
 //! ```text
-//! BUFFER_SILENT + allowSilentBuffer → 遍历采样，全 ≤1e-10 则 SILENT，否则 VALID
-//! BUFFER_SILENT + !allowSilentBuffer → 强制清零，标记 SILENT
-//! BUFFER_VALID                      → 直接 VALID（正常处理）
+//! APO_BUFFER_FLAGS::Silent + allowSilentBuffer → 遍历采样，全 ≤1e-10 则 SILENT，否则 VALID
+//! APO_BUFFER_FLAGS::Silent + !allowSilentBuffer → 强制清零，标记 SILENT
+//! APO_BUFFER_FLAGS::Valid                      → 直接 VALID（正常处理）
 //! 其他标志                          → 不处理
 //! ```
 //!
 //! 此模块运行在实时音频线程中，禁止堆分配与 panic（Note 12）。
 
-// ══════════════════════════════════════════════════════════════════════════════
-// 缓冲区标志位常量
-//
-// 与 apo_abi.rs 中的定义一致，此处重导出方便 engine/ 内部使用。
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 缓冲区无效（未初始化）。
-pub const BUFFER_INVALID: u32 = 0x00;
-
-/// 缓冲区包含有效音频数据。
-pub const BUFFER_VALID: u32 = 0x01;
-
-/// 缓冲区为静音。
-pub const BUFFER_SILENT: u32 = 0x02;
+use crate::sys::com::apo_abi::APO_BUFFER_FLAGS;
 
 /// 静音判定阈值：所有采样的绝对值 ≤ 此值时视为静音。
 ///
@@ -46,9 +33,9 @@ pub enum BufferAction {
     /// 正常处理——缓冲区包含有效音频数据。
     Process,
     /// 快速路径——缓冲区为静音，可跳过 DSP 处理。
-    /// 输出标志应设为 `BUFFER_SILENT`。
+    /// 输出标志应设为 `APO_BUFFER_FLAGS::Silent`。
     Silent,
-    /// 跳过——标志不合法或为 `BUFFER_INVALID`，不处理。
+    /// 跳过——标志不合法或为 `APO_BUFFER_FLAGS::Invalid`，不处理。
     Skip,
 }
 
@@ -61,23 +48,26 @@ pub enum BufferAction {
 /// # 实时安全
 ///
 /// 纯数值计算，无分配、无锁、无 I/O。
-pub fn evaluate_buffer(input_flags: u32, allow_silent_buffer: bool) -> (BufferAction, u32) {
-    match input_flags {
-        BUFFER_VALID => (BufferAction::Process, BUFFER_VALID),
+pub fn evaluate_buffer(
+    flags: APO_BUFFER_FLAGS,
+    allow_silent_buffer: bool,
+) -> (BufferAction, APO_BUFFER_FLAGS) {
+    match flags {
+        APO_BUFFER_FLAGS::Valid => (BufferAction::Process, APO_BUFFER_FLAGS::Valid),
 
-        BUFFER_SILENT => {
+        APO_BUFFER_FLAGS::Silent => {
             if allow_silent_buffer {
                 // 允许静音缓冲区：需要逐采样检查
                 // 返回 Process 让调用方检查实际数据
                 // 调用方检查后若确实静音，设置输出为 SILENT
-                (BufferAction::Process, BUFFER_SILENT)
+                (BufferAction::Process, APO_BUFFER_FLAGS::Silent)
             } else {
                 // 不允许静音缓冲区：强制清零
-                (BufferAction::Silent, BUFFER_SILENT)
+                (BufferAction::Silent, APO_BUFFER_FLAGS::Silent)
             }
         }
 
-        BUFFER_INVALID | _ => (BufferAction::Skip, BUFFER_INVALID),
+        APO_BUFFER_FLAGS::Invalid | _ => (BufferAction::Skip, APO_BUFFER_FLAGS::Invalid),
     }
 }
 
@@ -136,7 +126,7 @@ fn is_silent_generic(samples: &[Vec<f32>], frame_count: usize) -> bool {
 /// 将平面缓冲区所有通道的指定帧数范围清零。
 ///
 /// 用途：
-/// - `BUFFER_SILENT + !allowSilentBuffer` → 强制清零输入（Note 11）
+/// - `APO_BUFFER_FLAGS::Silent + !allowSilentBuffer` → 强制清零输入（Note 11）
 /// - `catch_unwind` 捕获 panic 后清零输出（Note 60）
 /// - `pipeline.rs` 中清零额外通道（Note 18）
 ///
@@ -245,20 +235,6 @@ pub fn summarize(buffers: &[Vec<f32>], frame_count: usize) -> BufferSummary {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 编译期断言
-// ══════════════════════════════════════════════════════════════════════════════
-
-const _: () = {
-    assert!(BUFFER_INVALID == 0x00);
-    assert!(BUFFER_VALID == 0x01);
-    assert!(BUFFER_SILENT == 0x02);
-    // 三个值互不相同
-    assert!(BUFFER_INVALID != BUFFER_VALID);
-    assert!(BUFFER_INVALID != BUFFER_SILENT);
-    assert!(BUFFER_VALID != BUFFER_SILENT);
-};
-
-// ══════════════════════════════════════════════════════════════════════════════
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -270,44 +246,37 @@ mod tests {
 
     #[test]
     fn evaluate_valid_buffer() {
-        let (action, flags) = evaluate_buffer(BUFFER_VALID, false);
+        let (action, flags) = evaluate_buffer(APO_BUFFER_FLAGS::Valid, false);
         assert_eq!(action, BufferAction::Process);
-        assert_eq!(flags, BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
     }
 
     #[test]
     fn evaluate_valid_buffer_with_silent_allowed() {
-        let (action, flags) = evaluate_buffer(BUFFER_VALID, true);
+        let (action, flags) = evaluate_buffer(APO_BUFFER_FLAGS::Valid, true);
         assert_eq!(action, BufferAction::Process);
-        assert_eq!(flags, BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
     }
 
     #[test]
     fn evaluate_silent_with_allow() {
-        let (action, flags) = evaluate_buffer(BUFFER_SILENT, true);
+        let (action, flags) = evaluate_buffer(APO_BUFFER_FLAGS::Silent, true);
         assert_eq!(action, BufferAction::Process);
-        assert_eq!(flags, BUFFER_SILENT);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
     }
 
     #[test]
     fn evaluate_silent_without_allow() {
-        let (action, flags) = evaluate_buffer(BUFFER_SILENT, false);
+        let (action, flags) = evaluate_buffer(APO_BUFFER_FLAGS::Silent, false);
         assert_eq!(action, BufferAction::Silent);
-        assert_eq!(flags, BUFFER_SILENT);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
     }
 
     #[test]
     fn evaluate_invalid_buffer() {
-        let (action, flags) = evaluate_buffer(BUFFER_INVALID, false);
+        let (action, flags) = evaluate_buffer(APO_BUFFER_FLAGS::Invalid, false);
         assert_eq!(action, BufferAction::Skip);
-        assert_eq!(flags, BUFFER_INVALID);
-    }
-
-    #[test]
-    fn evaluate_unknown_flags() {
-        let (action, flags) = evaluate_buffer(0xFF, true);
-        assert_eq!(action, BufferAction::Skip);
-        assert_eq!(flags, BUFFER_INVALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Invalid);
     }
 
     // ── is_silent ───────────────────────────────────────────────────────────
@@ -500,14 +469,14 @@ mod tests {
         let mut input = vec![vec![0.0; 480], vec![0.0; 480]];
         let allow_silent = true;
 
-        let (action, output_flags) = evaluate_buffer(BUFFER_SILENT, allow_silent);
+        let (action, output_flags) = evaluate_buffer(APO_BUFFER_FLAGS::Silent, allow_silent);
         assert_eq!(action, BufferAction::Process);
 
         // 检查实际数据
-        if action == BufferAction::Process && output_flags == BUFFER_SILENT {
+        if action == BufferAction::Process && output_flags == APO_BUFFER_FLAGS::Silent {
             if is_silent(&input, 480) {
                 // 确实静音，输出标志保持 SILENT，跳过 DSP
-                assert_eq!(output_flags, BUFFER_SILENT);
+                assert_eq!(output_flags, APO_BUFFER_FLAGS::Silent);
             } else {
                 // 非静音，正常处理
             }
@@ -522,9 +491,9 @@ mod tests {
         let mut input = vec![vec![0.5; 480]]; // 输入有信号
         let allow_silent = false;
 
-        let (action, output_flags) = evaluate_buffer(BUFFER_SILENT, allow_silent);
+        let (action, output_flags) = evaluate_buffer(APO_BUFFER_FLAGS::Silent, allow_silent);
         assert_eq!(action, BufferAction::Silent);
-        assert_eq!(output_flags, BUFFER_SILENT);
+        assert_eq!(output_flags, APO_BUFFER_FLAGS::Silent);
 
         // 强制清零
         zero_buffers(&mut input, 480);
@@ -535,9 +504,9 @@ mod tests {
     fn simulate_valid_buffer_normal_processing() {
         let input = vec![vec![0.5; 480], vec![-0.3; 480]];
 
-        let (action, output_flags) = evaluate_buffer(BUFFER_VALID, true);
+        let (action, output_flags) = evaluate_buffer(APO_BUFFER_FLAGS::Valid, true);
         assert_eq!(action, BufferAction::Process);
-        assert_eq!(output_flags, BUFFER_VALID);
+        assert_eq!(output_flags, APO_BUFFER_FLAGS::Valid);
 
         // 正常 DSP 处理...
         assert!(!is_silent(&input, 480));

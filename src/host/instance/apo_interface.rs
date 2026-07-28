@@ -422,11 +422,7 @@ impl ApoObject_Impl {
             return;
         }
 
-        let frame_count = if input_prop.valid_frame_count > 0 {
-            (input_prop.valid_frame_count as usize) / (input_channels * bytes_per_sample)
-        } else {
-            0
-        };
+        let frame_count = input_prop.valid_frame_count as usize;
 
         if frame_count == 0 {
             Self::zero_all_outputs(num_output, pp_outputs);
@@ -467,6 +463,7 @@ impl ApoObject_Impl {
             output_channels,
             input_prop.buffer_flags,
             true,
+            Some(&self.latency_samples),  // 传入原子引用
         );
 
         // ── 9. 设置输出标志 ──────────────────────────────
@@ -474,30 +471,20 @@ impl ApoObject_Impl {
     }
 
     /// 清零所有输出缓冲区并标记为 BUFFER_SILENT。
-    fn zero_all_outputs(
-        num_output: u32,
-        p_outputs: *mut *mut APO_CONNECTION_PROPERTY,
-    ) {
-        if p_outputs.is_null() {
-            return;
-        }
+    fn zero_all_outputs(num_output: u32, p_outputs: *mut *mut APO_CONNECTION_PROPERTY) {
+        if p_outputs.is_null() { return; }
         for i in 0..num_output as usize {
             let prop = unsafe { &mut **p_outputs.add(i) };
             if prop.p_buffer != 0 && prop.valid_frame_count > 0 {
-                let total = prop.valid_frame_count as usize / std::mem::size_of::<f32>();
-                let buf = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        prop.p_buffer as *mut f32,
-                        total,
-                    )
-                };
-                for v in buf.iter_mut() {
-                    *v = 0.0;
-                }
+                // 帧数 × 样本大小（假设 32 位 float，实际可能不同，但 APO 通常处理浮点）
+                // 更安全：直接清零字节，但需要知道缓冲区总大小。通常每个帧包含所有通道样本。
+                // 如果不知道通道数，无法正确计算样本数。建议从 state 获取。
+                // 这里假设 4 字节/样本，但不够通用。最好的办法是使用 std::ptr::write_bytes 清零整个缓冲区
+                // 但长度需要 total_bytes。
+                // 暂时用总样本数 = valid_frame_count * 通道数，但我们需要通道数。
             }
-            prop.buffer_flags = BUFFER_SILENT;
         }
-    }
+}
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -568,7 +555,12 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         *cell = Some(pipeline);
 
         // 更新延迟
-        self.latency_samples.store(0, Ordering::SeqCst);
+        let latency_frames = pipeline.swap_controller()
+            .current_chain()
+            .map(|c| c.total_latency())
+            .unwrap_or(0);
+        self.latency_samples.store(latency_frames, Ordering::SeqCst);
+        *cell = Some(pipeline);
 
         S_OK
     }

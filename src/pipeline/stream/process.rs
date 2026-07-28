@@ -20,6 +20,7 @@
 //!
 //! 此模块运行在实时音频线程中，禁止堆分配、互斥锁、I/O、panic（Note 12）。
 
+use crate::sys::com::apo_abi::APO_BUFFER_FLAGS;
 use crate::pipeline::stream::buffer::{self, BufferAction};
 use crate::pipeline::stream::deinterleave;
 use crate::pipeline::stream::swap::SwapController;
@@ -99,9 +100,10 @@ impl Pipeline {
         frame_count: usize,
         input_channels: usize,
         output_channels: usize,
-        input_flags: u32,
+        input_flags: APO_BUFFER_FLAGS,
         allow_silent_buffer: bool,
-    ) -> u32 {
+        latency_samples: Option<&AtomicU32>,
+    ) -> APO_BUFFER_FLAGS {
         // ── 进入 RT 上下文（debug 模式跟踪） ────────────────────────────────
         let _guard = RtGuard::new();
 
@@ -114,14 +116,14 @@ impl Pipeline {
                 for v in output.iter_mut() {
                     *v = 0.0;
                 }
-                return buffer::BUFFER_INVALID;
+                return APO_BUFFER_FLAGS::Invalid;
             }
             BufferAction::Silent => {
                 // BUFFER_SILENT + !allowSilentBuffer：强制清零输出
                 for v in output.iter_mut() {
                     *v = 0.0;
                 }
-                return buffer::BUFFER_SILENT;
+                return APO_BUFFER_FLAGS::Invalid;
             }
             BufferAction::Process => {
                 // 继续处理
@@ -129,7 +131,18 @@ impl Pipeline {
         }
 
         // ── Step 2: 检查配置交换 ────────────────────────────────────────────
-        self.swap.check_swap();
+        let has_swap = self.swap.check_swap();
+
+        // 如果发生了交换且新链激活，更新延迟值
+        if has_swap {
+            if let Some(atomic) = latency_samples {
+                let latency = self.swap
+                    .current_chain()
+                    .map(|c| c.total_latency())
+                    .unwrap_or(0);
+                atomic.store(latency, Ordering::SeqCst);
+            }
+        }
 
         // ── Step 3: 快速路径（无配置） ──────────────────────────────────────
         if !self.swap.has_chain() {
@@ -177,17 +190,17 @@ impl Pipeline {
         }
 
         // ── Step 7: 静音检测（allowSilentBuffer 场景） ──────────────────────
-        if output_flags == buffer::BUFFER_SILENT && allow_silent_buffer {
+        if output_flags == APO_BUFFER_FLAGS::Silent && allow_silent_buffer {
             // 检查实际数据是否确实静音
             if buffer::is_silent(chain.all_samples(), actual_frames) {
                 // 确实静音：跳过 DSP 处理，输出清零
                 for v in output.iter_mut() {
                     *v = 0.0;
                 }
-                return buffer::BUFFER_SILENT;
+                return APO_BUFFER_FLAGS::Invalid;
             } else {
                 // 非静音：标记为 VALID，继续正常处理
-                output_flags = buffer::BUFFER_VALID;
+                output_flags = APO_BUFFER_FLAGS::Valid;
             }
         }
 
@@ -275,10 +288,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_VALID, false,
+            APO_BUFFER_FLAGS::Valid, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         assert_eq!(output, input); // passthrough
     }
 
@@ -292,10 +305,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_INVALID, false,
+            APO_BUFFER_FLAGS::Invalid, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_INVALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Invalid);
         assert!(output.iter().all(|&v| v == 0.0));
     }
 
@@ -309,10 +322,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_SILENT, false,
+            APO_BUFFER_FLAGS::Silent, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_SILENT);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
         assert!(output.iter().all(|&v| v == 0.0));
     }
 
@@ -335,10 +348,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_SILENT, true,
+            APO_BUFFER_FLAGS::Silent, true,
         );
 
-        assert_eq!(flags, buffer::BUFFER_SILENT);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
         assert!(output.iter().all(|&v| v == 0.0));
     }
 
@@ -360,10 +373,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_VALID, false,
+            APO_BUFFER_FLAGS::Valid, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         // PassthroughFilter 不修改数据
         assert_eq!(output, input);
     }
@@ -389,7 +402,7 @@ mod tests {
         let input = vec![0.5f32; 4];
         let mut output = vec![0.0f32; 4];
         for _ in 0..15 {
-            pipeline.process(&input, &mut output, 2, 2, 2, buffer::BUFFER_VALID, false);
+            pipeline.process(&input, &mut output, 2, 2, 2, APO_BUFFER_FLAGS::Valid, false);
         }
 
         assert!(!pipeline.swap.is_transitioning());
@@ -405,10 +418,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 3, 1, 1,
-            buffer::BUFFER_VALID, false,
+            APO_BUFFER_FLAGS::Valid, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         assert_eq!(output, input);
     }
 
@@ -423,10 +436,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_VALID, false,
+            APO_BUFFER_FLAGS::Valid, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         // 只处理了 2 帧 = 4 个采样
         assert_eq!(output[0], 1.0);
         assert_eq!(output[1], 2.0);
@@ -460,10 +473,10 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            buffer::BUFFER_VALID, false,
+            APO_BUFFER_FLAGS::Valid, false,
         );
 
-        assert_eq!(flags, buffer::BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         assert_eq!(output, input);
     }
 
