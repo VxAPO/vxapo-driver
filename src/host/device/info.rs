@@ -44,6 +44,13 @@ use crate::host::device::slots::{
     INSTALL_VERSION, FX_PROPERTIES_KEY
 };
 use crate::utils::error::VxApoError;
+use crate::utils::guid::format_guid;
+
+use windows::Win32::Media::Audio::{
+    PKEY_AudioEngine_DeviceFormat,      // 设备格式
+    PKEY_AudioEngine_OEMFormat,         // OEM格式（备选）
+    PKEY_AudioEndpoint_PhysicalSpeakers, // 通道掩码
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 安装版本常量（Note 24）
@@ -257,24 +264,21 @@ fn read_format_for_endpoint(endpoint_key: &RegKey) -> Result<Option<AudioFormat>
         Err(_) => return Ok(None),
     };
 
-    // PKEY_AudioEngine_DeviceFormat = {f19f064d-...}-0
-    // 值名格式取决于设备驱动，通常存储为二进制值。
-    // 常见值名：
-    //   "{f19f064d-082c-4e27-bc73-6882a1bb8e4c},0" — 设备格式
-    //   "{3d6e1656-2e50-4c4c-8d7b-...},0" — 引擎格式
+    // 生成属性值名：格式为 "{GUID},PID"
+    // 通道掩码（扬声器配置）
+    let channel_mask_name = format!("{},0", format_guid(&PKEY_AudioEndpoint_PhysicalSpeakers.fmtid));
+    // 设备格式（共享模式实际使用的格式）
+    let device_format_name = format!("{},0", format_guid(&PKEY_AudioEngine_DeviceFormat.fmtid));
+    // OEM 格式（INF 指定的默认格式）
+    let oem_format_name = format!("{},0", format_guid(&PKEY_AudioEngine_OEMFormat.fmtid));
 
-    // 通道掩码值名（PKEY_AudioEndpoint_PhysicalSpeakers）
-    let channel_mask_name = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},0";
-
-    // 尝试设备格式值名。
-    let device_format_name = "{f19f064d-082c-4e27-bc73-6882a1bb8e4c},0";
-    if let Ok(Some(fmt)) = read_audio_format(&props_key, device_format_name, Some(channel_mask_name)) {
+    // 优先尝试设备格式
+    if let Ok(Some(fmt)) = read_audio_format(&props_key, &device_format_name, Some(&channel_mask_name)) {
         return Ok(Some(fmt));
     }
 
-    // 尝试引擎格式值名。
-    let engine_format_name = "{3d6e1656-2e50-4c4c-8d7b-d3f7e4d1f3a9},0";
-    if let Ok(Some(fmt)) = read_audio_format(&props_key, engine_format_name, Some(channel_mask_name)) {
+    // 备选：尝试 OEM 格式
+    if let Ok(Some(fmt)) = read_audio_format(&props_key, &oem_format_name, Some(&channel_mask_name)) {
         return Ok(Some(fmt));
     }
 

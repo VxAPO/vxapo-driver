@@ -17,7 +17,7 @@
 //! 3. 已存在则备份原始 GUID 到 .reg
 //! 4. 写入子 APO 配置（childGuid / allowSilentBuffer / autoAdjust / version）
 //! 5. 按模式写入 APO GUID
-//! 6. 写入默认处理模式 GUID `{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}`
+//! 6. 写入默认处理模式 GUID `AUDIO_SIGNALPROCESSINGMODE_DEFAULT`
 //! 7. 删除 DisableEnhancements
 //!
 //! 依赖：
@@ -32,11 +32,12 @@
 //! - `log` crate
 
 use windows::Win32::System::Registry::{HKEY, HKEY_LOCAL_MACHINE};
+use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
 
 use crate::host::instance::reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
 use crate::host::device::slots::{
     ApoSlot, InstallMode, SlotValue,
-    DEFAULT_PROCESSMODE_GUID_STR, FX_PROPERTIES_KEY, INSTALL_VERSION,
+    FX_PROPERTIES_KEY, INSTALL_VERSION,
     read_all_slots, get_original_pre_mix, get_original_post_mix,
 };
 use crate::host::installation::rollback::{RollbackAction, Transaction};
@@ -45,6 +46,7 @@ use crate::sys::registry::write::{
 };
 use crate::sys::registry::read::RegKey;
 use crate::utils::error::{Result, VxApoError};
+use crate::utils::guid::*;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 注册表路径
@@ -386,7 +388,7 @@ fn record_slot_backups(
                 root: HKEY_LOCAL_MACHINE,
                 key: String::new(), // 由 .reg 备份替代
                 name: slot.value_name(),
-                backup: guid_bytes,
+                backup: guid_bytes.to_vec(),
             });
         }
     }
@@ -441,7 +443,7 @@ fn write_child_apo_config(
     // childGuid — 保留的原始 APO GUID（如果有）。
     let child_guid = original_premix.or(original_postmix);
     if let Some(g) = child_guid {
-        let guid_str = format_guid_braces(g);
+        let guid_str = format_guid(&g);
         write_sz(fx_handle, "childGuid", &guid_str)?;
     }
 
@@ -476,8 +478,8 @@ fn write_apo_slot(fx_handle: HKEY, slot: ApoSlot, guid: windows::core::GUID) -> 
 fn write_default_processmode(fx_handle: HKEY) -> Result<()> {
     write_sz(
         fx_handle,
-        "KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE",
-        DEFAULT_PROCESSMODE_GUID_STR,
+        "AUDIO_SIGNALPROCESSINGMODE_DEFAULT",
+        &format_guid(&AUDIO_SIGNALPROCESSINGMODE_DEFAULT),
     )
 }
 
@@ -501,44 +503,6 @@ fn backup_fx_properties_safe(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 字节工具
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// GUID 转 16 字节小端字节数组。
-fn guid_to_bytes(g: windows::core::GUID) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(16);
-    bytes.extend_from_slice(&g.data1.to_le_bytes());
-    bytes.extend_from_slice(&g.data2.to_le_bytes());
-    bytes.extend_from_slice(&g.data3.to_le_bytes());
-    bytes.extend_from_slice(&g.data4);
-    bytes
-}
-
-/// 从 16 字节解析 GUID。
-fn parse_guid_from_bytes(bytes: &[u8]) -> windows::core::GUID {
-    windows::core::GUID {
-        data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        data2: u16::from_le_bytes([bytes[4], bytes[5]]),
-        data3: u16::from_le_bytes([bytes[6], bytes[7]]),
-        data4: {
-            let mut d = [0u8; 8];
-            d.copy_from_slice(&bytes[8..16]);
-            d
-        },
-    }
-}
-
-/// 格式化 GUID 为带花括号字符串。
-fn format_guid_braces(g: windows::core::GUID) -> String {
-    format!(
-        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-        g.data1, g.data2, g.data3,
-        g.data4[0], g.data4[1], g.data4[2], g.data4[3],
-        g.data4[4], g.data4[5], g.data4[6], g.data4[7],
-    )
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
 // 测试（Note 41）
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -546,6 +510,7 @@ fn format_guid_braces(g: windows::core::GUID) -> String {
 mod tests {
     use super::*;
     use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+    use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
 
     use crate::test_helpers::serial_lock;
 
@@ -585,26 +550,15 @@ mod tests {
     fn guid_bytes_zeroed() {
         let g = windows::core::GUID::zeroed();
         let bytes = guid_to_bytes(g);
-        assert_eq!(bytes, vec![0u8; 16]);
+        assert_eq!(bytes, [0u8; 16]);
     }
 
-    // ── format_guid_braces ────────────────────────────────────────────────
-
-    #[test]
-    fn format_guid_known() {
-        let g = windows::core::GUID {
-            data1: 0xC18E2F7E,
-            data2: 0x933D,
-            data3: 0x4965,
-            data4: [0xB7, 0xD1, 0x1E, 0xEF, 0x22, 0x8D, 0x2A, 0xF3],
-        };
-        assert_eq!(format_guid_braces(g), "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}");
-    }
+    // ── format_guid ────────────────────────────────────────────────
 
     #[test]
     fn format_guid_zeroed() {
         assert_eq!(
-            format_guid_braces(windows::core::GUID::zeroed()),
+            format_guid(&windows::core::GUID::zeroed()),
             "{00000000-0000-0000-0000-000000000000}"
         );
     }
@@ -739,7 +693,7 @@ mod tests {
             crate::sys::registry::read::RegValue::Sz(s) => s,
             other => panic!("expected Sz, got {:?}", other),
         };
-        assert_eq!(pm, DEFAULT_PROCESSMODE_GUID_STR);
+        assert_eq!(pm, format_guid(&AUDIO_SIGNALPROCESSINGMODE_DEFAULT));
 
         close_key(handle);
         test_cleanup();

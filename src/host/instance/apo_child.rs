@@ -18,6 +18,8 @@ use windows::core::{GUID, HRESULT, IUnknown};
 use crate::sys::com::apo_abi::{
     IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, REFERENCE_TIME,
     APO_CONNECTION_DESCRIPTOR,
+    APO_REG_PROPERTIES,
+    IAudioMediaType,
 };
 use crate::sys::com::base;
 
@@ -34,7 +36,7 @@ use crate::sys::com::base;
 //   [8] GetInputChannelCount
 //
 // IAudioProcessingObjectRT : IUnknown:
-//   [3] CalcInputFrames  [4] CalcOutputFrames  [5] APOProcess
+//   [3] APOProcess  [4] CalcInputFrames  [5] CalcOutputFrames
 //
 // IAudioProcessingObjectConfiguration : IUnknown:
 //   [3] LockForProcess  [4] UnlockForProcess
@@ -125,8 +127,6 @@ impl ChildApo {
     // ── IAudioProcessingObject 委托 ──────────────────────────────────────────
 
     /// 获取子 APO 延迟（`GetLatency`，vtable[4]）。
-    ///
-    /// 返回 `REFERENCE_TIME`（100 纳秒单位），失败返回 0。
     pub fn get_latency(&self) -> REFERENCE_TIME {
         if self.iapo_ptr.is_null() {
             return 0;
@@ -157,15 +157,134 @@ impl ChildApo {
         }
     }
 
+    /// 获取子 APO 注册属性（`GetRegistrationProperties`，vtable[5]）。
+    ///
+    /// # Safety
+    ///
+    /// 调用方负责通过 `CoTaskMemFree` 释放 `*pp_props`。
+    pub unsafe fn get_registration_properties(
+        &self,
+        pp_props: *mut *mut APO_REG_PROPERTIES,
+    ) -> HRESULT {
+        if self.iapo_ptr.is_null() {
+            return base::E_POINTER;
+        }
+        unsafe {
+            let fn_ptr = self.vtbl_method(self.iapo_ptr, 5);
+            let get_reg_props: unsafe extern "system" fn(
+                *mut c_void,
+                *mut *mut APO_REG_PROPERTIES,
+            ) -> HRESULT = std::mem::transmute(fn_ptr);
+            get_reg_props(self.iapo_ptr, pp_props)
+        }
+    }
+
+    /// 新增：初始化子 APO（`Initialize`，vtable[6]）。
+    ///
+    /// # Safety
+    ///
+    /// `pby_data` 必须指向有效的 `cb_data_size` 字节缓冲区。
+    pub unsafe fn initialize(&self, cb_data_size: u32, pby_data: *mut u8) -> HRESULT {
+        if self.iapo_ptr.is_null() {
+            return base::E_POINTER;
+        }
+        unsafe {
+            let fn_ptr = self.vtbl_method(self.iapo_ptr, 6);
+            let init: unsafe extern "system" fn(
+                *mut c_void,
+                u32,
+                *mut u8,
+            ) -> HRESULT = std::mem::transmute(fn_ptr);
+            init(self.iapo_ptr, cb_data_size, pby_data)
+        }
+    }
+
+    /// 新增：检查输入格式是否支持（`IsInputFormatSupported`，vtable[7]）。
+    ///
+    /// # Safety
+    ///
+    /// `p_opposite_format` / `p_requested` 必须指向有效的 `IAudioMediaType` 对象。
+    pub unsafe fn is_input_format_supported(
+        &self,
+        p_opposite_format: *mut IAudioMediaType,
+        p_requested: *mut IAudioMediaType,
+        pp_supported: *mut *mut IAudioMediaType,
+    ) -> HRESULT {
+        if self.iapo_ptr.is_null() {
+            return base::E_POINTER;
+        }
+        unsafe {
+            let fn_ptr = self.vtbl_method(self.iapo_ptr, 7);
+            let is_input_supported: unsafe extern "system" fn(
+                *mut c_void,
+                *mut IAudioMediaType,
+                *mut IAudioMediaType,
+                *mut *mut IAudioMediaType,
+            ) -> HRESULT = std::mem::transmute(fn_ptr);
+            is_input_supported(
+                self.iapo_ptr,
+                p_opposite_format,
+                p_requested,
+                pp_supported,
+            )
+        }
+    }
+
+    /// 新增：检查输出格式是否支持（`IsOutputFormatSupported`，vtable[8]）。
+    ///
+    /// # Safety
+    ///
+    /// `p_opposite_format` / `p_requested` 必须指向有效的 `IAudioMediaType` 对象。
+    pub unsafe fn is_output_format_supported(
+        &self,
+        p_opposite_format: *mut IAudioMediaType,
+        p_requested: *mut IAudioMediaType,
+        pp_supported: *mut *mut IAudioMediaType,
+    ) -> HRESULT {
+        if self.iapo_ptr.is_null() {
+            return base::E_POINTER;
+        }
+        unsafe {
+            let fn_ptr = self.vtbl_method(self.iapo_ptr, 8);
+            let is_output_supported: unsafe extern "system" fn(
+                *mut c_void,
+                *mut IAudioMediaType,
+                *mut IAudioMediaType,
+                *mut *mut IAudioMediaType,
+            ) -> HRESULT = std::mem::transmute(fn_ptr);
+            is_output_supported(
+                self.iapo_ptr,
+                p_opposite_format,
+                p_requested,
+                pp_supported,
+            )
+        }
+    }
+
+    /// 新增：获取输入通道数（`GetInputChannelCount`，vtable[9]）。
+    pub fn get_input_channel_count(&self, p_count: *mut u32) -> HRESULT {
+        if self.iapo_ptr.is_null() {
+            return base::E_POINTER;
+        }
+        unsafe {
+            let fn_ptr = self.vtbl_method(self.iapo_ptr, 9);
+            let get_channel_count: unsafe extern "system" fn(
+                *mut c_void,
+                *mut u32,
+            ) -> HRESULT = std::mem::transmute(fn_ptr);
+            get_channel_count(self.iapo_ptr, p_count)
+        }
+    }
+
     // ── IAudioProcessingObjectRT 委托 ────────────────────────────────────────
 
-    /// 子 APO 计算输入帧数（`CalcInputFrames`，vtable[3]）。
+    /// 子 APO 计算输入帧数（`CalcInputFrames`，vtable[4]）。
     pub fn calc_input_frames(&self, output_frames: u32) -> u32 {
         if self.iapo_rt_ptr.is_null() {
             return output_frames;
         }
         unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_rt_ptr, 3);
+            let fn_ptr = self.vtbl_method(self.iapo_rt_ptr, 4);
             let calc: unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT =
                 std::mem::transmute(fn_ptr);
 
@@ -175,13 +294,13 @@ impl ChildApo {
         }
     }
 
-    /// 子 APO 计算输出帧数（`CalcOutputFrames`，vtable[4]）。
+    /// 子 APO 计算输出帧数（`CalcOutputFrames`，vtable[5]）。
     pub fn calc_output_frames(&self, input_frames: u32) -> u32 {
         if self.iapo_rt_ptr.is_null() {
             return input_frames;
         }
         unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_rt_ptr, 4);
+            let fn_ptr = self.vtbl_method(self.iapo_rt_ptr, 5);
             let calc: unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT =
                 std::mem::transmute(fn_ptr);
 

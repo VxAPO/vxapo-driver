@@ -1,4 +1,4 @@
-LIBRARY vxapo
+LIBRARY vxapo_driver
 EXPORTS
     DllCanUnloadNow     PRIVATE
     DllGetClassObject   PRIVATE

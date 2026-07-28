@@ -195,16 +195,19 @@ pub enum APO_CONNECTION_BUFFER_TYPE {
     DEPENDANT = 2,
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// 缓冲区标志位常量（APO_CONNECTION_PROPERTY::buffer_flags，Note 11）
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 缓冲区无效（未初始化）。
-pub const BUFFER_INVALID: u32 = 0x00;
-/// 缓冲区包含有效音频数据。
-pub const BUFFER_VALID: u32 = 0x01;
-/// 缓冲区为静音。
-pub const BUFFER_SILENT: u32 = 0x02;
+/// APO 缓冲区状态标志（`APO_CONNECTION_PROPERTY::u32BufferFlags`）。
+///
+/// 对应 Windows SDK 中的 `APO_BUFFER_FLAGS` 枚举。
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum APO_BUFFER_FLAGS {
+    /// 缓冲区数据无效（APO 引擎调用前默认设置）
+    Invalid = 0,
+    /// 缓冲区包含有效音频数据
+    Valid = 1,
+    /// 缓冲区应视为静音（无需实际写入零值）
+    Silent = 2,
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 缓冲区签名常量（APO_CONNECTION_DESCRIPTOR / APO_CONNECTION_PROPERTY 验证用）
@@ -263,9 +266,9 @@ pub struct APO_REG_PROPERTIES {
     pub clsid: GUID,
     pub flags: APO_FLAG,
     /// APO 名称（UTF-16，最多 255 字符 + null）
-    pub sz_name: [u16; 256],
+    pub sz_friendly_name: [u16; 256],
     /// 版权信息（UTF-16，最多 255 字符 + null）
-    pub sz_copyright: [u16; 256],
+    pub sz_copyright_info: [u16; 256],
     pub major_version: u32,
     pub minor_version: u32,
     pub min_input_connections: u32,
@@ -305,7 +308,7 @@ pub struct APO_CONNECTION_PROPERTY {
     /// 有效帧数
     pub valid_frame_count: u32,
     /// 缓冲区标志（`APO_BUFFER_FLAGS`）
-    pub buffer_flags: u32,
+    pub buffer_flags: APO_BUFFER_FLAGS,
     /// 结构体签名（`APO_CONNECTION_PROPERTY_SIGNATURE` 或 `V2`）
     pub signature: u32,
 }
@@ -380,8 +383,8 @@ const _: () = {
     );
     assert!(std::mem::offset_of!(APO_REG_PROPERTIES, clsid) == 0);
     assert!(std::mem::offset_of!(APO_REG_PROPERTIES, flags) == 16);
-    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, sz_name) == 20);
-    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, sz_copyright) == 532);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, sz_friendly_name) == 20);
+    assert!(std::mem::offset_of!(APO_REG_PROPERTIES, sz_copyright_info) == 532);
     assert!(std::mem::offset_of!(APO_REG_PROPERTIES, major_version) == 1044);
     assert!(std::mem::offset_of!(APO_REG_PROPERTIES, minor_version) == 1048);
     assert!(std::mem::offset_of!(APO_REG_PROPERTIES, min_input_connections) == 1052);
@@ -512,13 +515,11 @@ mod tests {
         assert_eq!(APO_CONNECTION_BUFFER_TYPE::DEPENDANT as i32, 2);
     }
 
-    // ── 缓冲区标志位 ────────────────────────────────────────────────────────
-
     #[test]
     fn buffer_flags_values() {
-        assert_eq!(BUFFER_INVALID, 0x00);
-        assert_eq!(BUFFER_VALID, 0x01);
-        assert_eq!(BUFFER_SILENT, 0x02);
+        assert_eq!(APO_BUFFER_FLAGS::Invalid as u32, 0x00);
+        assert_eq!(APO_BUFFER_FLAGS::Valid as u32, 0x01);
+        assert_eq!(APO_BUFFER_FLAGS::Silent as u32, 0x02);
     }
 
     // ── 缓冲区签名常量 ──────────────────────────────────────────────────────

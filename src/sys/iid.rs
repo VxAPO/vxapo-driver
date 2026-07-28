@@ -29,23 +29,6 @@ pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: GUID =
     IAudioProcessingObjectNotifications::IID;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 默认处理模式 GUID（Note 26/47）
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 默认处理模式 GUID —— 写入 FxProperties 告诉 Windows 使用此 APO 处理音频。
-///
-/// `{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}`
-///
-/// ⚠️ 注意：此类音频处理模式 (Audio Processing Mode) GUID 在 SDK 中属于数据标识，
-/// 并非 COM 接口，因此需要保留 `GUID::from_values` 显式构造。
-pub const KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE: GUID = GUID::from_values(
-    0xC18E2F7E,
-    0x933D,
-    0x4965,
-    [0xB7, 0xD1, 0x1E, 0xEF, 0x22, 0x8D, 0x2A, 0xF3],
-);
-
-// ══════════════════════════════════════════════════════════════════════════════
 // 编译期断言（Note 1）
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -68,23 +51,11 @@ mod tests {
     }
 
     #[test]
-    fn default_processmode_guid_values() {
-        assert_eq!(KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE.data1, 0xC18E2F7E);
-        assert_eq!(KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE.data2, 0x933D);
-        assert_eq!(KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE.data3, 0x4965);
-        assert_eq!(
-            KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE.data4,
-            [0xB7, 0xD1, 0x1E, 0xEF, 0x22, 0x8D, 0x2A, 0xF3]
-        );
-    }
-
-    #[test]
     fn all_guids_are_unique() {
         let guids = [
             IID_IAUDIO_SYSTEM_EFFECTS,
             IID_IAUDIO_SYSTEM_EFFECTS2,
             IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS,
-            KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE,
         ];
         for i in 0..guids.len() {
             for j in (i + 1)..guids.len() {
@@ -99,6 +70,5 @@ mod tests {
         assert_ne!(IID_IAUDIO_SYSTEM_EFFECTS, null_guid);
         assert_ne!(IID_IAUDIO_SYSTEM_EFFECTS2, null_guid);
         assert_ne!(IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS, null_guid);
-        assert_ne!(KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE, null_guid);
     }
 }

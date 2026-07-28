@@ -17,7 +17,7 @@
 //! - 未知根键返回错误
 //!
 //! 写入与权限操作位于 `sys/registry/write.rs`（Note 31）。
-//!
+//! 
 //! 此模块为纯工具层，与引擎、DSP、COM 实例无耦合。
 
 use windows::Win32::System::Registry::*;
@@ -26,6 +26,7 @@ use windows::Win32::Foundation::WIN32_ERROR;
 
 use crate::sys::registry::write::close_key;
 use crate::utils::error::{Result, VxApoError};
+use crate::utils::guid::{format_guid, parse_guid_from_bytes};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // WIN32_ERROR → Result 转换
@@ -466,15 +467,7 @@ impl RegKey {
         match self.read_value(name)? {
             RegValue::Sz(s) => Ok(s),
             RegValue::Binary(ref bytes) if bytes.len() >= 16 => {
-                let d1 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                let d2 = u16::from_le_bytes([bytes[4], bytes[5]]);
-                let d3 = u16::from_le_bytes([bytes[6], bytes[7]]);
-                let d4 = &bytes[8..16];
-                Ok(format!(
-                    "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-                    d1, d2, d3,
-                    d4[0], d4[1], d4[2], d4[3], d4[4], d4[5], d4[6], d4[7],
-                ))
+                Ok(format_guid(&parse_guid_from_bytes(bytes)))
             }
             RegValue::Binary(_) => Err(VxApoError::registry(
                 name,
@@ -786,19 +779,6 @@ mod tests {
             Ok(other) => panic!("expected RegValue::Sz, got {other:?}"),
             Err(_) => {} // 某些系统可能没有此值
         }
-    }
-
-    #[test]
-    fn guid_format_from_binary() {
-        // 间接验证 GUID 格式化逻辑：C18E2F7E-933D-4965-B7D1-1EEF228D2AF3
-        let d1 = u32::from_le_bytes([0x7E, 0x2F, 0x8E, 0xC1]);
-        let d2 = u16::from_le_bytes([0x3D, 0x93]);
-        let d3 = u16::from_le_bytes([0x65, 0x49]);
-        let formatted = format!(
-            "{{{:08X}-{:04X}-{:04X}-B7D1-1EEF228D2AF3}}",
-            d1, d2, d3
-        );
-        assert_eq!(formatted, "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}");
     }
 
     #[test]

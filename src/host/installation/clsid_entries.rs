@@ -14,74 +14,7 @@
 //! 写入操作委托 `sys/registry/write.rs`，由 `host/installation/exports.rs` 调用。
 
 use crate::host::instance::reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
-
-// ══════════════════════════════════════════════════════════════════════════════
-// GUID → 字符串格式化
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 将 GUID 格式化为注册表路径中使用的 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 形式。
-const fn hex(b: u8) -> u8 {
-    if b < 10 { b + b'0' } else { b - 10 + b'a' }
-}
-
-pub const fn guid_to_string(guid: &windows::core::GUID) -> [u8; 38] {
-    let d1 = guid.data1;
-    let d2 = guid.data2;
-    let d3 = guid.data3;
-    let d4 = &guid.data4;
-
-    let mut buf = [0u8; 38];
-    buf[0] = b'{';
-    buf[1] = hex(((d1 >> 28) & 0x0F) as u8);
-    buf[2] = hex(((d1 >> 24) & 0x0F) as u8);
-    buf[3] = hex(((d1 >> 20) & 0x0F) as u8);
-    buf[4] = hex(((d1 >> 16) & 0x0F) as u8);
-    buf[5] = hex(((d1 >> 12) & 0x0F) as u8);
-    buf[6] = hex(((d1 >> 8) & 0x0F) as u8);
-    buf[7] = hex(((d1 >> 4) & 0x0F) as u8);
-    buf[8] = hex((d1 & 0x0F) as u8);
-    buf[9] = b'-';
-    buf[10] = hex(((d2 >> 12) & 0x0F) as u8);
-    buf[11] = hex(((d2 >> 8) & 0x0F) as u8);
-    buf[12] = hex(((d2 >> 4) & 0x0F) as u8);
-    buf[13] = hex((d2 & 0x0F) as u8);
-    buf[14] = b'-';
-    buf[15] = hex(((d3 >> 12) & 0x0F) as u8);
-    buf[16] = hex(((d3 >> 8) & 0x0F) as u8);
-    buf[17] = hex(((d3 >> 4) & 0x0F) as u8);
-    buf[18] = hex((d3 & 0x0F) as u8);
-    buf[19] = b'-';
-    buf[20] = hex((d4[0] >> 4) & 0x0F);
-    buf[21] = hex(d4[0] & 0x0F);
-    buf[22] = hex((d4[1] >> 4) & 0x0F);
-    buf[23] = hex(d4[1] & 0x0F);
-    buf[24] = b'-';
-    buf[25] = hex((d4[2] >> 4) & 0x0F);
-    buf[26] = hex(d4[2] & 0x0F);
-    buf[27] = hex((d4[3] >> 4) & 0x0F);
-    buf[28] = hex(d4[3] & 0x0F);
-    buf[29] = hex((d4[4] >> 4) & 0x0F);
-    buf[30] = hex(d4[4] & 0x0F);
-    buf[31] = hex((d4[5] >> 4) & 0x0F);
-    buf[32] = hex(d4[5] & 0x0F);
-    buf[33] = hex((d4[6] >> 4) & 0x0F);
-    buf[34] = hex(d4[6] & 0x0F);
-    buf[35] = hex((d4[7] >> 4) & 0x0F);
-    buf[36] = hex(d4[7] & 0x0F);
-    buf[37] = b'}';
-    buf
-}
-
-/// 将 `guid_to_string` 的结果转为 `&str`。
-///
-/// # Safety
-///
-/// `guid_to_string` 仅产生 ASCII 字符，因此结果始终是合法 UTF-8。
-pub fn guid_str(guid: &windows::core::GUID) -> String {
-    let bytes = guid_to_string(guid);
-    // SAFETY: guid_to_string 仅输出 ASCII hex digits、'{'、'}'、'-'
-    unsafe { String::from_utf8_unchecked(bytes.to_vec()) }
-}
+use crate::utils::guid::{format_guid, format_guid_bytes};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 注册表路径常量
@@ -117,7 +50,7 @@ impl ClsidEntry {
     pub fn new(clsid: windows::core::GUID) -> Self {
         Self {
             clsid,
-            clsid_str: guid_str(&clsid),
+            clsid_str: format_guid(&clsid),
         }
     }
 
@@ -179,16 +112,16 @@ pub fn unregistration_order() -> Vec<ClsidEntry> {
 
 const _: () = {
     // GUID 字符串长度固定 38 字节
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX).len() == 38);
-    assert!(guid_to_string(&CLSID_VXAPO_POST_MIX).len() == 38);
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX).len() == 38);
+    assert!(format_guid_bytes(&CLSID_VXAPO_POST_MIX).len() == 38);
     // 第一个和最后一个字符
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX)[0] == b'{');
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX)[37] == b'}');
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX)[0] == b'{');
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX)[37] == b'}');
     // 位置 9, 14, 19, 24 是 '-'
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX)[9] == b'-');
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX)[14] == b'-');
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX)[19] == b'-');
-    assert!(guid_to_string(&CLSID_VXAPO_PRE_MIX)[24] == b'-');
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX)[9] == b'-');
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX)[14] == b'-');
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX)[19] == b'-');
+    assert!(format_guid_bytes(&CLSID_VXAPO_PRE_MIX)[24] == b'-');
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -198,32 +131,18 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::core::GUID;
 
     #[test]
-    fn guid_to_string_format() {
-        // C18E2F7E-933D-4965-B7D1-1EEF228D2AF3
-        let guid = GUID::from_values(
-            0xC18E2F7E,
-            0x933D,
-            0x4965,
-            [0xB7, 0xD1, 0x1E, 0xEF, 0x22, 0x8D, 0x2A, 0xF3],
-        );
-        let s = guid_str(&guid);
-        assert_eq!(s, "{c18e2f7e-933d-4965-b7d1-1eef228d2af3}");
-    }
-
-    #[test]
-    fn guid_to_string_length() {
-        let s = guid_str(&CLSID_VXAPO_PRE_MIX);
+    fn format_guid_bytes_length() {
+        let s = format_guid(&CLSID_VXAPO_PRE_MIX);
         assert_eq!(s.len(), 38);
         assert!(s.starts_with('{'));
         assert!(s.ends_with('}'));
     }
 
     #[test]
-    fn guid_to_string_separators() {
-        let s = guid_str(&CLSID_VXAPO_PRE_MIX);
+    fn format_guid_bytes_separators() {
+        let s = format_guid(&CLSID_VXAPO_PRE_MIX);
         assert_eq!(s.as_bytes()[9], b'-');
         assert_eq!(s.as_bytes()[14], b'-');
         assert_eq!(s.as_bytes()[19], b'-');
@@ -231,14 +150,14 @@ mod tests {
     }
 
     #[test]
-    fn guid_to_string_all_ascii_hex() {
-        let s = guid_str(&CLSID_VXAPO_PRE_MIX);
+    fn format_guid_bytes_all_ascii_hex() {
+        let s = format_guid(&CLSID_VXAPO_PRE_MIX);
         for (i, &c) in s.as_bytes().iter().enumerate() {
             if i == 0 || i == 37 || [9, 14, 19, 24].contains(&i) {
                 continue; // '{', '}', '-'
             }
             assert!(
-                (b'0'..=b'9').contains(&c) || (b'a'..=b'f').contains(&c),
+                (b'0'..=b'9').contains(&c) || (b'A'..=b'F').contains(&c),  // a-f → A-F
                 "non-hex char at position {i}: {c}"
             );
         }
