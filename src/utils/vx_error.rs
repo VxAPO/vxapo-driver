@@ -71,6 +71,12 @@ pub(crate) const APOERR_FORMAT_NOT_SUPPORTED: u32 = 0x887D_0003;
 
 // ── VxApoError → HRESULT 映射（供 COM 方法返回）────────────────────────────
 
+impl From<windows_core::Error> for VxApoError {
+    fn from(err: windows_core::Error) -> Self {
+        VxApoError::Registry(err.to_string())
+    }
+}
+
 impl From<VxApoError> for windows_core::HRESULT {
     fn from(err: VxApoError) -> Self {
         match err {

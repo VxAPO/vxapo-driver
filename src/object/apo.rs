@@ -64,6 +64,7 @@ impl ApoObjectInner {
     IAudioProcessingObjectRT,
     IAudioProcessingObjectConfiguration
 )]
+#[allow(dead_code)]
 pub struct ApoObject {
     pub(crate) clsid: windows::core::GUID,
     pub(crate) state_cell: StateCell,

@@ -2,75 +2,11 @@
 //!
 //! 边界：不知道 install/、object/。只负责解析配置文件，构建 Filter 链。
 //! 不直接操作 Chain。
-//!
-//! 子模块按批次实现（FilterFactory 模式）：
-//! - parser（已实现，基于 FilterRegistry 分发）
-//! - error（已实现）
-//! - watcher / commands 待后续批次
 
+pub mod commands;
+pub mod error;
 pub mod parser;
+pub mod watcher;
 
-/// 配置解析专用错误类型（v6.2 规范 6.0）。
-#[derive(Debug, Clone)]
-pub enum ConfigError {
-    /// 文件 I/O 错误。
-    IoError { path: String, message: String },
-    /// 命令语法错误（含文件名和行号）。
-    SyntaxError { file: String, line: usize, message: String },
-    /// AbortFile 终止（Device: 命令设置）。
-    AbortFile,
-}
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IoError { path, message } => write!(f, "I/O error reading {path}: {message}"),
-            Self::SyntaxError { file, line, message } => {
-                write!(f, "Syntax error in {file}:{line}: {message}")
-            }
-            Self::AbortFile => write!(f, "Parse aborted by Device: AbortFile"),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display_io_error() {
-        let err = ConfigError::IoError {
-            path: "config.txt".into(),
-            message: "not found".into(),
-        };
-        let msg = format!("{err}");
-        assert!(msg.contains("config.txt"));
-        assert!(msg.contains("not found"));
-    }
-
-    #[test]
-    fn display_syntax_error() {
-        let err = ConfigError::SyntaxError {
-            file: "config.txt".into(),
-            line: 42,
-            message: "unknown command".into(),
-        };
-        let msg = format!("{err}");
-        assert!(msg.contains("config.txt:42"));
-        assert!(msg.contains("unknown command"));
-    }
-
-    #[test]
-    fn display_abort_file() {
-        let msg = format!("{}", ConfigError::AbortFile);
-        assert!(msg.contains("AbortFile"));
-    }
-
-    #[test]
-    fn error_trait_impl() {
-        let err: Box<dyn std::error::Error> = Box::new(ConfigError::AbortFile);
-        assert!(err.to_string().contains("AbortFile"));
-    }
-}
+/// 配置解析专用错误类型（重导出自 error.rs，保持兼容）。
+pub use error::ConfigError;

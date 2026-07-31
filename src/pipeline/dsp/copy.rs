@@ -63,7 +63,7 @@ impl CopyFilter {
 }
 
 impl Filter for CopyFilter {
-    fn initialize(&mut self, _sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>> {
+    fn initialize(&mut self, _sample_rate: u32, _channel_names: &[String]) -> Option<Vec<String>> {
         let max_frames = 480; // 预分配大小
         self.temp_buf.resize(max_frames, 0.0);
         None

@@ -7,9 +7,19 @@
 //!
 //! register_builtin_filters 将在滤波器 API 对齐后注册（见 config/commands.rs 的 register_all_commands）。
 
+pub mod biquad;
+pub mod convolution;
+pub mod copy;
+pub mod delay;
 pub mod factory;
 pub mod filter;
+pub mod gain;
+pub mod graphic_eq;
+pub mod hp_lp;
+pub mod loudness;
+pub mod peq;
 pub mod transition;
+pub mod vst;
 
 /// 注册所有内置 Filter 工厂到 FilterRegistry（v6.2 规范 4.10）。
 ///

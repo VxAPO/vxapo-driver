@@ -62,7 +62,7 @@ impl Filter for LoudnessFilter {
         // 简化 ISO 226 曲线拟合：
         // 低频 boost/cut + 高频微调
         // 完整 ISO 226 查表在 Phase 8+ 补全
-        for (i, &freq) in ISO_FREQUENCIES.iter().enumerate() {
+        for (_i, &freq) in ISO_FREQUENCIES.iter().enumerate() {
             let gain = iso_226_approx(freq, diff);
             if gain.abs() > 0.05 {
                 let coeffs = compute_coeffs(
