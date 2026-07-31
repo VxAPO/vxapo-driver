@@ -62,10 +62,10 @@ pub fn is_third_party_allowed() -> Result<bool> {
 /// 需要管理员权限（写入 HKLM）。
 pub fn disable() -> Result<()> {
     let handle = create_key(HKEY_LOCAL_MACHINE, AUDIODG_KEY_PATH)?;
-    let result = write_dword(handle, VALUE_NAME, 1);
+    write_dword(handle, VALUE_NAME, 1)?;
     // SAFETY: handle 由 create_key 成功打开。
     close_key(handle);
-    result
+    Ok(())
 }
 
 /// 删除 `DisableProtectedAudioDG` 值（恢复默认行为）。

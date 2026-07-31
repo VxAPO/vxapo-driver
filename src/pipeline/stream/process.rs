@@ -20,6 +20,8 @@
 //!
 //! 此模块运行在实时音频线程中，禁止堆分配、互斥锁、I/O、panic（Note 12）。
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::sys::com::apo_abi::APO_BUFFER_FLAGS;
 use crate::pipeline::stream::buffer::{self, BufferAction};
 use crate::pipeline::stream::deinterleave;
@@ -231,7 +233,7 @@ impl Pipeline {
     ///
     /// 过渡期间，旧配置（previous_chain）和新配置（current_chain）
     /// 各自独立处理后，按升余弦因子混合。
-    fn process_transition(&mut self, frame_count: usize, _output_flags: u32) {
+    fn process_transition(&mut self, frame_count: usize, _output_flags: APO_BUFFER_FLAGS) {
         let factor = match self.swap.advance_transition() {
             Some(f) => f,
             None => return, // 过渡已完成
@@ -288,7 +290,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            APO_BUFFER_FLAGS::Valid, false,
+            APO_BUFFER_FLAGS::Valid, false, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
@@ -305,7 +307,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            APO_BUFFER_FLAGS::Invalid, false,
+            APO_BUFFER_FLAGS::Invalid, false, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Invalid);
@@ -322,7 +324,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            APO_BUFFER_FLAGS::Silent, false,
+            APO_BUFFER_FLAGS::Silent, false, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
@@ -348,7 +350,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            APO_BUFFER_FLAGS::Silent, true,
+            APO_BUFFER_FLAGS::Silent, true, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
@@ -373,7 +375,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            APO_BUFFER_FLAGS::Valid, false,
+            APO_BUFFER_FLAGS::Valid, false, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
@@ -386,6 +388,7 @@ mod tests {
     #[test]
     fn config_hot_reload() {
         let mut pipeline = Pipeline::new(10, 480, 2);
+        let latency = AtomicU32::new(0);
 
         // 初始配置
         let chain1 = Chain::new(2, 480, stereo_names());
@@ -402,7 +405,11 @@ mod tests {
         let input = vec![0.5f32; 4];
         let mut output = vec![0.0f32; 4];
         for _ in 0..15 {
-            pipeline.process(&input, &mut output, 2, 2, 2, APO_BUFFER_FLAGS::Valid, false);
+            pipeline.process(
+                &input, &mut output, 2, 2, 2,
+                APO_BUFFER_FLAGS::Valid, false,
+                Some(&latency)
+            );
         }
 
         assert!(!pipeline.swap.is_transitioning());
@@ -418,7 +425,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 3, 1, 1,
-            APO_BUFFER_FLAGS::Valid, false,
+            APO_BUFFER_FLAGS::Valid, false, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
@@ -436,7 +443,7 @@ mod tests {
 
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
-            APO_BUFFER_FLAGS::Valid, false,
+            APO_BUFFER_FLAGS::Valid, false, None
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
@@ -452,6 +459,7 @@ mod tests {
     #[test]
     fn end_to_end_builder_and_rt() {
         let mut pipeline = Pipeline::new(10, 480, 2);
+        let latency = AtomicU32::new(0);
 
         // Builder 线程构建配置
         let next = pipeline.swap.next_chain_handle();
@@ -474,6 +482,7 @@ mod tests {
         let flags = pipeline.process(
             &input, &mut output, 2, 2, 2,
             APO_BUFFER_FLAGS::Valid, false,
+            Some(&latency)
         );
 
         assert_eq!(flags, APO_BUFFER_FLAGS::Valid);

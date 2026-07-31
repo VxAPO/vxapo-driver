@@ -75,8 +75,8 @@ const fn str_to_u16_256(s: &str) -> [u16; 256] {
 pub static REG_PROPS_PRE_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
     clsid: CLSID_VXAPO_PRE_MIX,
     flags: APO_FLAGS,
-    sz_name: str_to_u16_256(APO_NAME),
-    sz_copyright: str_to_u16_256(APO_COPYRIGHT),
+    sz_friendly_name: str_to_u16_256(APO_NAME),
+    sz_copyright_info: str_to_u16_256(APO_COPYRIGHT),
     major_version: 1,
     minor_version: 0,
     min_input_connections: 1,
@@ -99,7 +99,7 @@ pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
 
 const _: () = {
     assert!(APO_FLAGS.0 == 0x0000_000D);
-    assert!(REG_PROPS_PRE_MIX.sz_name[0] != 0);
+    assert!(REG_PROPS_PRE_MIX.sz_friendly_name[0] != 0);
     assert!(REG_PROPS_PRE_MIX.flags.0 == REG_PROPS_POST_MIX.flags.0);
     assert!(
         REG_PROPS_PRE_MIX.max_input_connections
@@ -151,19 +151,19 @@ mod tests {
 
     #[test]
     fn apo_name_encoded_correctly() {
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name[0], 'V' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name[1], 'x' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name[2], 'A' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name[3], 'P' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name[4], 'O' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name[5], 0);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[0], 'V' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[1], 'x' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[2], 'A' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[3], 'P' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[4], 'O' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[5], 0);
     }
 
     #[test]
     fn apo_copyright_encoded_correctly() {
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright[0], 'V' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright[1], 'x' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright[13], 0);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info[0], 'V' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info[1], 'x' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info[13], 0);
     }
 
     #[test]
@@ -201,8 +201,8 @@ mod tests {
             REG_PROPS_PRE_MIX.num_apo_interfaces,
             REG_PROPS_POST_MIX.num_apo_interfaces
         );
-        assert_eq!(REG_PROPS_PRE_MIX.sz_name, REG_PROPS_POST_MIX.sz_name);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright, REG_PROPS_POST_MIX.sz_copyright);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name, REG_PROPS_POST_MIX.sz_friendly_name);
+        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info, REG_PROPS_POST_MIX.sz_copyright_info);
         assert_ne!(REG_PROPS_PRE_MIX.clsid, REG_PROPS_POST_MIX.clsid);
     }
 

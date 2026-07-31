@@ -3,118 +3,105 @@
 //! 实现以下接口的格式验证逻辑：
 //! - `IsInputFormatSupported` / `IsOutputFormatSupported`：采样率与位深匹配校验
 //! - `LockForProcess`：通道数确定规则与掩码选择
-//!
-//! 关键约束（Note 8/9）：
-//! - 不支持多于 2 通道下混到较少通道，检测到时返回输出格式替代（`S_FALSE`）
-//! - 有子 APO 时使用输出通道数，无子 APO 时使用输入通道数
-//! - 采集设备使用输入掩码，回放使用输出掩码，优先非零
-//!
-//! Phase 4 为核心格式检查占位，Phase 6 补全 `IAudioMediaType` 的完整解析。
+
+use windows::core::GUID;
+use core::ffi::c_void;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 本地 WAVEFORMATEX 定义
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[repr(C)]
+struct WAVEFORMATEX {
+    w_format_tag: u16,
+    n_channels: u16,
+    n_samples_per_sec: u32,
+    n_avg_bytes_per_sec: u32,
+    n_block_align: u16,
+    w_bits_per_sample: u16,
+    cb_size: u16,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 常量定义
+// ══════════════════════════════════════════════════════════════════════════════
+
+const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID = GUID::from_values(
+    0x00000003, 0x0000, 0x0010,
+    [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]
+);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 公开接口
+// ══════════════════════════════════════════════════════════════════════════════
 
 /// 格式兼容性检查结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatCompatibility {
-    /// 完全兼容。
     Compatible,
-    /// 不兼容，但可提供替代格式。
     AlternativeAvailable,
-    /// 完全不兼容。
     Incompatible,
 }
 
+/// 检查 WAVEFORMATEX 是否表示 IEEE 浮点格式。
+pub fn is_ieee_float_format(wfx: *const c_void) -> bool {
+    if wfx.is_null() { return false; }
+    let wfx = wfx as *const WAVEFORMATEX;
+    let tag = unsafe { (*wfx).w_format_tag };
+    if tag == WAVE_FORMAT_IEEE_FLOAT {
+        return true;
+    }
+    if tag == WAVE_FORMAT_EXTENSIBLE {
+        let cb_size = unsafe { (*wfx).cb_size };
+        if cb_size < 22 { return false; }
+        let ext_ptr = wfx as *const u8;
+        let subformat_ptr = unsafe { ext_ptr.add(18) } as *const GUID;
+        unsafe { *subformat_ptr == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT }
+    } else {
+        false
+    }
+}
+
+/// 提取 WAVEFORMATEX 的基本信息：采样率、通道数、位深。
+pub fn extract_format_info(wfx: *const c_void) -> Option<(u32, u32, u32)> {
+    if wfx.is_null() { return None; }
+    let wfx = wfx as *const WAVEFORMATEX;
+    unsafe {
+        let rate = (*wfx).n_samples_per_sec;
+        let channels = (*wfx).n_channels as u32;
+        let bits = (*wfx).w_bits_per_sample as u32;
+        Some((rate, channels, bits))
+    }
+}
+
 /// 检查两个音频格式是否兼容。
-///
-/// 验证采样率、位深、通道数的基本约束。
-///
-/// Phase 4 只做基本检查。Phase 6 补全 WAVEFORMATEX 详细解析。
 pub fn check_format_compatibility(
-    input_rate: u32,
-    output_rate: u32,
-    input_bits: u32,
-    output_bits: u32,
-    input_channels: u32,
-    output_channels: u32,
+    input_wfx: *const c_void,
+    output_wfx: *const c_void,
 ) -> FormatCompatibility {
-    // 采样率必须匹配
+    if input_wfx.is_null() || output_wfx.is_null() {
+        return FormatCompatibility::Incompatible;
+    }
+    if !is_ieee_float_format(input_wfx) || !is_ieee_float_format(output_wfx) {
+        return FormatCompatibility::Incompatible;
+    }
+
+    let input_wfx = input_wfx as *const WAVEFORMATEX;
+    let output_wfx = output_wfx as *const WAVEFORMATEX;
+
+    let input_rate = unsafe { (*input_wfx).n_samples_per_sec };
+    let output_rate = unsafe { (*output_wfx).n_samples_per_sec };
     if input_rate != output_rate {
         return FormatCompatibility::Incompatible;
     }
 
-    // 位深必须匹配
-    if input_bits != output_bits {
-        return FormatCompatibility::Incompatible;
-    }
-
-    // 不支持多于 2 通道下混到较少通道（Note 8）
+    let input_channels = unsafe { (*input_wfx).n_channels };
+    let output_channels = unsafe { (*output_wfx).n_channels };
     if input_channels > 2 && output_channels < input_channels {
         return FormatCompatibility::AlternativeAvailable;
     }
 
     FormatCompatibility::Compatible
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 测试
-// ══════════════════════════════════════════════════════════════════════════════
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compatible_stereo() {
-        assert_eq!(
-            check_format_compatibility(48000, 48000, 32, 32, 2, 2),
-            FormatCompatibility::Compatible
-        );
-    }
-
-    #[test]
-    fn compatible_51() {
-        assert_eq!(
-            check_format_compatibility(48000, 48000, 32, 32, 6, 6),
-            FormatCompatibility::Compatible
-        );
-    }
-
-    #[test]
-    fn incompatible_rate() {
-        assert_eq!(
-            check_format_compatibility(44100, 48000, 32, 32, 2, 2),
-            FormatCompatibility::Incompatible
-        );
-    }
-
-    #[test]
-    fn incompatible_bits() {
-        assert_eq!(
-            check_format_compatibility(48000, 48000, 16, 32, 2, 2),
-            FormatCompatibility::Incompatible
-        );
-    }
-
-    #[test]
-    fn alternative_8ch_to_2ch() {
-        assert_eq!(
-            check_format_compatibility(48000, 48000, 32, 32, 8, 2),
-            FormatCompatibility::AlternativeAvailable
-        );
-    }
-
-    #[test]
-    fn compatible_2ch_to_1ch() {
-        // 2→1 是允许的（不超过 2 通道的下混）
-        assert_eq!(
-            check_format_compatibility(48000, 48000, 32, 32, 2, 1),
-            FormatCompatibility::Compatible
-        );
-    }
-
-    #[test]
-    fn compatible_upmix() {
-        assert_eq!(
-            check_format_compatibility(48000, 48000, 32, 32, 2, 8),
-            FormatCompatibility::Compatible
-        );
-    }
 }

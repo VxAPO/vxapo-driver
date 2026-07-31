@@ -78,20 +78,14 @@ pub fn failed(hr: HRESULT) -> bool {
 
 /// 将 `HRESULT` 转为 `crate::utils::error::Result<()>`。
 ///
-/// 成功（`S_OK` / `S_FALSE`）返回 `Ok(())`，失败返回 `Err(VxApoError::HResult)`。
-///
-/// 用于 COM 方法内部调用 windows API 后的错误传播：
-/// ```ignore
-/// check_hresult(unsafe { SomeComCall(...) })?;
-/// ```
-pub fn check_hresult(hr: HRESULT) -> crate::utils::error::Result<()> {
+/// 成功（`S_OK` / `S_FALSE`）返回 `Ok(())`，失败返回 `Err(windows::core::Error::from_hresult)`。
+pub fn check_hresult(hr: HRESULT) -> windows::core::Result<()> {
     if succeeded(hr) {
         Ok(())
     } else {
-        Err(hr.into())
+        Err(windows::core::Error::from_hresult(hr))
     }
 }
-
 // ══════════════════════════════════════════════════════════════════════════════
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
@@ -133,7 +127,7 @@ mod tests {
     #[test]
     fn check_hresult_fail() {
         let err = check_hresult(E_NOINTERFACE).unwrap_err();
-        assert!(matches!(err, crate::utils::error::VxApoError::HResult(_)));
+        assert!(err.code().0 != 0);
     }
 
     #[test]
@@ -148,7 +142,6 @@ mod tests {
 
     #[test]
     fn check_hresult_roundtrip() {
-        // VxApoError::HResult → Display → 确认不 panic
         let err = check_hresult(CLASS_E_CLASSNOTAVAILABLE).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("COM error"));

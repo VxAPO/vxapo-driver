@@ -9,7 +9,7 @@
 //! 所有 `unsafe` 块必须附带 `SAFETY` 注释，说明前提条件与安全保证（Note 40）。
 //! CI 启用 `#![deny(clippy::undocumented_unsafe_blocks)]` 强制检查。
 
-use windows::Win32::Foundation::{HLOCAL, LUID, LocalFree, WIN32_ERROR, CloseHandle};
+use windows::Win32::Foundation::{HLOCAL, LUID, LocalFree, CloseHandle};
 use windows::Win32::System::Registry::{
     HKEY,
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW,
@@ -34,27 +34,16 @@ use windows::Win32::Security::Authorization::{
     TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
 };
 use windows::Win32::System::Threading::OpenProcessToken;
-use windows_core::{HSTRING, PCWSTR, PWSTR, BOOL};
+use windows_core::{HSTRING, PCWSTR, PWSTR, BOOL, Result, Error};
+use windows::Win32::Foundation::E_FAIL;
 
-use crate::utils::error::{Result, VxApoError};
+use super::win32_ok;
 
 /// 将 Rust 字符串转为注册表可用的 UTF-16 字节（含 null terminator）
 fn to_registry_bytes(s: &str) -> Vec<u8> {
     let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2).to_vec()
-    }
-}
-
-/// Win32_ERROR 转 Result
-fn check_win32(err: WIN32_ERROR) -> std::result::Result<(), std::io::Error> {
-    if err.is_ok() {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Win32 error: {err:?}"),
-        ))
     }
 }
 
@@ -90,7 +79,10 @@ pub fn create_key(root: HKEY, sub_key: &str) -> Result<HKEY> {
     };
 
     if err.is_err() {
-        return Err(VxApoError::registry(sub_key, "RegCreateKeyExW failed"));
+        return Err(Error::new(
+            E_FAIL,
+            format!("create_key({}): RegCreateKeyExW failed", sub_key),
+        ));
     }
 
     Ok(handle)
@@ -112,7 +104,10 @@ pub fn write_sz(handle: HKEY, name: &str, value: &str) -> Result<()> {
     };
 
     if err.is_err() {
-        Err(VxApoError::registry(name, "RegSetValueExW (REG_SZ) failed"))
+        Err(Error::new(
+            E_FAIL,
+            format!("write_sz({}): RegSetValueExW failed", name),
+        ))
     } else {
         Ok(())
     }
@@ -135,7 +130,10 @@ pub fn write_dword(handle: HKEY, name: &str, value: u32) -> Result<()> {
     };
 
     if err.is_err() {
-        Err(VxApoError::registry(name, "RegSetValueExW (REG_DWORD) failed"))
+        Err(Error::new(
+            E_FAIL,
+            format!("write_dword({}): RegSetValueExW failed", name),
+        ))
     } else {
         Ok(())
     }
@@ -157,7 +155,10 @@ pub fn write_binary(handle: HKEY, name: &str, data: &[u8]) -> Result<()> {
     };
 
     if err.is_err() {
-        Err(VxApoError::registry(name, "RegSetValueExW (REG_BINARY) failed"))
+        Err(Error::new(
+            E_FAIL,
+            format!("write_binary({}): RegSetValueExW failed", name),
+        ))
     } else {
         Ok(())
     }
@@ -180,7 +181,10 @@ pub fn delete_value(handle: HKEY, name: &str) -> Result<()> {
         // ERROR_FILE_NOT_FOUND (2) 或 ERROR_PATH_NOT_FOUND (3)
         Ok(())
     } else {
-        Err(VxApoError::registry(name, "RegDeleteValueW failed"))
+        Err(Error::new(
+            E_FAIL,
+            format!("delete_value({}): RegDeleteValueW failed", name),
+        ))
     }
 }
 
@@ -191,11 +195,19 @@ pub fn delete_tree(root: HKEY, sub_key: &str) -> Result<()> {
     // SAFETY: name 是合法 HSTRING。
     let err = unsafe { RegDeleteTreeW(root, &name) };
 
-    if err.is_err() {
-        // 不存在不算致命错误——可能是首次卸载
+    if err.is_ok() {
         Ok(())
     } else {
-        Ok(())
+        // 不存在不算致命错误——可能是首次卸载
+        let code = err.to_hresult().0 as u32;
+        if code == 2 || code == 3 {
+            Ok(())
+        } else {
+            Err(Error::new(
+                E_FAIL,
+                format!("delete_tree({}): RegDeleteTreeW failed", sub_key),
+            ))
+        }
     }
 }
 
@@ -256,7 +268,7 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
 
     // ERROR_INSUFFICIENT_BUFFER (122) 是预期的
     if err.is_err() && needed == 0 {
-        return Err(VxApoError::registry("", "RegGetKeySecurity query failed"));
+        return Err(Error::new(E_FAIL, "make_writable: RegGetKeySecurity query failed"));
     }
 
     let mut security_buf = vec![0u8; needed as usize];
@@ -264,12 +276,12 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
 
     // SAFETY: 第二次调用获取实际安全描述符。
     unsafe {
-        check_win32(RegGetKeySecurity(
+        win32_ok(unsafe {RegGetKeySecurity(
             handle,
             DACL_SECURITY_INFORMATION,
             Some(security_desc),
             &mut needed,
-        ))?;
+        )}).map_err(|e| Error::new(E_FAIL, format!("make_writable: {}", e)))?;
     }
 
     // 构造 Administrators SID
@@ -301,7 +313,7 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
             &mut dacl_present,
             &mut old_dacl,
             &mut dacl_defaulted,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("make_writable: {}", e)))?;
     }
 
     let old_dacl_opt = if dacl_present.as_bool() && !old_dacl.is_null() {
@@ -315,11 +327,11 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
 
     // SAFETY: SetEntriesInAclW 合并新的 ACE 到 DACL。
     unsafe {
-        check_win32(SetEntriesInAclW(
+        win32_ok(unsafe {SetEntriesInAclW(
             Some(&[explicit_access]),
             old_dacl_opt,
             &mut new_dacl,
-        ))?;
+        )}).map_err(|e| Error::new(E_FAIL, format!("make_writable: {}", e)))?;
     }
     // 分配成功后立即用 RAII 守卫包装，之后任何提前返回都会自动释放
     let _dacl_guard = DaclGuard(HLOCAL(new_dacl as *mut _));
@@ -332,22 +344,20 @@ pub fn make_writable(handle: HKEY) -> Result<()> {
         InitializeSecurityDescriptor(
             PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
             1u32, // SECURITY_DESCRIPTOR_REVISION,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("make_writable: {}", e)))?;
         SetSecurityDescriptorDacl(
             PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
             true,
             Some(new_dacl),
             false,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("make_writable: {}", e)))?;
 
-        check_win32(RegSetKeySecurity(
+        win32_ok(unsafe {RegSetKeySecurity(
             handle,
             DACL_SECURITY_INFORMATION,
             PSECURITY_DESCRIPTOR(&new_security as *const _ as *mut _),
-        ))?;
+        )}).map_err(|e| Error::new(E_FAIL, format!("make_writable: {}", e)))?;
     }
-
-    // new_dacl 由 _dacl_guard 在函数退出时自动释放，无需手动调用 LocalFree
 
     Ok(())
 }
@@ -385,7 +395,7 @@ fn create_administrators_sid() -> Result<Vec<u8>> {
             Some(PWSTR(domain_buf.as_mut_ptr())),
             &mut domain_size,
             &mut use_type,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("create_administrators_sid: {}", e)))?;
     }
 
     Ok(sid_buf)
@@ -449,7 +459,7 @@ pub fn enable_take_ownership_privilege() -> Result<PrivilegeGuard> {
             windows::Win32::System::Threading::GetCurrentProcess(),
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
             &mut token_handle,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("enable_take_ownership_privilege: {}", e)))?;
         token_handle
     };
 
@@ -462,7 +472,7 @@ pub fn enable_take_ownership_privilege() -> Result<PrivilegeGuard> {
             PCWSTR::null(),
             &HSTRING::from("SeTakeOwnershipPrivilege"),
             &mut luid,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("enable_take_ownership_privilege: {}", e)))?;
     }
 
     // ── 保存当前特权状态（用于恢复） ─────────────────────────────────────
@@ -470,7 +480,6 @@ pub fn enable_take_ownership_privilege() -> Result<PrivilegeGuard> {
     let mut return_length = 0u32;
 
     // SAFETY: 首次调用获取当前特权状态。
-    // 缓冲区为 None / 0 时返回所需大小，不修改 original_privileges。
     unsafe {
         let _ = AdjustTokenPrivileges(
             token,
@@ -478,7 +487,7 @@ pub fn enable_take_ownership_privilege() -> Result<PrivilegeGuard> {
             None,
             0,
             Some(&mut original_privileges),
-            Some(&mut return_length as *mut u32),  // ← Option<*mut u32>
+            Some(&mut return_length as *mut u32),
         );
     }
 
@@ -501,10 +510,9 @@ pub fn enable_take_ownership_privilege() -> Result<PrivilegeGuard> {
             0,
             None,
             None,
-        )?;
+        ).map_err(|e| Error::new(E_FAIL, format!("enable_take_ownership_privilege: {}", e)))?;
     }
 
-    // 不关闭 token — guard 在 Drop 时需要它来恢复特权。
     Ok(PrivilegeGuard {
         token,
         original_privileges,
@@ -532,7 +540,8 @@ pub fn take_ownership(handle: HKEY) -> Result<()> {
 
     // SAFETY: 获取键的安全描述符。
     unsafe {
-        check_win32(RegGetKeySecurity(handle, OWNER_SECURITY_INFORMATION, Some(desc), &mut needed))?;
+        win32_ok(unsafe {RegGetKeySecurity(handle, OWNER_SECURITY_INFORMATION, Some(desc), &mut needed)})
+            .map_err(|e| Error::new(E_FAIL, format!("take_ownership: {}", e)))?;
     }
 
     // 设置新所有者
@@ -542,18 +551,18 @@ pub fn take_ownership(handle: HKEY) -> Result<()> {
     unsafe {
         InitializeSecurityDescriptor(
             PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
-            1u32,  // SECURITY_DESCRIPTOR_REVISION,
-        )?;
+            1u32,
+        ).map_err(|e| Error::new(E_FAIL, format!("take_ownership: {}", e)))?;
         SetSecurityDescriptorOwner(
             PSECURITY_DESCRIPTOR(&mut new_security as *mut _ as *mut _),
             Some(PSID(admin_sid.as_ptr() as *mut _)),
             false,
-        )?;
-        check_win32(RegSetKeySecurity(
+        ).map_err(|e| Error::new(E_FAIL, format!("take_ownership: {}", e)))?;
+        win32_ok(unsafe {RegSetKeySecurity(
             handle,
             OWNER_SECURITY_INFORMATION,
             PSECURITY_DESCRIPTOR(&new_security as *const _ as *mut _),
-        ))?;
+        )}).map_err(|e| Error::new(E_FAIL, format!("take_ownership: {}", e)))?;
     }
 
     Ok(())
@@ -656,12 +665,8 @@ mod tests {
         let handle = create_key(TEST_ROOT, TEST_KEY).unwrap();
         write_sz(handle, "ToDelete", "value").unwrap();
 
-        // 用同一个 handle 验证存在
-        // (read_value 通过 RegKey::open 是独立的句柄，可能冲突)
-        // 直接删后验证
         delete_value(handle, "ToDelete").unwrap();
 
-        // 重新打开验证已删除
         let key = RegKey::open(TEST_ROOT, TEST_KEY).unwrap();
         assert!(!key.value_exists("ToDelete").unwrap_or(true));
 
@@ -688,7 +693,6 @@ mod tests {
 
     #[test]
     fn delete_tree_nonexistent_ok() {
-        // 删除不存在的键不 panic
         let result = delete_tree(TEST_ROOT, r"SOFTWARE\VxAPO_Nonexistent_12345");
         assert!(result.is_ok());
     }
@@ -745,7 +749,6 @@ mod tests {
         cleanup();
         let handle = create_key(TEST_ROOT, TEST_KEY).unwrap();
 
-        // 可能因权限不足而失败，但不应 panic
         let _ = make_writable(handle);
 
         close_key(handle);
@@ -758,7 +761,6 @@ mod tests {
         cleanup();
         let handle = create_key(TEST_ROOT, TEST_KEY).unwrap();
 
-        // 可能因权限不足而失败，但不应 panic
         let _ = take_ownership(handle);
 
         close_key(handle);
@@ -769,8 +771,6 @@ mod tests {
 
     #[test]
     fn enable_privilege_runs() {
-        // 返回 PrivilegeGuard，Drop 时自动恢复。
-        // 可能因非管理员而失败，但不应 panic。
         let _ = enable_take_ownership_privilege();
     }
 }

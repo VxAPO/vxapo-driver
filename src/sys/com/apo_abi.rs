@@ -6,6 +6,7 @@
 //! 此模块仅提供类型与常量声明，不包含任何实现逻辑。
 
 use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, interface};
+pub use windows::Win32::Media::Audio::Apo::APO_BUFFER_FLAGS as WinAPO_BUFFER_FLAGS;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // COM 接口定义
@@ -198,15 +199,34 @@ pub enum APO_CONNECTION_BUFFER_TYPE {
 /// APO 缓冲区状态标志（`APO_CONNECTION_PROPERTY::u32BufferFlags`）。
 ///
 /// 对应 Windows SDK 中的 `APO_BUFFER_FLAGS` 枚举。
+// 保留你自己的枚举（给内部用）
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum APO_BUFFER_FLAGS {
-    /// 缓冲区数据无效（APO 引擎调用前默认设置）
     Invalid = 0,
-    /// 缓冲区包含有效音频数据
     Valid = 1,
-    /// 缓冲区应视为静音（无需实际写入零值）
     Silent = 2,
+}
+
+// 转换为 windows-rs 的官方类型（传给 Windows 时用）
+impl From<APO_BUFFER_FLAGS> for WinAPO_BUFFER_FLAGS {
+    fn from(f: APO_BUFFER_FLAGS) -> Self {
+        Self(f as i32)
+    }
+}
+
+// 从官方类型转回自己的枚举（从 Windows 接收时用）
+impl TryFrom<WinAPO_BUFFER_FLAGS> for APO_BUFFER_FLAGS {
+    type Error = ();
+
+    fn try_from(f: windows::Win32::Media::Audio::Apo::APO_BUFFER_FLAGS) -> Result<Self, Self::Error> {
+        match f.0 {
+            0 => Ok(Self::Invalid),
+            1 => Ok(Self::Valid),
+            2 => Ok(Self::Silent),
+            _ => Err(()),
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

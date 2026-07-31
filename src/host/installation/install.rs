@@ -471,7 +471,8 @@ fn delete_other_mode_slots(fx_handle: HKEY, mode: InstallMode) {
 /// 写入 APO CLSID 到指定槽位。
 fn write_apo_slot(fx_handle: HKEY, slot: ApoSlot, guid: windows::core::GUID) -> Result<()> {
     let bytes = guid_to_bytes(guid);
-    write_binary(fx_handle, &slot.value_name(), &bytes)
+    write_binary(fx_handle, &slot.value_name(), &bytes)?;
+    Ok(())
 }
 
 /// 写入默认处理模式 GUID（Step 6，Note 26）。
@@ -480,7 +481,8 @@ fn write_default_processmode(fx_handle: HKEY) -> Result<()> {
         fx_handle,
         "AUDIO_SIGNALPROCESSINGMODE_DEFAULT",
         &format_guid(&AUDIO_SIGNALPROCESSINGMODE_DEFAULT),
-    )
+    )?;
+    Ok(())
 }
 
 /// .reg 备份（best-effort）。

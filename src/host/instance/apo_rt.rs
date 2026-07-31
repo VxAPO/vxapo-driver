@@ -9,14 +9,14 @@
 //! panic 防御（Note 60）：
 //! - 入口处用 `std::panic::catch_unwind` 包裹所有实时处理逻辑
 //! - 捕获到 panic 时：记录到 `host/telemetry/logger.rs` 的 ring_logger → 输出缓冲区清零
-//!   → 设置输出标志为 `BUFFER_SILENT` → 返回（不重新 panic）
+//!   → 设置输出标志为 `APO_BUFFER_FLAGS::Silent` → 返回（不重新 panic）
 //! - `catch_unwind` 在 release（`panic = "abort"`）下为空操作，
 //!   真正防线为 `host/telemetry/panic.rs` 的 hook + `panic = "abort"` 进程终止
 //! - debug / 测试环境下 `catch_unwind` 提供回溯信息与测试失败报告
 //!
 //! 此模块调用 `pipeline/stream/process.rs` 的 `process` 函数执行实际音频处理（Note 18）。
 
-use crate::sys::com::apo_abi::BUFFER_SILENT;
+use crate::sys::com::apo_abi::APO_BUFFER_FLAGS;
 use crate::pipeline::stream::process::Pipeline;
 use crate::pipeline::realtime::ring::Ring1K;
 
@@ -41,7 +41,7 @@ use crate::pipeline::realtime::ring::Ring1K;
 ///
 /// # 返回
 ///
-/// 输出 `flags`（`BUFFER_VALID` 或 `BUFFER_SILENT`）。
+/// 输出 `flags`（`APO_BUFFER_FLAGS::Valid` 或 `APO_BUFFER_FLAGS::Silent`）。
 ///
 /// # Note 60 — catch_unwind 防御
 ///
@@ -61,10 +61,10 @@ pub fn apo_process(
     input_channels: usize,
     output_channels: usize,
     frame_count: usize,
-    input_flags: u32,
+    input_flags: APO_BUFFER_FLAGS,
     allow_silent_buffer: bool,
     log_ring: &Ring1K<u8>,
-) -> u32 {
+) -> APO_BUFFER_FLAGS {
     // ── catch_unwind 包裹（Note 60） ────────────────────────────────────────
 
     // 将可变引用包装为 UnsafeCell，以便在 catch_unwind 闭包中使用
@@ -82,6 +82,7 @@ pub fn apo_process(
             output_channels,
             input_flags,
             allow_silent_buffer,
+            None,
         )
     }));
 
@@ -110,7 +111,7 @@ pub fn apo_process(
             }
 
             // 3. 设置输出标志为 SILENT
-            BUFFER_SILENT
+            APO_BUFFER_FLAGS::Silent
         }
     }
 }
@@ -176,7 +177,7 @@ pub fn calc_output_frames(pipeline: &Pipeline, input_frames: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::com::apo_abi::BUFFER_VALID;
+    use crate::sys::com::apo_abi::APO_BUFFER_FLAGS;
     use crate::pipeline::stream::chain::{Chain, FilterInfo};
     use crate::dsp::filter::{Filter, PassthroughFilter};
 
@@ -195,10 +196,10 @@ mod tests {
 
         let flags = apo_process(
             &mut pipeline, &input, &mut output,
-            2, 2, 2, BUFFER_VALID, false, &log_ring,
+            2, 2, 2, APO_BUFFER_FLAGS::Valid, false, &log_ring,
         );
 
-        assert_eq!(flags, BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         assert_eq!(output, input);
     }
 
@@ -219,10 +220,10 @@ mod tests {
 
         let flags = apo_process(
             &mut pipeline, &input, &mut output,
-            2, 2, 2, BUFFER_VALID, false, &log_ring,
+            2, 2, 2, APO_BUFFER_FLAGS::Valid, false, &log_ring,
         );
 
-        assert_eq!(flags, BUFFER_VALID);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Valid);
         assert_eq!(output, input);
     }
 
@@ -235,10 +236,10 @@ mod tests {
 
         let flags = apo_process(
             &mut pipeline, &input, &mut output,
-            2, 2, 2, BUFFER_SILENT, false, &log_ring,
+            2, 2, 2, APO_BUFFER_FLAGS::Silent, false, &log_ring,
         );
 
-        assert_eq!(flags, BUFFER_SILENT);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
         assert!(output.iter().all(|&v| v == 0.0));
     }
 
@@ -345,11 +346,11 @@ mod tests {
 
         let flags = apo_process(
             &mut pipeline, &input, &mut output,
-            2, 2, 2, BUFFER_VALID, false, &log_ring,
+            2, 2, 2, APO_BUFFER_FLAGS::Valid, false, &log_ring,
         );
 
         // panic 被捕获：输出清零，返回 SILENT
-        assert_eq!(flags, BUFFER_SILENT);
+        assert_eq!(flags, APO_BUFFER_FLAGS::Silent);
         assert!(output.iter().all(|&v| v == 0.0));
 
         // 日志中应包含 panic 信息

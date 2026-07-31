@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use windows::core::{GUID, HRESULT, implement};
 
-use crate::sys::com::base::{S_OK, E_POINTER, E_INVALIDARG, E_FAIL, E_OUTOFMEMORY};
+use crate::sys::com::base::{S_OK, S_FALSE, E_POINTER, E_INVALIDARG, E_FAIL, E_OUTOFMEMORY};
 use crate::sys::com::apo_abi::{
     IAudioProcessingObject, IAudioProcessingObjectRT,
     IAudioProcessingObjectConfiguration,
@@ -25,31 +25,14 @@ use crate::sys::com::apo_abi::{
     IAudioProcessingObjectRT_Impl,
     IAudioProcessingObjectConfiguration_Impl,
     IAudioMediaType,
-    APO_REG_PROPERTIES, APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY,
+    APO_REG_PROPERTIES, APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_BUFFER_FLAGS,
     REFERENCE_TIME,
-    BUFFER_SILENT,
 };
 use crate::host::instance::object::ApoObjectState;
 use crate::host::instance::ref_count as inst_count;
 use crate::host::instance::reg_props::props_for_clsid;
+use crate::host::instance::audio_compat::{check_format_compatibility, extract_format_info, FormatCompatibility};
 use crate::pipeline::stream::process::Pipeline;
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 本地 WAVEFORMATEX 定义（避免与 windows crate 冲突）
-// ══════════════════════════════════════════════════════════════════════════════
-
-#[repr(C)]
-struct WAVEFORMATEX {
-    w_format_tag: u16,
-    n_channels: u16,
-    n_samples_per_sec: u32,
-    n_avg_bytes_per_sec: u32,
-    n_block_align: u16,
-    w_bits_per_sample: u16,
-    cb_size: u16,
-}
-
-const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ApoObject — #[implement] COM 对象
@@ -431,7 +414,7 @@ impl ApoObject_Impl {
 
         // ── 6. 获取输入缓冲区 ────────────────────────────
         let input_buf: &[f32] = if input_prop.p_buffer == 0
-            || input_prop.buffer_flags == BUFFER_SILENT
+            || input_prop.buffer_flags == APO_BUFFER_FLAGS::Invalid
         {
             &[]
         } else {
@@ -511,16 +494,28 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         let input_desc = unsafe { &**pp_inputs };
         let output_desc = unsafe { &**pp_outputs };
 
-        let (in_rate, in_channels, in_mask, in_bits) =
-            match unsafe { extract_waveformat(input_desc.format) } {
+        let (in_rate, in_channels, in_bits) =
+            match extract_format_info(input_desc.format) {
                 Some(f) => f,
                 None => return E_INVALIDARG,
             };
-        let (out_rate, out_channels, _, _) =
-            match unsafe { extract_waveformat(output_desc.format) } {
+        let (out_rate, out_channels, _) =
+            match extract_format_info(output_desc.format) {
                 Some(f) => f,
                 None => return E_INVALIDARG,
             };
+
+        // 通道掩码单独获取
+        let in_mask = get_channel_mask(input_desc.format);
+
+        // ── 浮点格式检查 ──────────────────────────────────
+        let input_wfx = input_desc.format as *const WAVEFORMATEX;
+        let output_wfx = output_desc.format as *const WAVEFORMATEX;
+        match check_format_compatibility(input_wfx, output_wfx) {
+            FormatCompatibility::Compatible => {}
+            FormatCompatibility::AlternativeAvailable => return S_FALSE,
+            FormatCompatibility::Incompatible => return E_INVALIDARG,
+        };
 
         // ── 格式校验 ──────────────────────────────────────
         if in_rate != out_rate {
@@ -554,14 +549,6 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         let cell = unsafe { &mut *self.pipeline.get() };
         *cell = Some(pipeline);
 
-        // 更新延迟
-        let latency_frames = pipeline.swap_controller()
-            .current_chain()
-            .map(|c| c.total_latency())
-            .unwrap_or(0);
-        self.latency_samples.store(latency_frames, Ordering::SeqCst);
-        *cell = Some(pipeline);
-
         S_OK
     }
 
@@ -572,16 +559,16 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         };
 
         if !state.is_locked {
-            return S_OK; // 未锁定，无操作
+            return S_OK;
         }
 
         state.unlock_for_process();
         drop(state);
 
         // 销毁 Pipeline
-        // SAFETY: UnlockForProcess 与 APOProcess 不重叠
         unsafe { *self.pipeline.get() = None };
 
+        // 重置延迟为 0
         self.latency_samples.store(0, Ordering::SeqCst);
 
         S_OK

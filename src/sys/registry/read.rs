@@ -21,35 +21,17 @@
 //! 此模块为纯工具层，与引擎、DSP、COM 实例无耦合。
 
 use windows::Win32::System::Registry::*;
-use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::WIN32_ERROR;
+use windows::core::{HSTRING, Result, PCWSTR, PWSTR};
 
+use crate::sys::com::base::E_FAIL;
 use crate::sys::registry::write::close_key;
-use crate::utils::error::{Result, VxApoError};
 use crate::utils::guid::{format_guid, parse_guid_from_bytes};
 
-// ══════════════════════════════════════════════════════════════════════════════
-// WIN32_ERROR → Result 转换
-// ══════════════════════════════════════════════════════════════════════════════
+use super::win32_ok;
 
-/// 将 `WIN32_ERROR` 转为 `Result<()>`，`0`（ERROR_SUCCESS）为 Ok，其余为 Err。
-///
-/// Win32 错误码到 HRESULT 的标准映射：`(code & 0xFFFF) | 0x80070000`。
-fn win32_ok(err: WIN32_ERROR) -> Result<()> {
-    if err.0 == 0 {
-        Ok(())
-    } else {
-        Err(VxApoError::HResult(windows::core::HRESULT(
-            (0x8007_0000u32 | (err.0 & 0xFFFF)) as i32,
-        )))
-    }
-}
-
-/// 判断 WIN32_ERROR 是否为 "未找到"。
-///
-/// - `ERROR_FILE_NOT_FOUND` (2)
-/// - `ERROR_PATH_NOT_FOUND` (3)
-fn is_not_found(err: WIN32_ERROR) -> bool {
+/// 判断 WIN32_ERROR 是否为 "未找到"
+pub(crate) fn is_not_found(err: WIN32_ERROR) -> bool {
     err.0 == 2 || err.0 == 3
 }
 
@@ -103,7 +85,12 @@ fn parse_multi_sz(buf: &[u8]) -> Vec<String> {
 pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
     let sep = path
         .find('\\')
-        .ok_or_else(|| VxApoError::registry(path, "missing '\\': expected ROOTKEY\\SubKey"))?;
+        .ok_or_else(|| {
+            windows::core::Error::new(
+                E_FAIL,
+                format!("split_key: missing '\\' in path: {}", path),
+            )
+        })?;
 
     let root = match path[..sep].to_ascii_uppercase().as_str() {
         "HKEY_LOCAL_MACHINE" | "HKLM" => HKEY_LOCAL_MACHINE,
@@ -111,7 +98,12 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
         "HKEY_CLASSES_ROOT" | "HKCR" => HKEY_CLASSES_ROOT,
         "HKEY_USERS" | "HKU" => HKEY_USERS,
         "HKEY_CURRENT_CONFIG" | "HKCC" => HKEY_CURRENT_CONFIG,
-        unknown => return Err(VxApoError::registry(unknown, "unknown root key name")),
+        unknown => {
+            return Err(windows::core::Error::new(
+                E_FAIL,
+                format!("split_key: unknown root key: {}", unknown),
+            ))
+        }
     };
 
     Ok((root, &path[sep + 1..]))
@@ -226,24 +218,28 @@ impl RegKey {
                 Ok(RegValue::Sz(utf16_bytes_to_string(&buf)))
             }
             v if v == REG_DWORD => {
-                let b: [u8; 4] = buf
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| VxApoError::registry(name, "REG_DWORD data too short"))?;
+                let b: [u8; 4] = buf.as_slice().try_into().map_err(|_| {
+                    windows::core::Error::new(
+                        E_FAIL,
+                        format!("read_value({}): REG_DWORD data too short", name),
+                    )
+                })?;
                 Ok(RegValue::Dword(u32::from_le_bytes(b)))
             }
             v if v == REG_QWORD => {
-                let b: [u8; 8] = buf
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| VxApoError::registry(name, "REG_QWORD data too short"))?;
+                let b: [u8; 8] = buf.as_slice().try_into().map_err(|_| {
+                    windows::core::Error::new(
+                        E_FAIL,
+                        format!("read_value({}): REG_QWORD data too short", name),
+                    )
+                })?;
                 Ok(RegValue::Qword(u64::from_le_bytes(b)))
             }
             v if v == REG_BINARY => Ok(RegValue::Binary(buf)),
             v if v == REG_MULTI_SZ => Ok(RegValue::MultiSz(parse_multi_sz(&buf))),
-            other => Err(VxApoError::registry(
-                name,
-                &format!("unsupported registry value type: {}", other.0),
+            other => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("read_value({}): unsupported type: {}", name, other.0),
             )),
         }
     }
@@ -254,9 +250,9 @@ impl RegKey {
     pub fn read_sz_value(&self, name: &str) -> Result<String> {
         match self.read_value(name)? {
             RegValue::Sz(v) => Ok(v),
-            other => Err(VxApoError::registry(
-                name,
-                &format!("expected REG_SZ, got {other:?}"),
+            other => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("read_sz_value({}): expected REG_SZ, got {:?}", name, other),
             )),
         }
     }
@@ -272,9 +268,9 @@ impl RegKey {
     pub fn read_dword_value(&self, name: &str) -> Result<u32> {
         match self.read_value(name)? {
             RegValue::Dword(v) => Ok(v),
-            other => Err(VxApoError::registry(
-                name,
-                &format!("expected REG_DWORD, got {other:?}"),
+            other => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("read_dword_value({}): expected REG_DWORD, got {:?}", name, other),
             )),
         }
     }
@@ -283,9 +279,9 @@ impl RegKey {
     pub fn read_binary_value(&self, name: &str) -> Result<Vec<u8>> {
         match self.read_value(name)? {
             RegValue::Binary(v) => Ok(v),
-            other => Err(VxApoError::registry(
-                name,
-                &format!("expected REG_BINARY, got {other:?}"),
+            other => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("read_binary_value({}): expected REG_BINARY, got {:?}", name, other),
             )),
         }
     }
@@ -294,9 +290,9 @@ impl RegKey {
     pub fn read_multi_value(&self, name: &str) -> Result<Vec<String>> {
         match self.read_value(name)? {
             RegValue::MultiSz(v) => Ok(v),
-            other => Err(VxApoError::registry(
-                name,
-                &format!("expected REG_MULTI_SZ, got {other:?}"),
+            other => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("read_multi_value({}): expected REG_MULTI_SZ, got {:?}", name, other),
             )),
         }
     }
@@ -469,13 +465,13 @@ impl RegKey {
             RegValue::Binary(ref bytes) if bytes.len() >= 16 => {
                 Ok(format_guid(&parse_guid_from_bytes(bytes)))
             }
-            RegValue::Binary(_) => Err(VxApoError::registry(
-                name,
-                "binary value too short for GUID (need at least 16 bytes)",
+            RegValue::Binary(_) => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("get_guid_string({}): binary value too short (need 16 bytes)", name),
             )),
-            other => Err(VxApoError::registry(
-                name,
-                &format!("unexpected value type for GUID: {other:?}"),
+            other => Err(windows::core::Error::new(
+                E_FAIL,
+                format!("get_guid_string({}): unexpected type: {:?}", name, other),
             )),
         }
     }
@@ -496,12 +492,15 @@ impl Drop for RegKey {
 pub fn key_exists(root: HKEY, sub_key: &str) -> Result<bool> {
     match RegKey::open(root, sub_key) {
         Ok(_) => Ok(true),
-        Err(VxApoError::HResult(hr))
-            if hr.0 == (0x8007_0002u32 as i32) || hr.0 == (0x8007_0003u32 as i32) =>
-        {
-            Ok(false)
+        Err(e) => {
+            let code = e.code().0 as u32;
+            // E_FAIL 转换为 HRESULT 后判断
+            if code == 0x80070002 || code == 0x80070003 {
+                Ok(false)
+            } else {
+                Err(e)
+            }
         }
-        Err(e) => Err(e),
     }
 }
 
@@ -645,9 +644,9 @@ fn hkey_to_name(hkey: HKEY) -> Result<&'static str> {
     } else if hkey.0 == HKEY_CURRENT_CONFIG.0 {
         Ok("HKEY_CURRENT_CONFIG")
     } else {
-        Err(VxApoError::registry(
-            "",
-            "unknown HKEY handle for save_to_file",
+        Err(windows::core::Error::new(
+            E_FAIL,
+            "hkey_to_name: unknown HKEY handle for save_to_file",
         ))
     }
 }
@@ -745,7 +744,7 @@ mod tests {
             r"SOFTWARE\__nonexistent_key_xyz__\__deep__",
         )
         .unwrap_err();
-        assert!(matches!(err, VxApoError::HResult(_)));
+        assert!(err.code().0 != 0);
     }
 
     #[test]
