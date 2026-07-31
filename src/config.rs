@@ -3,9 +3,12 @@
 //! 边界：不知道 install/、object/。只负责解析配置文件，构建 Filter 链。
 //! 不直接操作 Chain。
 //!
-//! 子模块将在第八步按规范从零实现（FilterFactory 模式）：
-//! - parser、error、watcher、commands
-//! - commands/（channel、cond、device、expr、include、stage、graphic、preamp、copy、delay、filter、rew）
+//! 子模块按批次实现（FilterFactory 模式）：
+//! - parser（已实现，基于 FilterRegistry 分发）
+//! - error（已实现）
+//! - watcher / commands 待后续批次
+
+pub mod parser;
 
 /// 配置解析专用错误类型（v6.2 规范 6.0）。
 #[derive(Debug, Clone)]
