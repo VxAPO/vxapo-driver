@@ -27,7 +27,7 @@ impl StateCell {
     pub fn new() -> Self { Self { state: AtomicU8::new(ApoState::Created as u8) } }
     pub fn transition(&self, from: ApoState, to: ApoState) -> crate::utils::vx_error::Result<()> {
         self.state.compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ()).map_err(|_| crate::utils::vx_error::VxApoError::state("非法状态转换".into()))
+            .map(|_| ()).map_err(|_| crate::utils::vx_error::VxApoError::state("非法状态转换"))
     }
     pub fn current(&self) -> ApoState {
         match self.state.load(Ordering::Acquire) { 1 => ApoState::Initialized, 2 => ApoState::Locked, _ => ApoState::Created }
@@ -155,7 +155,7 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
     fn APOProcess(
         &self,
         _num_input: u32,
-        _pp_inputs: *mut *mut APO_CONNECTION_PROPERTY,
+        _pp_inputs: *const *const APO_CONNECTION_PROPERTY,
         _num_output: u32,
         _pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
@@ -177,9 +177,9 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
     fn LockForProcess(
         &self,
         _num_input: u32,
-        _pp_inputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
+        _pp_inputs: *const *const APO_CONNECTION_DESCRIPTOR,
         _num_output: u32,
-        _pp_outputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
+        _pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
     ) -> Result<()> {
         Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
     }

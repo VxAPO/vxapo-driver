@@ -5,9 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::pipeline::buffer::{evaluate_buffer, BufferAction, BufferInfo, is_silent};
 use crate::pipeline::chain::Chain;
 use crate::pipeline::interleave::{deinterleave_into, interleave_from};
-use crate::sys::com::apo_types::{
-    APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID,
-};
+use crate::sys::com::apo_types::{APO_CONNECTION_PROPERTY, BUFFER_SILENT, BUFFER_VALID};
 use crate::utils::vx_error::Result;
 
 /// 错误恢复策略。
@@ -163,7 +161,7 @@ pub fn process_audio(
 
         // Step 7: 去交织 → 交织
         interleave_from(&temp_buffers[..out_ch.min(temp_buffers.len())], output_slice, out_ch.min(temp_buffers.len()), frames);
-        output_prop.u32BufferFlags = BUFFER_VALID;
+        output_prop.u32BufferFlags = output_flags;
     }
     Ok(())
 }
