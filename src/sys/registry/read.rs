@@ -1,823 +1,814 @@
-//! sys/registry/read.rs — 只读注册表操作（Note 48）
+﻿//! host/device/slots.rs — APO 槽位管理（Note 25/26/46）
 //!
-//! 提供注册表只读查询功能：
-//! - `split_key`：拆分注册表路径为根键 `HKEY` + 子键路径
-//! - `RegKey`：封装已打开的注册表键句柄，提供类型安全的只读查询方法
+//! 管理 Windows 音频端点 FxProperties 注册表键下的 5 个 APO GUID 槽位，
+//! 提供安装模式选择与原始 APO GUID 回退查询。
 //!
-//! 支持操作：
-//! - `openKey` / `readValue` / `readDWORDValue` / `readBinaryValue` / `readMultiValue`
-//! - `keyExists` / `enumSubKeys` / `valueExists`
-//! - `getGuidString` / `isWindowsVersionAtLeast` / `saveToFile`
+//! 5 个槽位（Note 25）：
+//! ```text
+//! 索引  名称  角色
+//! 0     LFX   Legacy PreMix（Win8.1+）
+//! 1     GFX   Legacy PostMix（Win8.1+）
+//! 2     SFX   Side-effect PreMix（Win10+）
+//! 3     MFX   Mixed-effect PostMix（Win11 蓝牙）
+//! 4     EFX   Endpoint-effect PostMix（默认）
+//! ```
 //!
-//! `split_key` 实现要点（Note 48）：
-//! - 根键名大小写不敏感（转大写比较）
-//! - 第一个 `\` 分隔根键与子键路径
-//! - 支持 5 个标准根键：`HKEY_CLASSES_ROOT` / `HKEY_CURRENT_CONFIG` /
-//!   `HKEY_CURRENT_USER` / `HKEY_LOCAL_MACHINE` / `HKEY_USERS`
-//! - 未知根键返回错误
+//! 每个槽位有三种特殊值状态：
+//! - `NoKey`：FxProperties 键不存在（设备未配置任何 APO）
+//! - `NoValue`：值为空或已被其他 APO 占据（该槽位无自定义 APO）
+//! - `Guid(GUID)`：具体的 APO CLSID
 //!
-//! 写入与权限操作位于 `sys/registry/write.rs`（Note 31）。
-//! 
-//! 此模块为纯工具层，与引擎、DSP、COM 实例无耦合。
+//! 3 种安装模式（Note 26）：
+//! | 模式     | PreMix 槽位 | PostMix 槽位 | 适用场景       |
+//! |----------|-------------|--------------|----------------|
+//! | LfxGfx   | LFX(0)      | GFX(1)       | Win8.1+ Legacy |
+//! | SfxMfx   | SFX(2)      | MFX(3)       | Win11 蓝牙     |
+//! | SfxEfx   | SFX(2)      | EFX(4)       | 默认           |
+//!
+//! GUID 回退逻辑（Note 46）：
+//! - `get_original_pre_mix()`：当前模式槽位为 `NoValue` 时回退到同组另一槽位
+//! - `get_original_post_mix()`：类似，涉及 GFX / MFX / EFX 三槽位
+//! - `NoKey` 或无回退目标时返回空字符串
+//!
+//! 依赖：
+//! - `sys/registry/read`：注册表只读操作（Note 48）
+//! - `utils/error`：统一错误类型（Note 36）
+//! - `log` crate：日志记录
+//!
+//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `host/installation/`。
 
-use windows::Win32::System::Registry::*;
-use windows::Win32::Foundation::WIN32_ERROR;
-use windows::core::{HSTRING, Result, PCWSTR, PWSTR};
+use windows::core::GUID;
 
-use crate::sys::com::base::E_FAIL;
-use crate::sys::registry::write::close_key;
-use crate::utils::guid::{format_guid, parse_guid_from_bytes};
+use crate::sys::registry::read::RegKey;
 
-use super::win32_ok;
+// ══════════════════════════════════════════════════════════════════════════════
+// 常量
+// ══════════════════════════════════════════════════════════════════════════════
 
-/// 判断 WIN32_ERROR 是否为 "未找到"
-pub(crate) fn is_not_found(err: WIN32_ERROR) -> bool {
-    err.0 == 2 || err.0 == 3
+/// FxProperties 子键名称。
+pub const FX_PROPERTIES_KEY: &str = "FxProperties";
+
+/// 安装版本号（Note 24）。
+pub const INSTALL_VERSION: &str = "2";
+
+/// Legacy 安装版本号。
+pub const INSTALL_VERSION_LEGACY: &str = "1";
+
+/// FxProperties 中的 APO 注册属性 GUID。
+///
+/// Windows 使用 `{d04e05a6-594b-4fb6-a80d-01af5eed7d1d}` 作为 APO 注册属性集的标识。
+/// 各槽位通过属性索引区分。
+const APO_FX_PROPERTY_GUID: &str = "d04e05a6-594b-4fb6-a80d-01af5eed7d1d";
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ApoSlot — 5 个 APO 槽位（Note 25）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// APO 槽位索引。
+///
+/// 对应 Windows 音频端点 FxProperties 下的 5 个 APO 注册位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ApoSlot {
+    /// 索引 0：Legacy PreMix（Win8.1+ 时代）。
+    Lfx = 0,
+    /// 索引 1：Legacy PostMix（Win8.1+ 时代）。
+    Gfx = 1,
+    /// 索引 2：Side-effect PreMix（Win10+ 默认）。
+    Sfx = 2,
+    /// 索引 3：Mixed-effect PostMix（Win11 蓝牙场景）。
+    Mfx = 3,
+    /// 索引 4：Endpoint-effect PostMix（Win10+ 默认）。
+    Efx = 4,
+}
+
+impl ApoSlot {
+    /// 所有 5 个槽位（用于遍历）。
+    pub const ALL: [ApoSlot; 5] = [
+        ApoSlot::Lfx,
+        ApoSlot::Gfx,
+        ApoSlot::Sfx,
+        ApoSlot::Mfx,
+        ApoSlot::Efx,
+    ];
+
+    /// 槽位索引（0–4）。
+    pub fn index(self) -> u8 {
+        self as u8
+    }
+
+    /// 槽位的注册表值名称。
+    ///
+    /// 格式：`{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},{index}`
+    pub fn value_name(self) -> String {
+        format!("{{{}}},{}", APO_FX_PROPERTY_GUID, self.index())
+    }
+
+    /// 是否为 PreMix 类槽位。
+    pub fn is_premix(self) -> bool {
+        matches!(self, ApoSlot::Lfx | ApoSlot::Sfx)
+    }
+
+    /// 是否为 PostMix 类槽位。
+    pub fn is_postmix(self) -> bool {
+        matches!(self, ApoSlot::Gfx | ApoSlot::Mfx | ApoSlot::Efx)
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Wide string helpers（仅用于读取注册表返回值）
+// InstallMode — 3 种安装模式（Note 26）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 将 `&[u8]`（LE UTF-16 字节流）转为 String，遇到 null 停止。
-fn utf16_bytes_to_string(buf: &[u8]) -> String {
-    let words: Vec<u16> = buf
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    let len = words.iter().position(|&c| c == 0).unwrap_or(words.len());
-    String::from_utf16_lossy(&words[..len])
+/// 安装模式。
+///
+/// 决定 VxAPO 使用哪两个槽位注册 PreMix 和 PostMix APO。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallMode {
+    /// Win8.1+ Legacy 模式：PreMix = LFX(0)，PostMix = GFX(1)。
+    LfxGfx,
+    /// Win11 蓝牙模式：PreMix = SFX(2)，PostMix = MFX(3)。
+    SfxMfx,
+    /// **默认模式**：PreMix = SFX(2)，PostMix = EFX(4)。
+    SfxEfx,
 }
 
-/// 将 `&[u8]`（LE UTF-16 字节流）解析为 `REG_MULTI_SZ` 字符串列表。
-fn parse_multi_sz(buf: &[u8]) -> Vec<String> {
-    let words: Vec<u16> = buf
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    let mut result = Vec::new();
-    let mut start = 0;
-    for i in 0..words.len() {
-        if words[i] == 0 {
-            if i > start {
-                result.push(String::from_utf16_lossy(&words[start..i]));
-            } else {
-                break; // 双 null = 结束
-            }
-            start = i + 1;
+impl InstallMode {
+    /// 当前模式的 PreMix 槽位。
+    pub fn premix_slot(self) -> ApoSlot {
+        match self {
+            InstallMode::LfxGfx => ApoSlot::Lfx,
+            InstallMode::SfxMfx | InstallMode::SfxEfx => ApoSlot::Sfx,
         }
+    }
+
+    /// 当前模式的 PostMix 槽位。
+    pub fn postmix_slot(self) -> ApoSlot {
+        match self {
+            InstallMode::LfxGfx => ApoSlot::Gfx,
+            InstallMode::SfxMfx => ApoSlot::Mfx,
+            InstallMode::SfxEfx => ApoSlot::Efx,
+        }
+    }
+
+    /// 默认安装模式。
+    pub fn default_mode() -> InstallMode {
+        InstallMode::SfxEfx
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SlotValue — 槽位值状态（Note 25）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// APO 槽位值。
+///
+/// 表示 FxProperties 键下某个槽位的三种状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotValue {
+    /// FxProperties 键不存在（设备未配置任何 APO）。
+    ///
+    /// 对应 Note 6 中的 `APOGUID_NOKEY`。
+    NoKey,
+    /// 值为空或已被其他 APO 占据（该槽位无自定义 APO）。
+    ///
+    /// 对应 Note 6 中的 `APOGUID_NOVALUE`。
+    NoValue,
+    /// 具体的 APO CLSID。
+    Guid(GUID),
+}
+
+impl SlotValue {
+    /// 是否为具体 GUID。
+    pub fn is_guid(&self) -> bool {
+        matches!(self, SlotValue::Guid(_))
+    }
+
+    /// 是否为空（NoKey 或 NoValue）。
+    pub fn is_empty(&self) -> bool {
+        matches!(self, SlotValue::NoKey | SlotValue::NoValue)
+    }
+
+    /// 提取 GUID，NoKey/NoValue 时返回 None。
+    pub fn as_guid(&self) -> Option<GUID> {
+        match self {
+            SlotValue::Guid(g) => Some(*g),
+            _ => None,
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GUID 工具函数
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 将 GUID 格式化为字符串（带花括号）。
+fn format_guid(guid: &GUID) -> String {
+    guid.to_string()
+}
+
+/// 从 16 字节二进制数据解析 GUID（little-endian）。
+fn parse_guid_from_bytes(bytes: &[u8]) -> GUID {
+    let data1 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let data2 = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let data3 = u16::from_le_bytes([bytes[6], bytes[7]]);
+    let mut data4 = [0u8; 8];
+    data4.copy_from_slice(&bytes[8..16]);
+    GUID::from_values(data1, data2, data3, data4)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 公开 API — 槽位读取
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 从端点 FxProperties 读取指定槽位的 APO GUID。
+///
+/// # 参数
+///
+/// - `fx_key`：已打开的 FxProperties 注册表键。
+/// - `slot`：目标槽位。
+///
+/// # 返回
+///
+/// - `SlotValue::Guid(guid)`：该槽位有已注册的 APO。
+/// - `SlotValue::NoValue`：FxProperties 键存在但该槽位值不存在。
+///
+/// 外层应先检查 FxProperties 键是否存在，不存在时返回 `SlotValue::NoKey`。
+pub fn read_slot_value(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
+    let value_name = slot.value_name();
+
+    match fx_key.read_binary_value(&value_name) {
+        Ok(raw) if raw.len() >= 16 => {
+            // 二进制值的前 16 字节是 GUID（little-endian）。
+            let guid = parse_guid_from_bytes(&raw);
+            SlotValue::Guid(guid)
+        }
+        Ok(_) => {
+            // 值存在但长度不足 → 空值。
+            SlotValue::NoValue
+        }
+        Err(_) => {
+            // 值不存在。
+            SlotValue::NoValue
+        }
+    }
+}
+
+/// 从端点根键读取所有 5 个槽位的值。
+///
+/// 尝试打开 `FxProperties` 子键：
+/// - 成功：遍历 5 个槽位，返回每个槽位的值。
+/// - 失败（子键不存在）：所有槽位返回 `NoKey`。
+///
+/// # 返回
+///
+/// 5 个 `SlotValue` 的数组，索引与 `ApoSlot` 一致。
+pub fn read_all_slots(endpoint_key: &RegKey) -> [SlotValue; 5] {
+    let fx_key = match endpoint_key.open_sub_key(FX_PROPERTIES_KEY) {
+        Ok(k) => k,
+        Err(_) => {
+            // FxProperties 键不存在 → 所有槽位 NoKey。
+            return [SlotValue::NoKey; 5];
+        }
+    };
+
+    let mut result = [SlotValue::NoKey; 5];
+    for (i, slot) in ApoSlot::ALL.iter().enumerate() {
+        result[i] = read_slot_value(&fx_key, *slot);
     }
     result
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// split_key
+// 公开 API — 原始 APO GUID 回退（Note 46）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 将完整注册表路径拆分为 `(根键 HKEY, 子键路径)`。
+/// 获取原始 PreMix APO GUID（带回退）。
 ///
-/// - 根键名大小写不敏感（转大写比较）
-/// - 第一个 `\` 分隔根键与子键
-/// - 支持 5 个标准根键及缩写（HKLM / HKCU / HKCR / HKU / HKCC）
+/// # 回退规则（Note 46）
 ///
-/// # Errors
-/// 路径不含 `\` 或根键名无法识别时返回 `VxApoError::Registry`。
-pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
-    let sep = path
-        .find('\\')
-        .ok_or_else(|| {
-            windows::core::Error::new(
-                E_FAIL,
-                format!("split_key: missing '\\' in path: {}", path),
-            )
-        })?;
-
-    let root = match path[..sep].to_ascii_uppercase().as_str() {
-        "HKEY_LOCAL_MACHINE" | "HKLM" => HKEY_LOCAL_MACHINE,
-        "HKEY_CURRENT_USER" | "HKCU" => HKEY_CURRENT_USER,
-        "HKEY_CLASSES_ROOT" | "HKCR" => HKEY_CLASSES_ROOT,
-        "HKEY_USERS" | "HKU" => HKEY_USERS,
-        "HKEY_CURRENT_CONFIG" | "HKCC" => HKEY_CURRENT_CONFIG,
-        unknown => {
-            return Err(windows::core::Error::new(
-                E_FAIL,
-                format!("split_key: unknown root key: {}", unknown),
-            ))
-        }
-    };
-
-    Ok((root, &path[sep + 1..]))
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// RegValue — 注册表值的类型化表示
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 注册表值的类型化表示。
-#[derive(Debug, Clone, PartialEq)]
-pub enum RegValue {
-    /// `REG_SZ` 或 `REG_EXPAND_SZ`
-    Sz(String),
-    /// `REG_DWORD`
-    Dword(u32),
-    /// `REG_QWORD`
-    Qword(u64),
-    /// `REG_BINARY`
-    Binary(Vec<u8>),
-    /// `REG_MULTI_SZ`
-    MultiSz(Vec<String>),
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// RegKey — 只读注册表键句柄
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 打开的注册表键句柄（只读）。RAII：Drop 时调用 `RegCloseKey`。
-#[derive(Debug)]
-pub struct RegKey {
-    handle: HKEY,
-}
-
-impl RegKey {
-    // ── 打开 ─────────────────────────────────────────────────────────────────
-
-    /// 以 `KEY_READ` 权限打开子键。
-    pub fn open(root: HKEY, sub_key: &str) -> Result<Self> {
-        let sub = HSTRING::from(sub_key);
-        let mut handle = HKEY::default();
-
-        // SAFETY: sub 是合法 UTF-16 字符串（HSTRING 保证 null 结尾），
-        // handle 初始化为默认（无效），仅执行只读注册表查询。
-        win32_ok(unsafe {
-            RegOpenKeyExW(root, PCWSTR(sub.as_ptr()), Some(0), KEY_READ, &mut handle)
-        })?;
-
-        Ok(Self { handle })
-    }
-
-    /// 获取底层注册表句柄。
-    ///
-    /// 用于 `installation/reg_write.rs` 中需要原生 `HKEY` 的 API
-    ///（如 `RegSetKeySecurity`、`RegNotifyChangeKeyValue`）。
-    ///
-    /// # Safety
-    ///
-    /// 调用方必须确保不对返回的 `HKEY` 调用 `RegCloseKey`——
-    /// `RegKey` 的 `Drop` 会负责关闭。
-    pub fn handle(&self) -> HKEY {
-        self.handle
-    }
-
-    /// 委托
-    pub fn open_sub_key(&self, sub_key: &str) -> Result<Self> {
-        Self::open(self.handle, sub_key)
-    }
-
-    // ── 通用读取 ────────────────────────────────────────────────────────────
-
-    /// 读取指定名称的值，自动识别类型。
-    ///
-    /// 传入空字符串 `""` 读取默认值。
-    pub fn read_value(&self, name: &str) -> Result<RegValue> {
-        let name_hstr = HSTRING::from(name);
-        let name_pw = PCWSTR(name_hstr.as_ptr());
-        let mut val_type = REG_NONE;
-        let mut data_size: u32 = 0;
-
-        // SAFETY: 首次调用获取数据类型和所需缓冲区大小，data=null。
-        win32_ok(unsafe {
-            RegQueryValueExW(
-                self.handle,
-                name_pw,
-                None,
-                Some(&mut val_type),
-                None,
-                Some(&mut data_size),
-            )
-        })?;
-
-        let mut buf = vec![0u8; data_size as usize];
-
-        // SAFETY: 第二次调用将实际数据写入预分配缓冲区。
-        win32_ok(unsafe {
-            RegQueryValueExW(
-                self.handle,
-                name_pw,
-                None,
-                Some(&mut val_type),
-                Some(buf.as_mut_ptr()),
-                Some(&mut data_size),
-            )
-        })?;
-
-        buf.truncate(data_size as usize);
-
-        // REG_VALUE_TYPE 是 newtype(usize) — 比较内部 .0 值
-        match val_type {
-            v if v == REG_SZ || v == REG_EXPAND_SZ => {
-                Ok(RegValue::Sz(utf16_bytes_to_string(&buf)))
-            }
-            v if v == REG_DWORD => {
-                let b: [u8; 4] = buf.as_slice().try_into().map_err(|_| {
-                    windows::core::Error::new(
-                        E_FAIL,
-                        format!("read_value({}): REG_DWORD data too short", name),
-                    )
-                })?;
-                Ok(RegValue::Dword(u32::from_le_bytes(b)))
-            }
-            v if v == REG_QWORD => {
-                let b: [u8; 8] = buf.as_slice().try_into().map_err(|_| {
-                    windows::core::Error::new(
-                        E_FAIL,
-                        format!("read_value({}): REG_QWORD data too short", name),
-                    )
-                })?;
-                Ok(RegValue::Qword(u64::from_le_bytes(b)))
-            }
-            v if v == REG_BINARY => Ok(RegValue::Binary(buf)),
-            v if v == REG_MULTI_SZ => Ok(RegValue::MultiSz(parse_multi_sz(&buf))),
-            other => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("read_value({}): unsupported type: {}", name, other.0),
-            )),
-        }
-    }
-
-    // ── 类型化便捷读取 ──────────────────────────────────────────────────────
-
-    /// 读取 `REG_SZ` 值。
-    pub fn read_sz_value(&self, name: &str) -> Result<String> {
-        match self.read_value(name)? {
-            RegValue::Sz(v) => Ok(v),
-            other => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("read_sz_value({}): expected REG_SZ, got {:?}", name, other),
-            )),
-        }
-    }
-
-    /// 读取 `REG_SZ` 值，失败时返回 `None`。
-    ///
-    /// 适合测试和日志场景——不替代 `read_sz_value` 的完整错误报告。
-    pub fn read_sz(&self, name: &str) -> Option<String> {
-        self.read_sz_value(name).ok()
-    }
-    
-    /// 读取 `REG_DWORD` 值。
-    pub fn read_dword_value(&self, name: &str) -> Result<u32> {
-        match self.read_value(name)? {
-            RegValue::Dword(v) => Ok(v),
-            other => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("read_dword_value({}): expected REG_DWORD, got {:?}", name, other),
-            )),
-        }
-    }
-
-    /// 读取 `REG_BINARY` 值。
-    pub fn read_binary_value(&self, name: &str) -> Result<Vec<u8>> {
-        match self.read_value(name)? {
-            RegValue::Binary(v) => Ok(v),
-            other => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("read_binary_value({}): expected REG_BINARY, got {:?}", name, other),
-            )),
-        }
-    }
-
-    /// 读取 `REG_MULTI_SZ` 值。
-    pub fn read_multi_value(&self, name: &str) -> Result<Vec<String>> {
-        match self.read_value(name)? {
-            RegValue::MultiSz(v) => Ok(v),
-            other => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("read_multi_value({}): expected REG_MULTI_SZ, got {:?}", name, other),
-            )),
-        }
-    }
-
-    // ── 存在性检查 ──────────────────────────────────────────────────────────
-
-    /// 检查当前键下是否存在指定值。
-    pub fn value_exists(&self, name: &str) -> Result<bool> {
-        let name_hstr = HSTRING::from(name);
-        let mut val_type = REG_NONE;
-        let mut data_size: u32 = 0;
-
-        // SAFETY: data=null — 只查询存在性，不读取实际数据。
-        let err = unsafe {
-            RegQueryValueExW(
-                self.handle,
-                PCWSTR(name_hstr.as_ptr()),
-                None,
-                Some(&mut val_type),
-                None,
-                Some(&mut data_size),
-            )
-        };
-
-        if err.0 == 0 {
-            Ok(true)
-        } else if is_not_found(err) {
-            Ok(false)
-        } else {
-            win32_ok(err)?;
-            unreachable!()
-        }
-    }
-
-    /// 检查当前键下是否存在指定子键。
-    pub fn key_exists_child(&self, sub_key: &str) -> Result<bool> {
-        let sub = HSTRING::from(sub_key);
-        let mut handle = HKEY::default();
-
-        // SAFETY: 仅尝试打开子键来判断存在性。
-        let err =
-            unsafe { RegOpenKeyExW(self.handle, PCWSTR(sub.as_ptr()), Some(0), KEY_READ, &mut handle) };
-
-        if err.0 == 0 {
-            // SAFETY: handle 刚刚由 RegOpenKeyExW 成功打开，需要关闭。
-            unsafe {
-                let _ = RegCloseKey(handle);
-            }
-            Ok(true)
-        } else if is_not_found(err) {
-            Ok(false)
-        } else {
-            win32_ok(err)?;
-            unreachable!()
-        }
-    }
-
-    // ── 枚举 ────────────────────────────────────────────────────────────────
-
-    /// 枚举当前键下所有子键名称。
-    pub fn enum_sub_keys(&self) -> Result<Vec<String>> {
-        let mut count: u32 = 0;
-        let mut max_name_len: u32 = 0;
-
-        // SAFETY: 查询子键数量和最大名称长度。
-        win32_ok(unsafe {
-            RegQueryInfoKeyW(
-                self.handle,
-                Some(PWSTR(std::ptr::null_mut())),
-                None,
-                None,
-                Some(&mut count as *mut u32),
-                Some(&mut max_name_len as *mut u32),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-        })?;
-
-        let buf_len = (max_name_len + 1) as usize;
-        let mut names = Vec::with_capacity(count as usize);
-
-        for i in 0..count {
-            let mut name_buf = vec![0u16; buf_len];
-            let mut name_len = buf_len as u32;
-
-            // SAFETY: 在已知子键数量范围内枚举，name_buf 容量足够。
-            win32_ok(unsafe {
-                RegEnumKeyExW(
-                    self.handle,
-                    i,
-                    Some(PWSTR(name_buf.as_mut_ptr())),
-                    &mut name_len,
-                    None,
-                    Some(PWSTR(std::ptr::null_mut())),
-                    None,
-                    None,
-                )
-            })?;
-
-            names.push(String::from_utf16_lossy(&name_buf[..name_len as usize]));
-        }
-
-        Ok(names)
-    }
-
-    /// 枚举当前键下所有值的名称（含默认值 `""`）。
-    pub fn enum_values(&self) -> Result<Vec<String>> {
-        let mut count: u32 = 0;
-        let mut max_name_len: u32 = 0;
-
-        // SAFETY: 查询值数量和最大值名称长度。
-        win32_ok(unsafe {
-            RegQueryInfoKeyW(
-                self.handle,
-                Some(PWSTR(std::ptr::null_mut())),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(&mut count as *mut u32),
-                Some(&mut max_name_len as *mut u32),
-                None,
-                None,
-                None,
-            )
-        })?;
-
-        let buf_len = (max_name_len + 1) as usize;
-        let mut names = Vec::with_capacity(count as usize);
-
-        for i in 0..count {
-            let mut name_buf = vec![0u16; buf_len];
-            let mut name_len = buf_len as u32;
-
-            // SAFETY: 在已知值数量范围内枚举，name_buf 容量足够。
-            win32_ok(unsafe {
-                RegEnumValueW(
-                    self.handle,
-                    i,
-                    Some(PWSTR(name_buf.as_mut_ptr())),
-                    &mut name_len,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            })?;
-
-            names.push(String::from_utf16_lossy(&name_buf[..name_len as usize]));
-        }
-
-        Ok(names)
-    }
-
-    // ── GUID 读取 ───────────────────────────────────────────────────────────
-
-    /// 读取注册表值并将其格式化为 GUID 字符串 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`。
-    ///
-    /// 支持两种存储格式：
-    /// - `REG_BINARY`（16 字节小端序）
-    /// - `REG_SZ`（已经是字符串形式，直接返回）
-    pub fn get_guid_string(&self, name: &str) -> Result<String> {
-        match self.read_value(name)? {
-            RegValue::Sz(s) => Ok(s),
-            RegValue::Binary(ref bytes) if bytes.len() >= 16 => {
-                Ok(format_guid(&parse_guid_from_bytes(bytes)))
-            }
-            RegValue::Binary(_) => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("get_guid_string({}): binary value too short (need 16 bytes)", name),
-            )),
-            other => Err(windows::core::Error::new(
-                E_FAIL,
-                format!("get_guid_string({}): unexpected type: {:?}", name, other),
-            )),
-        }
-    }
-}
-
-/// RAII：Drop 时关闭注册表键句柄。
-impl Drop for RegKey {
-    fn drop(&mut self) {
-        close_key(self.handle);
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 顶层便捷函数
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 检查注册表键是否存在（只读尝试打开）。
-pub fn key_exists(root: HKEY, sub_key: &str) -> Result<bool> {
-    match RegKey::open(root, sub_key) {
-        Ok(_) => Ok(true),
-        Err(e) => {
-            let code = e.code().0 as u32;
-            // E_FAIL 转换为 HRESULT 后判断
-            if code == 0x80070002 || code == 0x80070003 {
-                Ok(false)
-            } else {
-                Err(e)
-            }
-        }
-    }
-}
-
-/// 检查注册表值是否存在。
-pub fn value_exists(root: HKEY, sub_key: &str, name: &str) -> Result<bool> {
-    let key = RegKey::open(root, sub_key)?;
-    key.value_exists(name)
-}
-
-/// 检查当前 Windows 版本是否 >= 指定版本。
+/// 1. 按安装模式取对应 PreMix 槽位（LFX 或 SFX）
+/// 2. 若为 `NoValue` 且**同组另一槽位也是 `NoValue`**，回退到另一模式的 PreMix 槽位
+/// 3. `NoKey` 或无回退时返回空字符串
 ///
-/// 读取 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` 下的
-/// `CurrentMajorVersionNumber`、`CurrentMinorVersionNumber`（REG_DWORD）
-/// 和 `CurrentBuildNumber`（REG_SZ 或 REG_DWORD）。
-pub fn is_windows_version_at_least(major: u32, minor: u32, build: u32) -> Result<bool> {
-    let key = RegKey::open(
-        HKEY_LOCAL_MACHINE,
-        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-    )?;
-
-    let actual_major = key.read_dword_value("CurrentMajorVersionNumber")?;
-    let actual_minor = key.read_dword_value("CurrentMinorVersionNumber")?;
-
-    let actual_build: u32 = match key.read_value("CurrentBuildNumber")? {
-        RegValue::Sz(s) => s.parse::<u32>().unwrap_or(0),
-        RegValue::Dword(v) => v,
-        _ => 0,
-    };
-
-    Ok(actual_major > major
-        || (actual_major == major && actual_minor > minor)
-        || (actual_major == major && actual_minor == minor && actual_build >= build))
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// save_to_file — 导出注册表键为 .reg 文件
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 将注册表键（含子键）导出为 `.reg` 文件（UTF-16LE with BOM）。
+/// # 参数
 ///
-/// 用于安装前的备份（Note 32）。
-pub fn save_to_file(root: HKEY, sub_key: &str, path: &str) -> Result<()> {
-    let root_name = hkey_to_name(root)?;
-    let display_root = format!("{root_name}\\{sub_key}");
+/// - `slots`：5 个槽位值（由 `read_all_slots` 获取）。
+/// - `mode`：当前安装模式。
+///
+/// # 返回
+///
+/// - GUID 字符串：找到有效 GUID。
+/// - 空字符串：未找到（`NoKey` 或所有候选槽位均为空）。
+pub fn get_original_pre_mix(slots: &[SlotValue; 5], mode: InstallMode) -> String {
+    let primary = mode.premix_slot();
 
-    let mut content = String::from("Windows Registry Editor Version 5.00\n\n");
-    dump_key_recursive(root, sub_key, &display_root, &mut content)?;
-
-    // 写入 UTF-16LE with BOM
-    let mut bytes = Vec::with_capacity(2 + content.len() * 2);
-    bytes.extend_from_slice(&[0xFFu8, 0xFE]); // BOM
-    for code_unit in content.encode_utf16() {
-        bytes.extend_from_slice(&code_unit.to_le_bytes());
+    // 情况 1：主槽位有 GUID → 直接返回。
+    if let SlotValue::Guid(g) = slots[primary.index() as usize] {
+        return format_guid(&g);
     }
 
-    std::fs::write(path, bytes)?;
-    Ok(())
+    // 情况 2：主槽位是 NoKey → 无法回退。
+    if matches!(slots[primary.index() as usize], SlotValue::NoKey) {
+        return String::new();
+    }
+
+    // 情况 3：主槽位是 NoValue → 检查回退条件。
+    // "同组另一槽位也是 NoValue"：PreMix 的同组指另一模式的 PreMix 槽位。
+    let fallback_slot = other_premix_slot(mode);
+
+    match slots[fallback_slot.index() as usize] {
+        SlotValue::Guid(g) => format_guid(&g),
+        _ => String::new(),
+    }
 }
 
-/// 递归导出键及其所有子键的值。
-fn dump_key_recursive(
-    root: HKEY,
-    sub_key: &str,
-    display_path: &str,
-    content: &mut String,
-) -> Result<()> {
-    let key = match RegKey::open(root, sub_key) {
-        Ok(k) => k,
-        Err(e) => {
-            content.push_str(&format!("; Failed to open [{display_path}]: {e}\n\n"));
-            return Ok(());
-        }
-    };
+/// 获取原始 PostMix APO GUID（带回退）。
+///
+/// # 回退规则（Note 46）
+///
+/// 1. 按安装模式取对应 PostMix 槽位（GFX / MFX / EFX）
+/// 2. 若为 `NoValue`，按优先级尝试其他 PostMix 槽位：
+///    - SfxEfx 模式：EFX → MFX → GFX
+///    - SfxMfx 模式：MFX → EFX → GFX
+///    - LfxGfx 模式：GFX → EFX → MFX
+/// 3. `NoKey` 或无回退时返回空字符串
+///
+/// # 参数
+///
+/// - `slots`：5 个槽位值（由 `read_all_slots` 获取）。
+/// - `mode`：当前安装模式。
+///
+/// # 返回
+///
+/// - GUID 字符串：找到有效 GUID。
+/// - 空字符串：未找到。
+pub fn get_original_post_mix(slots: &[SlotValue; 5], mode: InstallMode) -> String {
+    let primary = mode.postmix_slot();
 
-    content.push_str(&format!("[{display_path}]\n"));
+    // 情况 1：主槽位有 GUID → 直接返回。
+    if let SlotValue::Guid(g) = slots[primary.index() as usize] {
+        return format_guid(&g);
+    }
 
-    for value_name in key.enum_values()? {
-        let display_name = if value_name.is_empty() {
-            "@".to_string()
-        } else {
-            format!("\"{}\"", value_name.replace('"', "\\\""))
-        };
+    // 情况 2：主槽位是 NoKey → 无法回退。
+    if matches!(slots[primary.index() as usize], SlotValue::NoKey) {
+        return String::new();
+    }
 
-        match key.read_value(&value_name)? {
-            RegValue::Dword(v) => {
-                content.push_str(&format!("{display_name}=dword:{v:08x}\n"));
-            }
-            RegValue::Sz(s) => {
-                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-                content.push_str(&format!("{display_name}=\"{escaped}\"\n"));
-            }
-            RegValue::Binary(bytes) => {
-                let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
-                content.push_str(&format!("{display_name}=hex:{}\n", hex.join(",")));
-            }
-            RegValue::Qword(v) => {
-                let hex: Vec<String> = v
-                    .to_le_bytes()
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect();
-                content.push_str(&format!("{display_name}=hex(b):{}\n", hex.join(",")));
-            }
-            RegValue::MultiSz(strings) => {
-                let mut data = Vec::new();
-                for s in &strings {
-                    for code_unit in s.encode_utf16() {
-                        data.extend_from_slice(&code_unit.to_le_bytes());
-                    }
-                    data.extend_from_slice(&[0, 0]); // 内部 null
-                }
-                data.extend_from_slice(&[0, 0]); // 终止 null
-                let hex: Vec<String> = data.iter().map(|b| format!("{b:02x}")).collect();
-                content.push_str(&format!("{display_name}=hex(7):{}\n", hex.join(",")));
-            }
+    // 情况 3：主槽位是 NoValue → 按优先级回退到其他 PostMix 槽位。
+    // Note 46: PostMix 涉及 GFX/MFX/EFX 三槽位。
+    for fallback in postmix_fallback_order(mode) {
+        if let SlotValue::Guid(g) = slots[fallback.index() as usize] {
+            return format_guid(&g);
         }
     }
 
-    content.push('\n');
-
-    // 递归子键
-    for child_name in key.enum_sub_keys()? {
-        let child_sub = format!("{sub_key}\\{child_name}");
-        let child_display = format!("{display_path}\\{child_name}");
-        dump_key_recursive(root, &child_sub, &child_display, content)?;
-    }
-
-    Ok(())
+    String::new()
 }
 
-/// 根键 HKEY → 名称字符串（指针比较，因 HKEY 在 0.62 中可能不 impl PartialEq）。
-fn hkey_to_name(hkey: HKEY) -> Result<&'static str> {
-    if hkey.0 == HKEY_LOCAL_MACHINE.0 {
-        Ok("HKEY_LOCAL_MACHINE")
-    } else if hkey.0 == HKEY_CURRENT_USER.0 {
-        Ok("HKEY_CURRENT_USER")
-    } else if hkey.0 == HKEY_CLASSES_ROOT.0 {
-        Ok("HKEY_CLASSES_ROOT")
-    } else if hkey.0 == HKEY_USERS.0 {
-        Ok("HKEY_USERS")
-    } else if hkey.0 == HKEY_CURRENT_CONFIG.0 {
-        Ok("HKEY_CURRENT_CONFIG")
-    } else {
-        Err(windows::core::Error::new(
-            E_FAIL,
-            "hkey_to_name: unknown HKEY handle for save_to_file",
-        ))
+// ══════════════════════════════════════════════════════════════════════════════
+// 内部辅助
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// PreMix 回退槽位：另一模式的 PreMix。
+///
+/// LfxGfx → Sfx，SfxMfx/SfxEfx → Lfx。
+fn other_premix_slot(mode: InstallMode) -> ApoSlot {
+    match mode {
+        InstallMode::LfxGfx => ApoSlot::Sfx,
+        InstallMode::SfxMfx | InstallMode::SfxEfx => ApoSlot::Lfx,
+    }
+}
+
+/// PostMix 回退顺序（不含主槽位，已排除）。
+///
+/// Note 46: 涉及 GFX/MFX/EFX 三槽位。
+fn postmix_fallback_order(mode: InstallMode) -> &'static [ApoSlot] {
+    match mode {
+        // EFX 主 → 尝试 MFX → GFX
+        InstallMode::SfxEfx => &[ApoSlot::Mfx, ApoSlot::Gfx],
+        // MFX 主 → 尝试 EFX → GFX
+        InstallMode::SfxMfx => &[ApoSlot::Efx, ApoSlot::Gfx],
+        // GFX 主 → 尝试 EFX → MFX
+        InstallMode::LfxGfx => &[ApoSlot::Efx, ApoSlot::Mfx],
     }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 测试
+// 测试（Note 41）
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── split_key ────────────────────────────────────────────────────────────
+    // ── ApoSlot ───────────────────────────────────────────────────────────
 
     #[test]
-    fn split_key_hklm() {
-        let (root, sub) = split_key(r"HKLM\SOFTWARE\Microsoft").unwrap();
-        assert_eq!(root.0, HKEY_LOCAL_MACHINE.0);
-        assert_eq!(sub, r"SOFTWARE\Microsoft");
+    fn slot_indices() {
+        assert_eq!(ApoSlot::Lfx.index(), 0);
+        assert_eq!(ApoSlot::Gfx.index(), 1);
+        assert_eq!(ApoSlot::Sfx.index(), 2);
+        assert_eq!(ApoSlot::Mfx.index(), 3);
+        assert_eq!(ApoSlot::Efx.index(), 4);
     }
 
     #[test]
-    fn split_key_full_name_case_insensitive() {
-        let (root, sub) = split_key(r"hkey_local_MACHINE\SYSTEM").unwrap();
-        assert_eq!(root.0, HKEY_LOCAL_MACHINE.0);
-        assert_eq!(sub, "SYSTEM");
+    fn slot_all_contains_5() {
+        assert_eq!(ApoSlot::ALL.len(), 5);
     }
 
     #[test]
-    fn split_key_hkcu() {
-        let (root, sub) = split_key(r"HKCU\Software\SomeApp").unwrap();
-        assert_eq!(root.0, HKEY_CURRENT_USER.0);
-        assert_eq!(sub, "Software\\SomeApp");
+    fn slot_all_unique() {
+        let mut indices: Vec<u8> = ApoSlot::ALL.iter().map(|s| s.index()).collect();
+        indices.sort();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
-    fn split_key_hkcr() {
-        let (root, sub) = split_key(r"HKCR\.txt").unwrap();
-        assert_eq!(root.0, HKEY_CLASSES_ROOT.0);
-        assert_eq!(sub, ".txt");
-    }
-
-    #[test]
-    fn split_key_hku() {
-        let (root, sub) = split_key(r"HKU\.DEFAULT\Environment").unwrap();
-        assert_eq!(root.0, HKEY_USERS.0);
-        assert_eq!(sub, ".DEFAULT\\Environment");
-    }
-
-    #[test]
-    fn split_key_hkcc() {
-        let (root, sub) = split_key(r"HKCC\System\CurrentControlSet").unwrap();
-        assert_eq!(root.0, HKEY_CURRENT_CONFIG.0);
-        assert_eq!(sub, "System\\CurrentControlSet");
-    }
-
-    #[test]
-    fn split_key_no_separator_errors() {
-        let err = split_key("HKLM").unwrap_err();
-        assert!(format!("{err}").contains("missing"));
-    }
-
-    #[test]
-    fn split_key_unknown_root_errors() {
-        let err = split_key(r"HKEY_UNKNOWN\SomeKey").unwrap_err();
-        assert!(format!("{err}").contains("unknown root key"));
-    }
-
-    #[test]
-    fn split_key_empty_sub_key() {
-        let (root, sub) = split_key("HKLM\\").unwrap();
-        assert_eq!(root.0, HKEY_LOCAL_MACHINE.0);
-        assert_eq!(sub, "");
-    }
-
-    // ── RegKey — 集成测试 ────────────────────────────────────────────────────
-
-    #[test]
-    fn regkey_open_and_check_values() {
-        let key = RegKey::open(
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion",
-        )
-        .unwrap();
-
-        // CommonFilesDir 是一个常见的 REG_SZ 值
-        assert!(key.value_exists("CommonFilesDir").unwrap());
-        assert!(!key.value_exists("__nonexistent_value_xyz__").unwrap());
-    }
-
-    #[test]
-    fn regkey_open_nonexistent_errors() {
-        let err = RegKey::open(
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\__nonexistent_key_xyz__\__deep__",
-        )
-        .unwrap_err();
-        assert!(err.code().0 != 0);
-    }
-
-    #[test]
-    fn regkey_enum_sub_keys() {
-        let key = RegKey::open(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft").unwrap();
-        let sub_keys = key.enum_sub_keys().unwrap();
-        assert!(!sub_keys.is_empty());
-    }
-
-    #[test]
-    fn regkey_enum_values() {
-        let key = RegKey::open(
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion",
-        )
-        .unwrap();
-        let values = key.enum_values().unwrap();
-        assert!(!values.is_empty());
-    }
-
-    #[test]
-    fn regkey_read_sz_value() {
-        let key = RegKey::open(
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion",
-        )
-        .unwrap();
-
-        match key.read_value("CommonFilesDir") {
-            Ok(RegValue::Sz(s)) => assert!(!s.is_empty()),
-            Ok(other) => panic!("expected RegValue::Sz, got {other:?}"),
-            Err(_) => {} // 某些系统可能没有此值
+    fn slot_value_names_format() {
+        for slot in ApoSlot::ALL {
+            let name = slot.value_name();
+            assert!(name.starts_with('{'), "value_name should start with '{{': {}", name);
+            assert!(name.contains(APO_FX_PROPERTY_GUID));
+            assert!(name.ends_with(&format!(",{}", slot.index())));
         }
     }
 
     #[test]
-    fn parse_multi_sz_basic() {
-        let mut data = Vec::new();
-        for s in ["str1", "str2"] {
-            for ch in s.encode_utf16() {
-                data.extend_from_slice(&ch.to_le_bytes());
-            }
-            data.extend_from_slice(&[0, 0]);
+    fn slot_value_names_distinct() {
+        let names: Vec<String> = ApoSlot::ALL.iter().map(|s| s.value_name()).collect();
+        let unique_count = names.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(unique_count, 5);
+    }
+
+    #[test]
+    fn slot_is_premix() {
+        assert!(ApoSlot::Lfx.is_premix());
+        assert!(ApoSlot::Sfx.is_premix());
+        assert!(!ApoSlot::Gfx.is_premix());
+        assert!(!ApoSlot::Mfx.is_premix());
+        assert!(!ApoSlot::Efx.is_premix());
+    }
+
+    #[test]
+    fn slot_is_postmix() {
+        assert!(!ApoSlot::Lfx.is_postmix());
+        assert!(!ApoSlot::Sfx.is_postmix());
+        assert!(ApoSlot::Gfx.is_postmix());
+        assert!(ApoSlot::Mfx.is_postmix());
+        assert!(ApoSlot::Efx.is_postmix());
+    }
+
+    // ── InstallMode ───────────────────────────────────────────────────────
+
+    #[test]
+    fn mode_default_is_sfx_efx() {
+        assert_eq!(InstallMode::default_mode(), InstallMode::SfxEfx);
+    }
+
+    #[test]
+    fn mode_premix_slots() {
+        assert_eq!(InstallMode::LfxGfx.premix_slot(), ApoSlot::Lfx);
+        assert_eq!(InstallMode::SfxMfx.premix_slot(), ApoSlot::Sfx);
+        assert_eq!(InstallMode::SfxEfx.premix_slot(), ApoSlot::Sfx);
+    }
+
+    #[test]
+    fn mode_postmix_slots() {
+        assert_eq!(InstallMode::LfxGfx.postmix_slot(), ApoSlot::Gfx);
+        assert_eq!(InstallMode::SfxMfx.postmix_slot(), ApoSlot::Mfx);
+        assert_eq!(InstallMode::SfxEfx.postmix_slot(), ApoSlot::Efx);
+    }
+
+    #[test]
+    fn mode_premix_slots_are_premix_type() {
+        for mode in [InstallMode::LfxGfx, InstallMode::SfxMfx, InstallMode::SfxEfx] {
+            assert!(mode.premix_slot().is_premix(), "{:?} premix should be premix type", mode);
         }
-        data.extend_from_slice(&[0, 0]); // double null = end
-
-        let result = parse_multi_sz(&data);
-        assert_eq!(result, vec!["str1", "str2"]);
     }
 
     #[test]
-    fn parse_multi_sz_empty() {
-        let data = vec![0u8, 0]; // 直接 double null
-        let result = parse_multi_sz(&data);
-        assert!(result.is_empty());
+    fn mode_postmix_slots_are_postmix_type() {
+        for mode in [InstallMode::LfxGfx, InstallMode::SfxMfx, InstallMode::SfxEfx] {
+            assert!(mode.postmix_slot().is_postmix(), "{:?} postmix should be postmix type", mode);
+        }
     }
 
-    // ── key_exists 顶层函数 ──────────────────────────────────────────────────
+    // ── SlotValue ─────────────────────────────────────────────────────────
 
     #[test]
-    fn key_exists_hklm_software() {
-        assert!(key_exists(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft").unwrap());
+    fn slot_value_is_guid() {
+        let g = GUID::zeroed();
+        assert!(SlotValue::Guid(g).is_guid());
+        assert!(!SlotValue::NoKey.is_guid());
+        assert!(!SlotValue::NoValue.is_guid());
     }
 
     #[test]
-    fn key_exists_nonexistent() {
-        assert!(!key_exists(HKEY_LOCAL_MACHINE, r"SOFTWARE\__no_such_key__").unwrap());
+    fn slot_value_is_empty() {
+        assert!(SlotValue::NoKey.is_empty());
+        assert!(SlotValue::NoValue.is_empty());
+        assert!(!SlotValue::Guid(GUID::zeroed()).is_empty());
     }
 
-    // ── is_windows_version_at_least ──────────────────────────────────────────
+    #[test]
+    fn slot_value_as_guid() {
+        let g = GUID::zeroed();
+        assert_eq!(SlotValue::Guid(g).as_guid(), Some(g));
+        assert_eq!(SlotValue::NoKey.as_guid(), None);
+        assert_eq!(SlotValue::NoValue.as_guid(), None);
+    }
 
     #[test]
-    fn windows_version_check_runs() {
-        let _ = is_windows_version_at_least(10, 0, 0);
+    fn slot_value_debug() {
+        assert_eq!(format!("{:?}", SlotValue::NoKey), "NoKey");
+        assert_eq!(format!("{:?}", SlotValue::NoValue), "NoValue");
+        let dbg = format!("{:?}", SlotValue::Guid(GUID::zeroed()));
+        assert!(dbg.starts_with("Guid("));
+    }
+
+    #[test]
+    fn slot_value_clone() {
+        let v = SlotValue::Guid(GUID::zeroed());
+        let v2 = v.clone();
+        assert_eq!(v, v2);
+    }
+
+    // ── format_guid ───────────────────────────────────────────────────────
+
+    #[test]
+    fn format_guid_zeroed() {
+        let g = GUID::zeroed();
+        let s = format_guid(&g);
+        assert_eq!(s, "{00000000-0000-0000-0000-000000000000}");
+    }
+
+    #[test]
+    fn format_guid_has_braces() {
+        let g = GUID::zeroed();
+        let s = format_guid(&g);
+        assert!(s.starts_with('{'));
+        assert!(s.ends_with('}'));
+        assert_eq!(s.len(), 38); // {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
+    }
+
+    // ── parse_guid_from_bytes ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_guid_roundtrip() {
+        let original = GUID::from_values(
+            0xC18E2F7E,
+            0x933D,
+            0x4965,
+            [0xB7, 0xD1, 0x1E, 0xEF, 0x22, 0x8D, 0x2A, 0xF3],
+        );
+
+        // 序列化为 16 字节小端
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(&original.to_bytes());
+
+        let parsed = parse_guid_from_bytes(&bytes);
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn parse_guid_zeroed() {
+        let bytes = [0u8; 16];
+        let g = parse_guid_from_bytes(&bytes);
+        assert_eq!(g, GUID::zeroed());
+    }
+
+    // ── 回退逻辑 — get_original_pre_mix（Note 46） ────────────────────────
+
+    #[test]
+    fn premix_primary_has_guid() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(1));
+        assert_eq!(
+            get_original_pre_mix(&slots, InstallMode::SfxEfx),
+            format_guid(&test_guid(1))
+        );
+    }
+
+    #[test]
+    fn premix_primary_nokey_returns_empty() {
+        let slots = empty_slots();
+        assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxEfx), "");
+    }
+
+    #[test]
+    fn premix_novalue_fallback_to_lfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(2));
+        assert_eq!(
+            get_original_pre_mix(&slots, InstallMode::SfxEfx),
+            format_guid(&test_guid(2))
+        );
+    }
+
+    #[test]
+    fn premix_novalue_lfx_novalue_returns_empty() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::NoValue;
+        assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxEfx), "");
+    }
+
+    #[test]
+    fn premix_lfxgfx_mode_uses_lfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(3));
+        assert_eq!(
+            get_original_pre_mix(&slots, InstallMode::LfxGfx),
+            format_guid(&test_guid(3))
+        );
+    }
+
+    #[test]
+    fn premix_lfxgfx_novalue_fallback_to_sfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(4));
+        assert_eq!(
+            get_original_pre_mix(&slots, InstallMode::LfxGfx),
+            format_guid(&test_guid(4))
+        );
+    }
+
+    #[test]
+    fn premix_sfxmfx_mode_uses_sfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(5));
+        assert_eq!(
+            get_original_pre_mix(&slots, InstallMode::SfxMfx),
+            format_guid(&test_guid(5))
+        );
+    }
+
+    #[test]
+    fn premix_novalue_fallback_skips_nokey() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::NoValue;
+        assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxEfx), "");
+    }
+
+    // ── 回退逻辑 — get_original_post_mix（Note 46） ───────────────────────
+
+    #[test]
+    fn postmix_primary_has_guid() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::Guid(test_guid(10));
+        assert_eq!(
+            get_original_post_mix(&slots, InstallMode::SfxEfx),
+            format_guid(&test_guid(10))
+        );
+    }
+
+    #[test]
+    fn postmix_primary_nokey_returns_empty() {
+        let slots = empty_slots();
+        assert_eq!(get_original_post_mix(&slots, InstallMode::SfxEfx), "");
+    }
+
+    #[test]
+    fn postmix_sfxefx_novalue_fallback_to_mfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Mfx.index() as usize] = SlotValue::Guid(test_guid(11));
+        assert_eq!(
+            get_original_post_mix(&slots, InstallMode::SfxEfx),
+            format_guid(&test_guid(11))
+        );
+    }
+
+    #[test]
+    fn postmix_sfxefx_novalue_fallback_to_gfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Mfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Gfx.index() as usize] = SlotValue::Guid(test_guid(12));
+        assert_eq!(
+            get_original_post_mix(&slots, InstallMode::SfxEfx),
+            format_guid(&test_guid(12))
+        );
+    }
+
+    #[test]
+    fn postmix_sfxefx_all_empty_returns_empty() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Mfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Gfx.index() as usize] = SlotValue::NoValue;
+        assert_eq!(get_original_post_mix(&slots, InstallMode::SfxEfx), "");
+    }
+
+    #[test]
+    fn postmix_sfxmfx_novalue_fallback_to_efx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Mfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::Guid(test_guid(13));
+        assert_eq!(
+            get_original_post_mix(&slots, InstallMode::SfxMfx),
+            format_guid(&test_guid(13))
+        );
+    }
+
+    #[test]
+    fn postmix_lfxgfx_novalue_fallback_to_efx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Gfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::Guid(test_guid(14));
+        assert_eq!(
+            get_original_post_mix(&slots, InstallMode::LfxGfx),
+            format_guid(&test_guid(14))
+        );
+    }
+
+    #[test]
+    fn postmix_lfxgfx_novalue_fallback_to_mfx() {
+        let mut slots = empty_slots();
+        slots[ApoSlot::Gfx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
+        slots[ApoSlot::Mfx.index() as usize] = SlotValue::Guid(test_guid(15));
+        assert_eq!(
+            get_original_post_mix(&slots, InstallMode::LfxGfx),
+            format_guid(&test_guid(15))
+        );
+    }
+
+    // ── 回退顺序验证 ─────────────────────────────────────────────────────
+
+    #[test]
+    fn postmix_fallback_order_sfxefx() {
+        assert_eq!(postmix_fallback_order(InstallMode::SfxEfx), &[ApoSlot::Mfx, ApoSlot::Gfx]);
+    }
+
+    #[test]
+    fn postmix_fallback_order_sfxmfx() {
+        assert_eq!(postmix_fallback_order(InstallMode::SfxMfx), &[ApoSlot::Efx, ApoSlot::Gfx]);
+    }
+
+    #[test]
+    fn postmix_fallback_order_lfxgfx() {
+        assert_eq!(postmix_fallback_order(InstallMode::LfxGfx), &[ApoSlot::Efx, ApoSlot::Mfx]);
+    }
+
+    // ── other_premix_slot ─────────────────────────────────────────────────
+
+    #[test]
+    fn other_premix_for_lfxgfx_is_sfx() {
+        assert_eq!(other_premix_slot(InstallMode::LfxGfx), ApoSlot::Sfx);
+    }
+
+    #[test]
+    fn other_premix_for_sfxefx_is_lfx() {
+        assert_eq!(other_premix_slot(InstallMode::SfxEfx), ApoSlot::Lfx);
+    }
+
+    #[test]
+    fn other_premix_for_sfxmfx_is_lfx() {
+        assert_eq!(other_premix_slot(InstallMode::SfxMfx), ApoSlot::Lfx);
+    }
+
+    // ── 常量验证 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn install_version_constants() {
+        assert_eq!(INSTALL_VERSION, "2");
+        assert_eq!(INSTALL_VERSION_LEGACY, "1");
+        assert_ne!(INSTALL_VERSION, INSTALL_VERSION_LEGACY);
+    }
+
+    #[test]
+    fn apo_fx_property_guid_format() {
+        assert_eq!(APO_FX_PROPERTY_GUID.len(), 36);
+        assert!(!APO_FX_PROPERTY_GUID.contains('{'));
+        assert!(!APO_FX_PROPERTY_GUID.contains('}'));
+    }
+
+    // ── 辅助函数 ──────────────────────────────────────────────────────────
+
+    fn empty_slots() -> [SlotValue; 5] {
+        [SlotValue::NoKey; 5]
+    }
+
+    fn test_guid(n: u32) -> GUID {
+        GUID::from_values(
+            0xA000_0000 + n,
+            0xB000 + n as u16,
+            0xC000 + n as u16,
+            [
+                0xD0,
+                0xE0,
+                0xF0,
+                n as u8,
+                (n >> 8) as u8,
+                (n >> 16) as u8,
+                (n >> 24) as u8,
+                0xFF,
+            ],
+        )
     }
 }

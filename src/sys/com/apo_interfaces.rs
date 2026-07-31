@@ -31,6 +31,11 @@ pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT;
 /// 配置接口——锁定/解锁处理流程（windows-rs 结构体）。
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration;
 
+// ── 对应 _Impl traits（#[implement] 实现对象时使用）───────────────────────────
+pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObject_Impl;
+pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT_Impl;
+pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration_Impl;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // IID 导出常量（7 个）
 // ══════════════════════════════════════════════════════════════════════════════

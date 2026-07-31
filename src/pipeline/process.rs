@@ -1,11 +1,13 @@
-//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（v6.2 规范 4.6）
+﻿//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（v6.2 规范 4.6）
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::pipeline::buffer::{evaluate_buffer, BufferAction, BufferInfo, is_silent};
 use crate::pipeline::chain::Chain;
 use crate::pipeline::interleave::{deinterleave_into, interleave_from};
-use crate::sys::com::apo_types::{APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY};
+use crate::sys::com::apo_types::{
+    APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID,
+};
 use crate::utils::vx_error::Result;
 
 /// 错误恢复策略。
@@ -106,11 +108,11 @@ pub fn process_audio(
         let mut output_info = BufferInfo::from_prop_mut(output_prop, out_ch);
 
         // Step 1: evaluate_buffer
-        let (action, mut output_flags) = evaluate_buffer(input_prop.buffer_flags, params.allow_silent_buffer);
+        let (action, mut output_flags) = evaluate_buffer(input_prop.u32BufferFlags, params.allow_silent_buffer);
         match action {
             BufferAction::Skip | BufferAction::Silent => {
                 output_info.zero();
-                output_prop.buffer_flags = APO_BUFFER_FLAGS::Silent;
+                output_prop.u32BufferFlags = BUFFER_SILENT;
                 continue;
             }
             BufferAction::Process => {}
@@ -123,13 +125,13 @@ pub fn process_audio(
         deinterleave_into(input_slice, &mut temp_buffers[..in_ch], in_ch, frames);
 
         // Step 3: is_silent 优化检测
-        if output_flags == APO_BUFFER_FLAGS::Silent {
+        if output_flags == BUFFER_SILENT {
             if is_silent(&temp_buffers[..out_ch.min(temp_buffers.len())], frames) {
                 output_info.zero();
-                output_prop.buffer_flags = APO_BUFFER_FLAGS::Silent;
+                output_prop.u32BufferFlags = BUFFER_SILENT;
                 continue;
             } else {
-                output_flags = APO_BUFFER_FLAGS::Valid;
+                output_flags = BUFFER_VALID;
             }
         }
 
@@ -152,16 +154,16 @@ pub fn process_audio(
         // Step 6: 错误恢复
         if result.is_err() {
             apply_error_policy(result, input_slice, output_slice, params.error_policy, stats);
-            output_prop.buffer_flags = match params.error_policy {
-                ErrorPolicy::Bypass => APO_BUFFER_FLAGS::Valid,
-                ErrorPolicy::Silence => APO_BUFFER_FLAGS::Silent,
+            output_prop.u32BufferFlags = match params.error_policy {
+                ErrorPolicy::Bypass => BUFFER_VALID,
+                ErrorPolicy::Silence => BUFFER_SILENT,
             };
             continue;
         }
 
         // Step 7: 去交织 → 交织
         interleave_from(&temp_buffers[..out_ch.min(temp_buffers.len())], output_slice, out_ch.min(temp_buffers.len()), frames);
-        output_prop.buffer_flags = APO_BUFFER_FLAGS::Valid;
+        output_prop.u32BufferFlags = BUFFER_VALID;
     }
     Ok(())
 }

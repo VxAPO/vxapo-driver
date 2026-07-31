@@ -1,4 +1,4 @@
-//! host/instance/factory.rs — COM ClassFactory 实现（Note 2/3/4/5）
+﻿//! host/instance/factory.rs — COM ClassFactory 实现（Note 2/3/4/5）
 //!
 //! 职责：
 //! 1. 管理 `LOCK_COUNT` 原子计数，跟踪客户端显式锁定（Note 2）
@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::core::{GUID, HRESULT, IUnknown, Ref, BOOL, implement, Error};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 
-use crate::sys::com::base;
-use crate::host::instance::apo_interface::ApoObject;
-use crate::host::instance::reg_props::is_vxapo_clsid;
+use crate::object::apo::ApoObject;
+use crate::object::vx_reg_props::is_vxapo_clsid;
+use crate::sys::com::prelude::*;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // LOCK_COUNT
@@ -70,12 +70,12 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 
         // ── Step 2: 参数校验 ───────────────────────────────
         if riid.is_null() || ppvobject.is_null() {
-            return Err(Error::from(base::E_INVALIDARG));
+            return Err(Error::from(E_INVALIDARG));
         }
 
         // ── Step 3: 聚合检查 ───────────────────────────────
         if !punkouter.is_null() {
-            return Err(Error::from(base::CLASS_E_NOAGGREGATION));
+            return Err(Error::from(CLASS_E_NOAGGREGATION));
         }
 
         // ── Step 4: 创建 ApoObject ─────────────────────────
@@ -134,8 +134,8 @@ pub fn create_factory(clsid: &GUID) -> Option<IClassFactory> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::instance::ref_count as inst_count;
-    use crate::host::instance::reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
+    use crate::object::ref_count as inst_count;
+    use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
 
     // ── LOCK_COUNT ──────────────────────────────────────────────────────────
 

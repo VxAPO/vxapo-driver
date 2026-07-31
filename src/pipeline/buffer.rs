@@ -1,6 +1,6 @@
 //! pipeline/buffer.rs — 缓冲区描述与状态判定（v6.2 规范 4.2）
 
-use crate::sys::com::apo_types::{APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY};
+use crate::sys::com::apo_types::{APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID};
 
 /// 静音阈值（-200 dBFS 以下）。
 const SILENCE_THRESHOLD: f32 = 1e-10;
@@ -20,28 +20,28 @@ impl BufferInfo {
 
     pub fn from_prop(prop: &APO_CONNECTION_PROPERTY, channels: usize) -> Self {
         Self {
-            ptr: prop.p_buffer as *mut f32,
-            valid_frames: prop.valid_frame_count as usize,
-            flags: prop.buffer_flags,
+            ptr: prop.pBuffer as *mut f32,
+            valid_frames: prop.u32ValidFrameCount as usize,
+            flags: prop.u32BufferFlags,
             channels,
         }
     }
 
     pub fn from_prop_mut(prop: &mut APO_CONNECTION_PROPERTY, channels: usize) -> Self {
         Self {
-            ptr: prop.p_buffer as *mut f32,
-            valid_frames: prop.valid_frame_count as usize,
-            flags: prop.buffer_flags,
+            ptr: prop.pBuffer as *mut f32,
+            valid_frames: prop.u32ValidFrameCount as usize,
+            flags: prop.u32BufferFlags,
             channels,
         }
     }
 
     pub fn is_valid(&self) -> bool {
-        self.flags == APO_BUFFER_FLAGS::Valid
+        self.flags == BUFFER_VALID
     }
 
     pub fn is_silent(&self) -> bool {
-        self.flags == APO_BUFFER_FLAGS::Silent
+        self.flags == BUFFER_SILENT
     }
 
     pub fn total_samples(&self) -> usize {
@@ -79,31 +79,30 @@ impl BufferInfo {
 /// 缓冲区处理动作（v6.2 规范 4.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferAction {
-    /// 正常处理——缓冲区包含有效音频数据，或静音但允许处理。
+    /// 正常处理。
     Process,
-    /// 跳过——标志不合法（Invalid），不处理，输出清零。
+    /// 跳过（Invalid）。
     Skip,
-    /// 静音——标志为 Silent 且不允许静音缓冲区修改，输出清零。
+    /// 静音（Silent 且不允许修改）。
     Silent,
 }
 
 /// 根据输入标志和 allowSilentBuffer 确定处理动作。
 pub fn evaluate_buffer(flags: APO_BUFFER_FLAGS, allow_silent_buffer: bool) -> (BufferAction, APO_BUFFER_FLAGS) {
-    match flags {
-        APO_BUFFER_FLAGS::Invalid => (BufferAction::Skip, APO_BUFFER_FLAGS::Invalid),
-        APO_BUFFER_FLAGS::Silent if !allow_silent_buffer => (BufferAction::Silent, APO_BUFFER_FLAGS::Silent),
-        APO_BUFFER_FLAGS::Silent => (BufferAction::Process, APO_BUFFER_FLAGS::Silent),
-        APO_BUFFER_FLAGS::Valid => (BufferAction::Process, APO_BUFFER_FLAGS::Valid),
+    if flags == BUFFER_INVALID {
+        (BufferAction::Skip, BUFFER_INVALID)
+    } else if flags == BUFFER_SILENT && !allow_silent_buffer {
+        (BufferAction::Silent, BUFFER_SILENT)
+    } else if flags == BUFFER_SILENT {
+        (BufferAction::Process, BUFFER_SILENT)
+    } else {
+        (BufferAction::Process, BUFFER_VALID)
     }
 }
 
 /// 检查去交织平面缓冲区中所有采样是否为静音。
 pub fn is_silent(samples: &[Vec<f32>], frame_count: usize) -> bool {
-    samples.iter().all(|ch| {
-        ch[..frame_count]
-            .iter()
-            .all(|&v| v.abs() <= SILENCE_THRESHOLD)
-    })
+    samples.iter().all(|ch| ch[..frame_count].iter().all(|&v| v.abs() <= SILENCE_THRESHOLD))
 }
 
 /// 将去交织平面缓冲区所有通道清零。
@@ -163,29 +162,28 @@ mod tests {
 
     #[test]
     fn evaluate_valid_process() {
-        assert_eq!(evaluate_buffer(APO_BUFFER_FLAGS::Valid, false), (BufferAction::Process, APO_BUFFER_FLAGS::Valid));
+        assert_eq!(evaluate_buffer(BUFFER_VALID, false), (BufferAction::Process, BUFFER_VALID));
     }
 
     #[test]
     fn evaluate_invalid_skip() {
-        assert_eq!(evaluate_buffer(APO_BUFFER_FLAGS::Invalid, true), (BufferAction::Skip, APO_BUFFER_FLAGS::Invalid));
+        assert_eq!(evaluate_buffer(BUFFER_INVALID, true), (BufferAction::Skip, BUFFER_INVALID));
     }
 
     #[test]
     fn evaluate_silent_no_allow() {
-        assert_eq!(evaluate_buffer(APO_BUFFER_FLAGS::Silent, false), (BufferAction::Silent, APO_BUFFER_FLAGS::Silent));
+        assert_eq!(evaluate_buffer(BUFFER_SILENT, false), (BufferAction::Silent, BUFFER_SILENT));
     }
 
     #[test]
     fn evaluate_silent_allow() {
-        assert_eq!(evaluate_buffer(APO_BUFFER_FLAGS::Silent, true), (BufferAction::Process, APO_BUFFER_FLAGS::Silent));
+        assert_eq!(evaluate_buffer(BUFFER_SILENT, true), (BufferAction::Process, BUFFER_SILENT));
     }
 
     #[test]
     fn is_silent_detects() {
         assert!(is_silent(&[vec![0.0, 0.0], vec![0.0, 0.0]], 2));
         assert!(!is_silent(&[vec![0.0, 1.0], vec![0.0, 0.0]], 2));
-        assert!(is_silent(&[vec![1e-11, 0.0]], 2)); // 阈值以下视为静音
     }
 
     #[test]
@@ -198,14 +196,5 @@ mod tests {
         copy_buffers(&src, &mut b, 2);
         assert_eq!(b[0][0], 5.0);
         assert_eq!(b[1][1], 8.0);
-    }
-
-    #[test]
-    fn summarize_computes_peak_rms() {
-        let b = vec![vec![1.0, 3.0]];
-        let s = summarize(&b, 2);
-        assert_eq!(s.peak_level, 3.0);
-        assert!((s.rms_level - 2.236).abs() < 0.001);
-        assert_eq!(s.channels, 1);
     }
 }

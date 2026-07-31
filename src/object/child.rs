@@ -1,4 +1,4 @@
-//! host/instance/apo_child.rs — 子 APO 管理（Note 6/7）
+﻿//! host/instance/apo_child.rs — 子 APO 管理（Note 6/7）
 //!
 //! 子 APO COM 生命周期管理：
 //! - `CoCreateInstance` 创建子 APO 实例
@@ -15,13 +15,10 @@ use std::ffi::c_void;
 
 use windows::core::{GUID, HRESULT, IUnknown};
 
-use crate::sys::com::apo_abi::{
-    IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, REFERENCE_TIME,
-    APO_CONNECTION_DESCRIPTOR,
-    APO_REG_PROPERTIES,
-    IAudioMediaType,
-};
-use crate::sys::com::base;
+use crate::sys::com::apo_interfaces::{IAudioMediaType, IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT};
+use crate::sys::com::apo_types::{APO_CONNECTION_DESCRIPTOR, APO_REG_PROPERTIES};
+use crate::sys::com::apo_types::REFERENCE_TIME;
+use crate::sys::com::prelude::*;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // COM vtable 布局常量
@@ -147,7 +144,7 @@ impl ChildApo {
     /// 重置子 APO（`Reset`，vtable[3]）。
     pub fn reset(&self) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 3);
@@ -167,7 +164,7 @@ impl ChildApo {
         pp_props: *mut *mut APO_REG_PROPERTIES,
     ) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 5);
@@ -186,7 +183,7 @@ impl ChildApo {
     /// `pby_data` 必须指向有效的 `cb_data_size` 字节缓冲区。
     pub unsafe fn initialize(&self, cb_data_size: u32, pby_data: *mut u8) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 6);
@@ -211,7 +208,7 @@ impl ChildApo {
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 7);
@@ -242,7 +239,7 @@ impl ChildApo {
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 8);
@@ -264,7 +261,7 @@ impl ChildApo {
     /// 新增：获取输入通道数（`GetInputChannelCount`，vtable[9]）。
     pub fn get_input_channel_count(&self, p_count: *mut u32) -> HRESULT {
         if self.iapo_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_ptr, 9);
@@ -326,7 +323,7 @@ impl ChildApo {
         pp_outputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
     ) -> HRESULT {
         if self.iapo_cfg_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_cfg_ptr, 3);
@@ -344,7 +341,7 @@ impl ChildApo {
     /// 解锁子 APO（`UnlockForProcess`，vtable[4]）。
     pub fn unlock_for_process(&self) -> HRESULT {
         if self.iapo_cfg_ptr.is_null() {
-            return base::E_POINTER;
+            return E_POINTER;
         }
         unsafe {
             let fn_ptr = self.vtbl_method(self.iapo_cfg_ptr, 4);
@@ -468,13 +465,13 @@ mod tests {
     #[test]
     fn null_child_reset_returns_error() {
         let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.reset(), base::E_POINTER);
+        assert_eq!(apo.reset(), E_POINTER);
     }
 
     #[test]
     fn null_child_unlock_returns_error() {
         let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.unlock_for_process(), base::E_POINTER);
+        assert_eq!(apo.unlock_for_process(), E_POINTER);
     }
 
     #[test]

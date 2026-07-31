@@ -30,7 +30,7 @@ use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::Registry::*;
 
-use crate::sys::com::base;
+use crate::sys::com::prelude::*;
 use crate::object::factory;
 use crate::object::ref_count as inst_count;
 
@@ -127,7 +127,7 @@ pub unsafe extern "system" fn DllGetClassObject(
     // SAFETY: COM 运行时保证传入有效指针或 null。
 
     if rclsid.is_null() || riid.is_null() || ppv.is_null() {
-        return base::E_POINTER;
+        return E_POINTER;
     }
 
     // 预置 null，调用方可以据此判断失败（Note 2）
@@ -141,7 +141,7 @@ pub unsafe extern "system" fn DllGetClassObject(
     // 创建工厂（#[implement] COM 智能指针，ref_count 初始 = 1）
     let factory: IClassFactory = match factory::create_factory(&clsid) {
         Some(f) => f,
-        None => return base::CLASS_E_CLASSNOTAVAILABLE,
+        None => return CLASS_E_CLASSNOTAVAILABLE,
     };
 
     // ── QueryInterface 获取请求的接口 ──────────────────────
@@ -182,9 +182,9 @@ pub unsafe extern "system" fn DllGetClassObject(
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     if inst_count::is_zero() && factory::lock_is_zero() {
-        base::S_OK
+        S_OK
     } else {
-        base::S_FALSE
+        S_FALSE
     }
 }
 
@@ -205,7 +205,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
     // 获取 DLL 路径 — 需要 HMODULE（DllMain 中保存）。
     let dll_path = match get_dll_path() {
         Some(p) => p,
-        None => return base::E_FAIL,
+        None => return E_FAIL,
     };
 
     // 注册顺序（Note 29）：PostMix → PreMix
@@ -221,7 +221,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
         }
     }
 
-    base::S_OK
+    S_OK
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -245,7 +245,7 @@ pub extern "system" fn DllUnregisterServer() -> HRESULT {
         // 尽力清理，即使某条目注销失败也继续（Note 30）
         let _ = unregister_com_class(entry);
     }
-    base::S_OK
+    S_OK
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -299,7 +299,7 @@ fn register_com_class(
             None,
         );
         if result.is_err() {
-            return Err(base::E_FAIL);
+            return Err(E_FAIL);
         }
         hkey
     };
@@ -320,7 +320,7 @@ fn register_com_class(
     if write_result.is_err() {
         // SAFETY: hkey 由 RegCreateKeyExW 成功打开。
         unsafe { let _ = RegCloseKey(hkey); }
-        return Err(base::E_FAIL);
+        return Err(E_FAIL);
     }
 
     // 写入 ThreadingModel = "Both"（Note 5）
@@ -340,7 +340,7 @@ fn register_com_class(
     unsafe { let _ = RegCloseKey(hkey); }
 
     if tm_result.is_err() {
-        return Err(base::E_FAIL);
+        return Err(E_FAIL);
     }
 
     Ok(())
@@ -405,7 +405,7 @@ mod tests {
     fn can_unload_when_empty() {
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
-        assert_eq!(DllCanUnloadNow(), base::S_OK);
+        assert_eq!(DllCanUnloadNow(), S_OK);
     }
 
     #[test]
@@ -416,11 +416,11 @@ mod tests {
         // 创建 APO 对象实例，INST_COUNT + 1
         let _apo = crate::host::instance::apo_interface::ApoObject::new(CLSID_VXAPO_PRE_MIX);
         assert_eq!(inst_count::get(), 1);
-        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), S_FALSE);
 
         // drop 时析构函数调用 Release，INST_COUNT - 1
         drop(_apo);
-        assert_eq!(DllCanUnloadNow(), base::S_OK);
+        assert_eq!(DllCanUnloadNow(), S_OK);
     }
 
     #[test]
@@ -429,10 +429,10 @@ mod tests {
         factory::lock_reset_for_test();
 
         factory::lock_increment();
-        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), S_FALSE);
 
         factory::lock_decrement();
-        assert_eq!(DllCanUnloadNow(), base::S_OK);
+        assert_eq!(DllCanUnloadNow(), S_OK);
     }
 
     #[test]
@@ -442,15 +442,15 @@ mod tests {
 
         inst_count::increment();
         factory::lock_increment();
-        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), S_FALSE);
 
         // 仅释放实例，仍有锁定
         inst_count::decrement();
-        assert_eq!(DllCanUnloadNow(), base::S_FALSE);
+        assert_eq!(DllCanUnloadNow(), S_FALSE);
 
         // 释放锁定后全部清零
         factory::lock_decrement();
-        assert_eq!(DllCanUnloadNow(), base::S_OK);
+        assert_eq!(DllCanUnloadNow(), S_OK);
     }
 
     // ── DllGetClassObject ───────────────────────────────────────────────────
@@ -470,7 +470,7 @@ mod tests {
             )
         };
 
-        assert_eq!(hr, base::S_OK);
+        assert_eq!(hr, S_OK);
         assert!(!ppv.is_null());
 
         // Phase 4：通过 vtable 调用 Release 释放
@@ -492,7 +492,7 @@ mod tests {
             )
         };
 
-        assert_eq!(hr, base::S_OK);
+        assert_eq!(hr, S_OK);
         assert!(!ppv.is_null());
 
         // Phase 4：通过 vtable 调用 Release 释放
@@ -513,7 +513,7 @@ mod tests {
             )
         };
 
-        assert_eq!(hr, base::CLASS_E_CLASSNOTAVAILABLE);
+        assert_eq!(hr, CLASS_E_CLASSNOTAVAILABLE);
         assert!(ppv.is_null());
     }
 
@@ -526,7 +526,7 @@ mod tests {
                 std::ptr::null_mut(),
             )
         };
-        assert_eq!(hr, base::E_POINTER);
+        assert_eq!(hr, E_POINTER);
     }
 
     // ── DllMain ─────────────────────────────────────────────────────────────
@@ -577,13 +577,13 @@ mod tests {
                 &mut ppv as *mut *mut c_void,
             )
         };
-        assert_eq!(hr, base::S_OK);
+        assert_eq!(hr, S_OK);
         assert!(!ppv.is_null());
 
         // 2. 释放工厂 — Phase 4 已用 #[implement] COM 智能指针
         unsafe { release_com_ptr(ppv); }
 
         // 3. 确认可卸载
-        assert_eq!(DllCanUnloadNow(), base::S_OK);
+        assert_eq!(DllCanUnloadNow(), S_OK);
     }
 }

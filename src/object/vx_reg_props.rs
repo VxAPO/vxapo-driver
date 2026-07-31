@@ -1,4 +1,4 @@
-//! host/instance/reg_props.rs — APO 注册属性定义（Note 42）
+﻿//! host/instance/reg_props.rs — APO 注册属性定义（Note 42）
 //!
 //! VxAPO 自身的 CLSID 定义与 APO 注册属性。
 //! 系统级接口 IID 请见 `sys/iid.rs`。
@@ -14,7 +14,8 @@
 
 use windows::core::GUID;
 
-use crate::sys::com::apo_abi::{APO_FLAG, APO_REG_PROPERTIES, IID_IAPO};
+use crate::sys::com::apo_interfaces::IID_IAPO;
+use crate::sys::com::apo_types::{APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, APO_FLAG_FRAMESPERSECOND_MUST_MATCH, APO_FLAG_INPLACE, APO_REG_PROPERTIES};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CLSID 常量
@@ -46,9 +47,9 @@ const APO_COPYRIGHT: &str = "VxAPO Project";
 // ══════════════════════════════════════════════════════════════════════════════
 
 const APO_FLAGS: APO_FLAG = APO_FLAG(
-    APO_FLAG::FRAMESPERSECOND_MUST_MATCH.0
-    | APO_FLAG::BITSPERSAMPLE_MUST_MATCH.0
-    | APO_FLAG::INPLACE.0,
+    APO_FLAG_FRAMESPERSECOND_MUST_MATCH.0
+    | APO_FLAG_BITSPERSAMPLE_MUST_MATCH.0
+    | APO_FLAG_INPLACE.0,
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -74,23 +75,34 @@ const fn str_to_u16_256(s: &str) -> [u16; 256] {
 
 pub static REG_PROPS_PRE_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
     clsid: CLSID_VXAPO_PRE_MIX,
-    flags: APO_FLAGS,
-    sz_friendly_name: str_to_u16_256(APO_NAME),
-    sz_copyright_info: str_to_u16_256(APO_COPYRIGHT),
-    major_version: 1,
-    minor_version: 0,
-    min_input_connections: 1,
-    max_input_connections: 1,
-    min_output_connections: 1,
-    max_output_connections: 1,
-    max_instances: 1,
-    num_apo_interfaces: 3,
-    iid_apo_interface_list: [IID_IAPO],
+    Flags: APO_FLAGS,
+    szFriendlyName: str_to_u16_256(APO_NAME),
+    szCopyrightInfo: str_to_u16_256(APO_COPYRIGHT),
+    u32MajorVersion: 1,
+    u32MinorVersion: 0,
+    u32MinInputConnections: 1,
+    u32MaxInputConnections: 1,
+    u32MinOutputConnections: 1,
+    u32MaxOutputConnections: 1,
+    u32MaxInstances: 1,
+    u32NumAPOInterfaces: 3,
+    iidAPOInterfaceList: [IID_IAPO],
 };
 
 pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
     clsid: CLSID_VXAPO_POST_MIX,
-    ..REG_PROPS_PRE_MIX
+    Flags: APO_FLAGS,
+    szFriendlyName: str_to_u16_256(APO_NAME),
+    szCopyrightInfo: str_to_u16_256(APO_COPYRIGHT),
+    u32MajorVersion: 1,
+    u32MinorVersion: 0,
+    u32MinInputConnections: 1,
+    u32MaxInputConnections: 1,
+    u32MinOutputConnections: 1,
+    u32MaxOutputConnections: 1,
+    u32MaxInstances: 1,
+    u32NumAPOInterfaces: 3,
+    iidAPOInterfaceList: [IID_IAPO],
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -99,11 +111,11 @@ pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
 
 const _: () = {
     assert!(APO_FLAGS.0 == 0x0000_000D);
-    assert!(REG_PROPS_PRE_MIX.sz_friendly_name[0] != 0);
-    assert!(REG_PROPS_PRE_MIX.flags.0 == REG_PROPS_POST_MIX.flags.0);
+    assert!(REG_PROPS_PRE_MIX.szFriendlyName[0] != 0);
+    assert!(REG_PROPS_PRE_MIX.Flags.0 == REG_PROPS_POST_MIX.Flags.0);
     assert!(
-        REG_PROPS_PRE_MIX.max_input_connections
-            == REG_PROPS_POST_MIX.max_input_connections
+        REG_PROPS_PRE_MIX.u32MaxInputConnections
+            == REG_PROPS_POST_MIX.u32MaxInputConnections
     );
 };
 
@@ -151,58 +163,58 @@ mod tests {
 
     #[test]
     fn apo_name_encoded_correctly() {
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[0], 'V' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[1], 'x' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[2], 'A' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[3], 'P' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[4], 'O' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name[5], 0);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName[0], 'V' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName[1], 'x' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName[2], 'A' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName[3], 'P' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName[4], 'O' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName[5], 0);
     }
 
     #[test]
     fn apo_copyright_encoded_correctly() {
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info[0], 'V' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info[1], 'x' as u16);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info[13], 0);
+        assert_eq!(REG_PROPS_PRE_MIX.szCopyrightInfo[0], 'V' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szCopyrightInfo[1], 'x' as u16);
+        assert_eq!(REG_PROPS_PRE_MIX.szCopyrightInfo[13], 0);
     }
 
     #[test]
     fn flags_value() {
-        let expected = APO_FLAG::INPLACE.0
-            | APO_FLAG::FRAMESPERSECOND_MUST_MATCH.0
-            | APO_FLAG::BITSPERSAMPLE_MUST_MATCH.0;
-        assert_eq!(REG_PROPS_PRE_MIX.flags.0, expected);
-        assert_eq!(REG_PROPS_POST_MIX.flags.0, expected);
+        let expected = APO_FLAG_INPLACE.0
+            | APO_FLAG_FRAMESPERSECOND_MUST_MATCH.0
+            | APO_FLAG_BITSPERSAMPLE_MUST_MATCH.0;
+        assert_eq!(REG_PROPS_PRE_MIX.Flags.0, expected);
+        assert_eq!(REG_PROPS_POST_MIX.Flags.0, expected);
     }
 
     #[test]
     fn props_share_everything_except_clsid() {
-        assert_eq!(REG_PROPS_PRE_MIX.flags, REG_PROPS_POST_MIX.flags);
-        assert_eq!(REG_PROPS_PRE_MIX.major_version, REG_PROPS_POST_MIX.major_version);
-        assert_eq!(REG_PROPS_PRE_MIX.minor_version, REG_PROPS_POST_MIX.minor_version);
+        assert_eq!(REG_PROPS_PRE_MIX.Flags, REG_PROPS_POST_MIX.Flags);
+        assert_eq!(REG_PROPS_PRE_MIX.u32MajorVersion, REG_PROPS_POST_MIX.u32MajorVersion);
+        assert_eq!(REG_PROPS_PRE_MIX.u32MinorVersion, REG_PROPS_POST_MIX.u32MinorVersion);
         assert_eq!(
-            REG_PROPS_PRE_MIX.min_input_connections,
-            REG_PROPS_POST_MIX.min_input_connections
+            REG_PROPS_PRE_MIX.u32MinInputConnections,
+            REG_PROPS_POST_MIX.u32MinInputConnections
         );
         assert_eq!(
-            REG_PROPS_PRE_MIX.max_input_connections,
-            REG_PROPS_POST_MIX.max_input_connections
+            REG_PROPS_PRE_MIX.u32MaxInputConnections,
+            REG_PROPS_POST_MIX.u32MaxInputConnections
         );
         assert_eq!(
-            REG_PROPS_PRE_MIX.min_output_connections,
-            REG_PROPS_POST_MIX.min_output_connections
+            REG_PROPS_PRE_MIX.u32MinOutputConnections,
+            REG_PROPS_POST_MIX.u32MinOutputConnections
         );
         assert_eq!(
-            REG_PROPS_PRE_MIX.max_output_connections,
-            REG_PROPS_POST_MIX.max_output_connections
+            REG_PROPS_PRE_MIX.u32MaxOutputConnections,
+            REG_PROPS_POST_MIX.u32MaxOutputConnections
         );
-        assert_eq!(REG_PROPS_PRE_MIX.max_instances, REG_PROPS_POST_MIX.max_instances);
+        assert_eq!(REG_PROPS_PRE_MIX.u32MaxInstances, REG_PROPS_POST_MIX.u32MaxInstances);
         assert_eq!(
-            REG_PROPS_PRE_MIX.num_apo_interfaces,
-            REG_PROPS_POST_MIX.num_apo_interfaces
+            REG_PROPS_PRE_MIX.u32NumAPOInterfaces,
+            REG_PROPS_POST_MIX.u32NumAPOInterfaces
         );
-        assert_eq!(REG_PROPS_PRE_MIX.sz_friendly_name, REG_PROPS_POST_MIX.sz_friendly_name);
-        assert_eq!(REG_PROPS_PRE_MIX.sz_copyright_info, REG_PROPS_POST_MIX.sz_copyright_info);
+        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName, REG_PROPS_POST_MIX.szFriendlyName);
+        assert_eq!(REG_PROPS_PRE_MIX.szCopyrightInfo, REG_PROPS_POST_MIX.szCopyrightInfo);
         assert_ne!(REG_PROPS_PRE_MIX.clsid, REG_PROPS_POST_MIX.clsid);
     }
 
@@ -242,16 +254,17 @@ mod tests {
     }
 
     #[test]
-    fn num_apo_interfaces_is_3() {
-        assert_eq!(REG_PROPS_PRE_MIX.num_apo_interfaces, 3);
+    fn u32NumAPOInterfaces_is_3() {
+        assert_eq!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces, 3);
     }
 
     #[test]
     fn version_numbers() {
-        assert_eq!(REG_PROPS_PRE_MIX.major_version, 1);
-        assert_eq!(REG_PROPS_PRE_MIX.minor_version, 0);
+        assert_eq!(REG_PROPS_PRE_MIX.u32MajorVersion, 1);
+        assert_eq!(REG_PROPS_PRE_MIX.u32MinorVersion, 0);
     }
 }
+
 /// 单个 CLSID 的注册信息（v6.2 规范 7.5）。
 #[derive(Debug)]
 pub struct ClsidEntry {

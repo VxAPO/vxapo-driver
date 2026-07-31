@@ -1,9 +1,9 @@
-﻿//! object/apo.rs — ApoObject 核心（v6.2 规范 7.1，骨架版）
+﻿//! object/apo.rs — ApoObject 核心（v6.2 规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 use windows::core::implement;
-use windows::core::HRESULT;
+use windows::core::{Result};
 
 use crate::object::ref_count;
 use crate::pipeline::chain::Chain;
@@ -11,10 +11,11 @@ use crate::pipeline::context::PipelineContext;
 use crate::pipeline::process::ProcessStatistics;
 use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration, IAudioProcessingObjectRT,
+    IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl, IAudioProcessingObjectConfiguration_Impl,
 };
-use crate::sys::com::apo_types::{
-    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES, REFERENCE_TIME,
-};
+use windows::Win32::Media::Audio::Apo::{APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES};
+
+use crate::sys::com::apo_types::{APOERR_FORMAT_NOT_SUPPORTED, APOERR_NOT_INITIALIZED};
 
 // ═══ 状态机 ═══
 #[repr(u8)]
@@ -90,29 +91,103 @@ impl Drop for ApoObject {
     fn drop(&mut self) { ref_count::decrement(); }
 }
 
-// ═══ IAudioProcessingObject 实现 ═══
+// ═══ IAudioProcessingObject 实现（windows-rs _Impl trait 签名） ═══
 impl IAudioProcessingObject_Impl for ApoObject_Impl {
-    unsafe fn Reset(&self) -> HRESULT { HRESULT(0) }
-    unsafe fn GetLatency(&self, p_latency: *mut REFERENCE_TIME) -> HRESULT {
-        if p_latency.is_null() { return windows::core::HRESULT(0x80004003u32 as i32); }
-        *p_latency = 0; HRESULT(0)
+    fn Reset(&self) -> Result<()> {
+        let mut inner = self.mutex.lock().unwrap();
+        inner.current_chain = Box::new(Chain::new());
+        inner.outgoing_chain = None;
+        inner.pipeline_context = PipelineContext::new();
+        inner.temp_buffers.clear();
+        inner.temp_buffer_old.clear();
+        inner.temp_buffer_new.clear();
+        self.latency_samples.store(0, Ordering::SeqCst);
+        self.latency_frames_atomic.store(0, Ordering::SeqCst);
+        Ok(())
     }
-    unsafe fn GetRegistrationProperties(&self, _pp_props: *mut *mut APO_REG_PROPERTIES) -> HRESULT { HRESULT(0x80004005u32 as i32) }
-    unsafe fn Initialize(&self, _cb_data_size: u32, _pby_data: *mut u8) -> HRESULT { HRESULT(0) }
-    unsafe fn IsInputFormatSupported(&self, _a: *mut IAudioMediaType, _b: *mut IAudioMediaType, _c: *mut *mut IAudioMediaType) -> HRESULT { HRESULT(0) }
-    unsafe fn IsOutputFormatSupported(&self, _a: *mut IAudioMediaType, _b: *mut IAudioMediaType, _c: *mut *mut IAudioMediaType) -> HRESULT { HRESULT(0) }
-    unsafe fn GetInputChannelCount(&self, _p: *mut u32) -> HRESULT { HRESULT(0) }
+
+    fn GetLatency(&self) -> Result<i64> {
+        let sample_rate = self.mutex.lock().unwrap().pipeline_context.sample_rate;
+        let latency_samples = self.latency_samples.load(Ordering::Acquire) as i64;
+        if sample_rate == 0 {
+            return Ok(0);
+        }
+        Ok(latency_samples * 10_000_000 / sample_rate as i64)
+    }
+
+    fn GetRegistrationProperties(&self) -> Result<*mut APO_REG_PROPERTIES> {
+        // 骨架：返回 null，后续批次用 vx_reg_props 实现
+        Ok(std::ptr::null_mut())
+    }
+
+    fn Initialize(&self, _cb_data_size: u32, _pby_data: *const u8) -> Result<()> {
+        self.state_cell.transition(ApoState::Created, ApoState::Initialized)
+            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
+    }
+
+    fn IsInputFormatSupported(
+        &self,
+        _p_opposite_format: windows::core::Ref<IAudioMediaType>,
+        _p_requested: windows::core::Ref<IAudioMediaType>,
+    ) -> Result<IAudioMediaType> {
+        Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+    }
+
+    fn IsOutputFormatSupported(
+        &self,
+        _p_opposite_format: windows::core::Ref<IAudioMediaType>,
+        _p_requested: windows::core::Ref<IAudioMediaType>,
+    ) -> Result<IAudioMediaType> {
+        Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+    }
+
+    fn GetInputChannelCount(&self) -> Result<u32> {
+        if self.state_cell.current() != ApoState::Locked {
+            return Err(windows::core::Error::from(APOERR_NOT_INITIALIZED));
+        }
+        let inner = self.mutex.lock().unwrap();
+        Ok(inner.pipeline_context.input_channels)
+    }
 }
 
+// ═══ IAudioProcessingObjectRT 实现 ═══
 impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
-    unsafe fn APOProcess(&self, _a: u32, _b: *mut *mut APO_CONNECTION_PROPERTY, _c: u32, _d: *mut *mut APO_CONNECTION_PROPERTY) {}
-    unsafe fn CalcInputFrames(&self, out: u32) -> u32 { out }
-    unsafe fn CalcOutputFrames(&self, inp: u32) -> u32 { inp }
+    fn APOProcess(
+        &self,
+        _num_input: u32,
+        _pp_inputs: *mut *mut APO_CONNECTION_PROPERTY,
+        _num_output: u32,
+        _pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
+    ) {
+        // 骨架：空实现，后续批次接 pipeline::process::process_audio
+    }
+
+    fn CalcInputFrames(&self, output_frames: u32) -> u32 {
+        output_frames + self.latency_frames_atomic.load(Ordering::Acquire)
+    }
+
+    fn CalcOutputFrames(&self, input_frames: u32) -> u32 {
+        let latency = self.latency_frames_atomic.load(Ordering::Acquire);
+        input_frames.saturating_sub(latency)
+    }
 }
 
+// ═══ IAudioProcessingObjectConfiguration 实现 ═══
 impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
-    unsafe fn LockForProcess(&self, _a: u32, _b: *mut *mut APO_CONNECTION_DESCRIPTOR, _c: u32, _d: *mut *mut APO_CONNECTION_DESCRIPTOR) -> HRESULT { HRESULT(0) }
-    unsafe fn UnlockForProcess(&self) -> HRESULT { HRESULT(0) }
+    fn LockForProcess(
+        &self,
+        _num_input: u32,
+        _pp_inputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
+        _num_output: u32,
+        _pp_outputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
+    ) -> Result<()> {
+        Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+    }
+
+    fn UnlockForProcess(&self) -> Result<()> {
+        self.state_cell.transition(ApoState::Locked, ApoState::Initialized)
+            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
+    }
 }
 
 unsafe impl Send for ApoObject {}
