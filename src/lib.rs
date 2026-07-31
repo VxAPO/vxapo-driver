@@ -21,6 +21,13 @@
 
 // ======================== 模块声明 ========================
 
+// ── v6.2 规范模块（重构目标，渐进启用） ──
+pub mod config;
+pub mod install;
+pub mod object;
+pub mod telemetry;
+
+// ── 旧版模块（重构期间保留，完成迁移后删除） ──
 pub mod dsp;
 pub mod host;
 pub mod pipeline;
