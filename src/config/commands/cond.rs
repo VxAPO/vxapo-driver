@@ -30,7 +30,7 @@ pub type Variables = HashMap<String, f64>;
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 检查当前是否在跳过状态（栈中任何一层 executing == false）。
-pub fn is_skipping(stack: &CondStack) -> bool {
+pub fn is_skipping(stack: &[CondState]) -> bool {
     stack.iter().any(|s| !s.executing)
 }
 
@@ -55,6 +55,10 @@ pub fn handle_if(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError>
 
 /// 处理 ElseIf: 命令。已有 true 分支时跳过。
 pub fn handle_elseif(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
+    // 外层是否在跳过（不含栈顶本身）。
+    let outer_skipping = ctx.cond_stack.len() > 1
+        && is_skipping(&ctx.cond_stack[..ctx.cond_stack.len() - 1]);
+
     let Some(top) = ctx.cond_stack.last_mut() else {
         return Err(syntax(ctx, "ElseIf without matching If"));
     };
@@ -66,12 +70,14 @@ pub fn handle_elseif(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigEr
     }
 
     // 外层跳过 → 本层也不执行。
-    if is_skipping(&ctx.cond_stack[..ctx.cond_stack.len() - 1]) {
+    if outer_skipping {
         top.executing = false;
         return Ok(());
     }
 
+    // 评估条件（需要不可变借用 ctx，先释放可变借用）。
     let cond = eval_condition(value, ctx)?;
+    let top = ctx.cond_stack.last_mut().unwrap();
     top.executing = cond;
     top.had_true = cond;
     Ok(())
@@ -79,6 +85,10 @@ pub fn handle_elseif(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigEr
 
 /// 处理 Else: 命令。已有 true 分支时 executing = false。
 pub fn handle_else(ctx: &mut ParseContext) -> Result<(), ConfigError> {
+    // 先计算外层是否跳过（不借用栈顶）。
+    let outer_skipping = ctx.cond_stack.len() > 1
+        && is_skipping(&ctx.cond_stack[..ctx.cond_stack.len() - 1]);
+
     let Some(top) = ctx.cond_stack.last_mut() else {
         return Err(syntax(ctx, "Else without matching If"));
     };
@@ -87,7 +97,7 @@ pub fn handle_else(ctx: &mut ParseContext) -> Result<(), ConfigError> {
         top.executing = false;
     } else {
         // 外层跳过 → 本层也不执行。
-        top.executing = !is_skipping(&ctx.cond_stack[..ctx.cond_stack.len() - 1]);
+        top.executing = !outer_skipping;
     }
     Ok(())
 }
@@ -214,7 +224,7 @@ fn variable_or_number(s: &str, ctx: &ParseContext) -> Result<f64, ConfigError> {
 }
 
 /// 在字符串中查找运算符并分割（跳过括号内的运算符）。
-fn split_once_op(s: &str, op: &str) -> Option<(&str, &str)> {
+fn split_once_op<'a>(s: &'a str, op: &str) -> Option<(&'a str, &'a str)> {
     let mut depth = 0usize;
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -280,6 +290,7 @@ mod tests {
             include_depth: 0,
             current_channels: vec!["L".into(), "R".into()],
             all_channels: vec!["L".into(), "R".into()],
+            current_device: None,
         }
     }
 

@@ -377,7 +377,7 @@ fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT>
 #[cfg(test)]
 mod tests {
     use windows::core::{GUID, IUnknown, Interface};
-    use crate::host::instance::reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
+    use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
     use super::*;
 
     /// 释放 COM 接口指针（通过 vtable 调用 Release）。
@@ -414,7 +414,7 @@ mod tests {
         factory::lock_reset_for_test();
 
         // 创建 APO 对象实例，INST_COUNT + 1
-        let _apo = crate::host::instance::apo_interface::ApoObject::new(CLSID_VXAPO_PRE_MIX);
+        let _apo = crate::object::apo::ApoObject::new(CLSID_VXAPO_PRE_MIX);
         assert_eq!(inst_count::get(), 1);
         assert_eq!(DllCanUnloadNow(), S_FALSE);
 

@@ -1,0 +1,146 @@
+//! config/commands/include.rs — Include: 命令（v6.2 规范 6.8）
+//!
+//! 语法：`Include: "presets/default.txt"`
+//!
+//! 递归加载子配置文件。路径相对于当前文件所在目录。
+//! 最大递归深度 16 层。
+
+use std::path::{Path, PathBuf};
+
+use crate::config::error::ConfigError;
+use crate::config::parser::{read_config_file, ParseContext};
+
+/// 最大 Include 递归深度。
+pub const MAX_INCLUDE_DEPTH: usize = 16;
+
+/// 处理 Include: 命令。
+///
+/// 1. 检查递归深度限制
+/// 2. 解析相对路径（相对于当前文件目录）
+/// 3. 检查文件存在
+/// 4. 读取文件内容
+/// 5. 递归调用 parse_content（depth + 1）
+#[allow(dead_code)]
+pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
+    // Step 1: 深度限制
+    if ctx.include_depth >= MAX_INCLUDE_DEPTH {
+        return Err(ConfigError::SyntaxError {
+            file: ctx.current_file.display().to_string(),
+            line: ctx.line_number,
+            message: format!("Include: recursion depth exceeded (max {})", MAX_INCLUDE_DEPTH),
+        });
+    }
+
+    // Step 2: 解析路径（去引号）
+    let path_str = unquote(value.trim());
+    if path_str.is_empty() {
+        return Err(ConfigError::SyntaxError {
+            file: ctx.current_file.display().to_string(),
+            line: ctx.line_number,
+            message: "Include: requires a file path".to_owned(),
+        });
+    }
+
+    // 相对路径基于当前文件目录
+    let path = resolve_relative(&ctx.current_file, &path_str);
+
+    // Step 3-4: 读取文件内容（存在性检查由 read_config_file 隐式完成）
+    let content = read_config_file(&path)?;
+
+    // Step 5: 递归解析（新上下文）
+    let sub_lines: Vec<String> = content.lines().map(|s| s.to_owned()).collect();
+    let mut sub_ctx = ParseContext {
+        filters: ctx.filters,
+        registry: ctx.registry,
+        dsp_ctx: ctx.dsp_ctx,
+        stage: ctx.stage,
+        is_capture: ctx.is_capture,
+        current_file: Box::leak(path.into_boxed_path()),
+        line_number: 0,
+        abort_file: false,
+        cond_stack: Vec::new(),
+        variables: ctx.variables.clone(),
+        include_depth: ctx.include_depth + 1,
+        current_channels: ctx.current_channels.clone(),
+        all_channels: ctx.all_channels.clone(),
+        current_device: ctx.current_device.clone(),
+    };
+
+    // 解析子文件（借用 sub_ctx 的 filters）
+    let result = crate::config::parser::parse_lines_impl(&sub_lines, &mut sub_ctx, ctx.include_depth + 1);
+
+    // 同步回父上下文
+    ctx.variables = sub_ctx.variables;
+    ctx.include_depth = sub_ctx.include_depth;
+    if sub_ctx.abort_file {
+        ctx.abort_file = true;
+    }
+
+    result
+}
+
+/// 去除首尾引号。
+fn unquote(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 {
+        let b = s.as_bytes();
+        if (b[0] == b'"' && b[s.len() - 1] == b'"')
+            || (b[0] == b'\'' && b[s.len() - 1] == b'\'')
+        {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// 解析相对路径（相对于当前文件所在目录）。
+fn resolve_relative(current_file: &Path, path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    // 非绝对路径：相对当前文件目录
+    match current_file.parent() {
+        Some(dir) => dir.join(p),
+        None => p.to_path_buf(),
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 测试
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unquote_double() {
+        assert_eq!(unquote("\"presets/default.txt\""), "presets/default.txt");
+    }
+
+    #[test]
+    fn unquote_single() {
+        assert_eq!(unquote("'x.txt'"), "x.txt");
+    }
+
+    #[test]
+    fn unquote_none() {
+        assert_eq!(unquote("x.txt"), "x.txt");
+    }
+
+    #[test]
+    fn resolve_relative_from_file() {
+        let cur = Path::new(r"C:\config\main.txt");
+        let resolved = resolve_relative(cur, "sub.txt");
+        assert!(resolved.ends_with("sub.txt"));
+        assert!(resolved.parent().unwrap().ends_with("config"));
+    }
+
+    #[test]
+    fn resolve_absolute() {
+        let cur = Path::new(r"C:\config\main.txt");
+        let resolved = resolve_relative(cur, r"D:\abs\sub.txt");
+        assert!(resolved.is_absolute());
+    }
+}

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::config::commands::cond::{CondState, Variables};
 use crate::config::ConfigError;
 use crate::pipeline::dsp::factory::{FilterRegistry, OutcomeKind};
 use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter};
@@ -22,11 +23,13 @@ pub struct ParseContext<'a> {
     pub current_file: &'a Path,
     pub line_number: usize,
     pub abort_file: bool,
-    pub cond_stack: Vec<(bool, bool)>,
-    pub variables: HashMap<String, f64>,
+    pub cond_stack: Vec<CondState>,
+    pub variables: Variables,
     pub include_depth: usize,
     pub current_channels: Vec<String>,
     pub all_channels: Vec<String>,
+    /// 当前设备路径（Device: 命令设置）。
+    pub current_device: Option<String>,
 }
 
 /// 配置解析器。
@@ -64,6 +67,7 @@ impl ConfigParser {
             include_depth: 0,
             current_channels: ctx.channel_names.clone(),
             all_channels: ctx.channel_names.clone(),
+            current_device: None,
         };
         parse_lines_impl(lines, &mut pc, 0)?;
         Ok(filters)
@@ -80,7 +84,7 @@ pub fn read_config_file(path: &Path) -> Result<String, ConfigError> {
 }
 
 /// 逐行解析实现。
-fn parse_lines_impl(lines: &[String], ctx: &mut ParseContext, _depth: usize) -> Result<(), ConfigError> {
+pub(crate) fn parse_lines_impl(lines: &[String], ctx: &mut ParseContext, _depth: usize) -> Result<(), ConfigError> {
     for (i, line) in lines.iter().enumerate() {
         ctx.line_number = i + 1;
         let trimmed = line.trim();
@@ -123,8 +127,8 @@ pub fn split_command_value(line: &str) -> (&str, &str) {
     }
 }
 
-/// 空 ConfigLoader（骨架，Include 未实现时用）。
-struct NullConfigLoader;
+/// 空 ConfigLoader（骨架，Include 未实现时用；供 config/commands 内复用）。
+pub(crate) struct NullConfigLoader;
 impl ConfigLoader for NullConfigLoader {
     fn load_config(&self, _path: &str, _ctx: &DspContext) -> Vec<Box<dyn Filter>> { vec![] }
 }
