@@ -36,6 +36,21 @@ impl Chain {
         self.filters.len()
     }
 
+    /// 是否为空链（R3/v6.9）。
+    ///
+    /// `process_audio` 据此走零拷贝快路径——空链时去交织缓冲原样即输出。
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty()
+    }
+
+    /// 全链是否全部就地处理（E1/v6.7）。
+    ///
+    /// `filters.iter().all(|f| f.is_in_place())`。调用方（process_audio）据此
+    /// 决定是否可走零拷贝快路径：全链 `true` 时去交织缓冲即最终输出。
+    pub fn is_fully_in_place(&self) -> bool {
+        self.filters.iter().all(|f| f.is_in_place())
+    }
+
     /// 在去交织空间执行 Filter 链。
     ///
     /// `samples[channel][frame]`，纯计算操作：无锁、无分配、无 I/O。

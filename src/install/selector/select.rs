@@ -48,7 +48,7 @@ pub fn run_install_flow() -> Result<()> {
         .unwrap_or_else(|| guid.clone());
 
     let config = crate::install::selector::operation::InstallConfig::default_config();
-    crate::install::selector::operation::install_endpoint(&guid, &name, &name, &config)
+    crate::install::selector::operation::install_endpoint(&guid, &name, &name, &config, false)
 }
 
 /// 运行卸载流程：选择设备 → 调度 operation::uninstall_endpoint。

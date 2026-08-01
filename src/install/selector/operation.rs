@@ -54,6 +54,10 @@ pub struct InstallConfig {
     pub use_original_apo_postmix: bool,
     /// 是否允许静音缓冲区快速路径（Note 11）。
     pub allow_silent_buffer: bool,
+    /// 是否启用 autoAdjust（E3.3/v6.8，独立于 allow_silent_buffer）。
+    ///
+    /// 默认 false（VxAPO 无自动校正实现，保守默认关）。
+    pub auto_adjust: bool,
 }
 
 impl InstallConfig {
@@ -66,6 +70,7 @@ impl InstallConfig {
             use_original_apo_premix: false,
             use_original_apo_postmix: false,
             allow_silent_buffer: true,
+            auto_adjust: false,
         }
     }
 }
@@ -178,11 +183,13 @@ fn guid_from_bytes(bytes: &[u8]) -> Option<windows::core::GUID> {
 /// - `device_name`：设备友好名称（用于 .reg 备份文件名）。
 /// - `connection_name`：连接名称（用于 .reg 备份文件名）。
 /// - `config`：安装配置。
+/// - `verify`：E3.4/v6.8——true 时 7 步全部 commit 后执行 CoCreateInstance 自检。
 pub fn install_endpoint(
     device_guid: &str,
     device_name: &str,
     connection_name: &str,
     config: &InstallConfig,
+    verify: bool,
 ) -> Result<()> {
     let mut tx = Transaction::new();
 
@@ -249,6 +256,28 @@ pub fn install_endpoint(
 
     // 全部成功 → 提交事务（禁用回滚）。
     tx.commit();
+
+    // ── E3.4 安装自检（verify=true）：CoCreateInstance 验证 DLL 可实例化 ──
+    // 失败**不自动回滚**（注册表已写入且 DLL 可能瞬时不可用；报告并让调用方决策）。
+    if verify {
+        for clsid in [CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX] {
+            // 实例化验证：CoCreateInstance 成功即 DLL 可加载（不深究接口）。
+            // SAFETY: windows-rs 3 参泛型（rclsid, punkouter, dwclscontext）返回 IUnknown。
+            let hr = unsafe {
+                windows::Win32::System::Com::CoCreateInstance::<_, windows::core::IUnknown>(
+                    &clsid,
+                    None,
+                    windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+                )
+            };
+            if hr.is_err() {
+                return Err(VxApoError::internal(&format!(
+                    "安装自检失败：CoCreateInstance(CLSID) err={}",
+                    hr.err().unwrap()
+                )));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -416,8 +445,8 @@ fn write_child_apo_config(
     // allowSilentBuffer（Note 11）。
     fx_key.write_dword("allowSilentBuffer", config.allow_silent_buffer as u32)?;
 
-    // autoAdjust。
-    fx_key.write_dword("autoAdjust", 0u32)?;
+    // autoAdjust（E3.3：读取 InstallConfig.auto_adjust，非硬编码）。
+    fx_key.write_dword("autoAdjust", config.auto_adjust as u32)?;
 
     // version（Note 24）。
     fx_key.write_sz("version", INSTALL_VERSION)?;
@@ -484,6 +513,7 @@ mod tests {
         assert!(!c.use_original_apo_premix);
         assert!(!c.use_original_apo_postmix);
         assert!(c.allow_silent_buffer);
+        assert!(!c.auto_adjust);
     }
 
     #[test]
@@ -533,6 +563,7 @@ mod tests {
             use_original_apo_premix: true,
             use_original_apo_postmix: false,
             allow_silent_buffer: false,
+            auto_adjust: true,
         };
         assert!(!c.install_premix);
         assert!(c.install_postmix);
@@ -540,5 +571,6 @@ mod tests {
         assert!(c.use_original_apo_premix);
         assert!(!c.use_original_apo_postmix);
         assert!(!c.allow_silent_buffer);
+        assert!(c.auto_adjust);
     }
 }

@@ -220,9 +220,9 @@ impl SmoothingProvider {
 // 常用过渡长度预设
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 根据采样率计算默认过渡帧数（约 50ms）。
+/// 根据采样率计算默认过渡帧数（约 10ms，R4/v6.9 EAPO 对齐）。
 pub fn default_smoothing_length(sample_rate: u32) -> u32 {
-    sample_rate / 20 // 50ms
+    sample_rate / 100 // 10ms
 }
 
 /// 根据采样率计算短过渡帧数（约 10ms）。
@@ -555,12 +555,12 @@ mod tests {
 
     #[test]
     fn default_smoothing_length_48k() {
-        assert_eq!(default_smoothing_length(48000), 2400); // 50ms
+        assert_eq!(default_smoothing_length(48000), 480); // 10ms（R4）
     }
 
     #[test]
     fn default_smoothing_length_441k() {
-        assert_eq!(default_smoothing_length(44100), 2205); // 50ms
+        assert_eq!(default_smoothing_length(44100), 441); // 10ms（R4）
     }
 
     #[test]

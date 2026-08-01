@@ -48,6 +48,7 @@ fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> DspContext 
         device_type: DeviceType::Render,
         stage: ProcessingStage::None,
         variables: std::collections::HashMap::new(),
+        rt_marker: std::marker::PhantomData,
     }
 }
 
@@ -69,25 +70,88 @@ impl<'a> LockGuard<'a> {
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _ = self.state_cell.transition(ApoState::Locked, ApoState::Initialized);
+            let _: std::result::Result<(), TransitionError> =
+                self.state_cell.transition(ApoState::Locked, ApoState::Initialized);
         }
     }
 }
 
-// ═══ 状态机 ═══
+// ═══ 状态机（O2/v6.6） ═══
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ApoState { Created = 0, Initialized = 1, Locked = 2 }
+
+/// 状态转换错误（O2/v6.6）：携带期望/尝试/实际三态，替代纯字符串描述。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TransitionError {
+    /// 期望的起始状态。
+    pub expected: ApoState,
+    /// 尝试转换到的目标状态。
+    pub attempted: ApoState,
+    /// 实际所处的状态。
+    pub actual: ApoState,
+}
+
+impl TransitionError {
+    fn new(expected: ApoState, attempted: ApoState, actual: ApoState) -> Self {
+        Self { expected, attempted, actual }
+    }
+}
+
+impl std::fmt::Display for TransitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "状态转换失败：期望 {:?} → {:?}，但当前为 {:?}",
+            self.expected, self.attempted, self.actual
+        )
+    }
+}
+
+/// TransitionError → HRESULT（O2）：统一映射为 APOERR_ALREADY_INITIALIZED。
+impl From<TransitionError> for windows::core::HRESULT {
+    fn from(_: TransitionError) -> Self {
+        windows::core::HRESULT(0x887D_0001u32 as i32) // APOERR_ALREADY_INITIALIZED
+    }
+}
 
 pub struct StateCell { state: AtomicU8 }
 impl StateCell {
     pub fn new() -> Self { Self { state: AtomicU8::new(ApoState::Created as u8) } }
-    pub fn transition(&self, from: ApoState, to: ApoState) -> crate::utils::vx_error::Result<()> {
+
+    /// CAS 转换：成功返回 Ok，失败返回 `TransitionError{expected, attempted, actual}`。
+    pub fn transition(&self, from: ApoState, to: ApoState) -> std::result::Result<(), TransitionError> {
+        let actual_raw = self.state.load(Ordering::Acquire);
+        if actual_raw != from as u8 {
+            return Err(TransitionError::new(from, to, state_from_u8(actual_raw)));
+        }
         self.state.compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ()).map_err(|_| crate::utils::vx_error::VxApoError::state("非法状态转换"))
+            .map(|_| ())
+            .map_err(|actual| TransitionError::new(from, to, state_from_u8(actual)))
     }
+
+    /// 当前状态。
     pub fn current(&self) -> ApoState {
-        match self.state.load(Ordering::Acquire) { 1 => ApoState::Initialized, 2 => ApoState::Locked, _ => ApoState::Created }
+        state_from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    /// release（O2）：任意状态 → Created，返回旧状态。DLL 卸载终态复位用。
+    pub fn release(&self) -> ApoState {
+        let old = self.state.swap(ApoState::Created as u8, Ordering::AcqRel);
+        state_from_u8(old)
+    }
+
+    // ── 语义化便捷转换（失败即 TransitionError） ──
+    pub fn initialize(&self) -> std::result::Result<(), TransitionError> { self.transition(ApoState::Created, ApoState::Initialized) }
+    pub fn lock(&self)       -> std::result::Result<(), TransitionError> { self.transition(ApoState::Initialized, ApoState::Locked) }
+    pub fn unlock(&self)     -> std::result::Result<(), TransitionError> { self.transition(ApoState::Locked, ApoState::Initialized) }
+}
+
+fn state_from_u8(v: u8) -> ApoState {
+    match v {
+        1 => ApoState::Initialized,
+        2 => ApoState::Locked,
+        _ => ApoState::Created,
     }
 }
 
@@ -95,24 +159,30 @@ impl StateCell {
 pub struct ApoObjectInner {
     pub current_chain: Box<Chain>,
     pub outgoing_chain: Option<Box<Chain>>,
+    /// 退役链（R1/v6.9）：过渡完成后由 RT 线程移入，控制线程锁内统一析构。
+    pub retired_chain: Option<Box<Chain>>,
     pub pipeline_context: PipelineContext,
     pub transition: Option<SmoothingProvider>,
     pub temp_buffers: Vec<Vec<f32>>,
     pub temp_buffer_old: Vec<f32>,
     pub temp_buffer_new: Vec<f32>,
     pub pending_reload: bool,
+    /// 阻塞式重载标志（R2/v6.9）：同一过渡周期内至多触发一次重载。
+    pub reloading: bool,
 }
 impl ApoObjectInner {
     pub fn new() -> Self {
         Self {
             current_chain: Box::new(Chain::new()),
             outgoing_chain: None,
+            retired_chain: None,
             pipeline_context: PipelineContext::new(),
             transition: None,
             temp_buffers: Vec::new(),
             temp_buffer_old: Vec::new(),
             temp_buffer_new: Vec::new(),
             pending_reload: false,
+            reloading: false,
         }
     }
 }
@@ -146,8 +216,20 @@ impl ApoObject {
         }
     }
 
-    /// 配置热重载（watcher 触发）：锁外解析新链，锁内设置过渡。
+    /// 配置热重载（watcher 触发，R2/v6.9 阻塞式）：
+    /// 短锁检查 transition 在途 / reloading → 直接返回（不构建新链）；
+    /// 否则锁外解析新链，锁内放入 outgoing 进入过渡。
     pub fn hot_reload(&self) {
+        {
+            let mut inner = self.mutex.lock().unwrap();
+            if inner.transition.is_some() || inner.reloading {
+                // 阻塞式：过渡在途或加载中，本次变更丢弃（过渡完成后 APOProcess 会触发一次重载）。
+                return;
+            }
+            // 标记加载中，防覆盖。
+            inner.reloading = true;
+        }
+
         // 锁外构建新 Chain（避免长时间持锁）。
         let new_chain = {
             let inner = self.mutex.lock().unwrap();
@@ -165,14 +247,18 @@ impl ApoObject {
             chain
         };
 
-        // 锁内切换：检查过渡中 → 排队；否则放入 outgoing（进入过渡模式）。
+        // 锁内切换：竞态兜底——解析期间新过渡已启动 → 排队。
         let mut inner = self.mutex.lock().unwrap();
         if inner.transition.is_some() {
             inner.pending_reload = true;
+            inner.reloading = false;
             return;
         }
+        // 旧链进 outgoing；退役链由控制线程在此统一析构（R1）。
         let old = std::mem::replace(&mut inner.current_chain, Box::new(new_chain));
         inner.outgoing_chain = Some(old);
+        inner.pending_reload = false;
+        inner.reloading = false;
         let length = default_smoothing_length(inner.pipeline_context.sample_rate);
         let mut sm = SmoothingProvider::new(length);
         sm.begin();
@@ -190,12 +276,14 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         let mut inner = self.mutex.lock().unwrap();
         inner.current_chain = Box::new(Chain::new());
         inner.outgoing_chain = None;
+        inner.retired_chain = None; // R1：控制线程锁内统一析构
         inner.transition = None;
         inner.pipeline_context = PipelineContext::new();
         inner.temp_buffers.clear();
         inner.temp_buffer_old.clear();
         inner.temp_buffer_new.clear();
         inner.pending_reload = false;
+        inner.reloading = false;
         self.latency_samples.store(0, Ordering::SeqCst);
         self.latency_frames_atomic.store(0, Ordering::SeqCst);
         Ok(())
@@ -376,21 +464,22 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
             if finished {
                 tbuf_old.clear();
                 tbuf_new.clear();
+                // R1：旧链移入退役槽（零析构），控制线程锁内统一 drop。
+                inner.retired_chain = outgoing;
                 inner.outgoing_chain = None;
                 inner.transition = None;
-                inner.pending_reload = false;
-                if pending {
-                    // 丢弃过渡中字段（旧链/过渡/临时缓冲区），触发 1.0 收敛后热重载。
-                    drop(outgoing);
-                    drop(transition);
-                    drop(tbuf_old);
-                    drop(tbuf_new);
-                    inner.current_chain = owned_chain;
-                    inner.temp_buffers = tbufs;
+                inner.current_chain = owned_chain;
+                inner.temp_buffers = tbufs;
+                inner.temp_buffer_old = tbuf_old;
+                inner.temp_buffer_new = tbuf_new;
+                if pending && !inner.reloading {
+                    inner.pending_reload = false;
+                    inner.reloading = true;
                     drop(inner);
                     self.hot_reload();
                     return;
                 }
+                return;
             } else {
                 // 过渡进行中 → 写回迁移状态。
                 inner.outgoing_chain = outgoing;
@@ -498,6 +587,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
             device_type: DeviceType::Render,
             stage: ProcessingStage::None,
             variables: std::collections::HashMap::new(),
+            rt_marker: std::marker::PhantomData,
         };
 
         // Step 3: 构建 FilterRegistry + ConfigParser，解析配置文件。
@@ -521,17 +611,19 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
             temp_buffers.push(Vec::with_capacity(pipeline_context.max_frame_count));
         }
 
-        // Step 6: 更新内部状态。
+        // Step 6: 更新内部状态。（R1：退役链由控制线程锁内统一析构）
         {
             let mut inner = self.mutex.lock().unwrap();
             inner.current_chain = Box::new(chain);
             inner.outgoing_chain = None;
+            inner.retired_chain = None;
             inner.transition = None;
             inner.pipeline_context = pipeline_context;
             inner.temp_buffers = temp_buffers;
             inner.temp_buffer_old = Vec::new();
             inner.temp_buffer_new = Vec::new();
             inner.pending_reload = false;
+            inner.reloading = false;
         }
         self.latency_samples.store(total_latency, Ordering::SeqCst);
         self.latency_frames_atomic.store(total_latency, Ordering::SeqCst);
@@ -548,7 +640,15 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
     fn UnlockForProcess(&self) -> Result<()> {
         self.state_cell
             .transition(ApoState::Locked, ApoState::Initialized)
-            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
+            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+        // R1：退役链 + 过渡状态由控制线程锁内统一析构。
+        let mut inner = self.mutex.lock().unwrap();
+        inner.retired_chain = None;
+        inner.outgoing_chain = None;
+        inner.transition = None;
+        inner.pending_reload = false;
+        inner.reloading = false;
+        Ok(())
     }
 }
 

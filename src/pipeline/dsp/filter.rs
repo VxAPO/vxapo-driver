@@ -5,6 +5,9 @@
 //! 导出给：`pipeline/dsp/*.rs`、`pipeline/dsp/factory.rs`、`config/commands/*.rs`。
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
+
+use crate::pipeline::realtime::contract::RealtimeContext;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Filter trait
@@ -30,6 +33,15 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
     /// 是否为 `Channel:` 类型命令（通道选择标记）。默认 false。
     fn is_channel_select(&self) -> bool {
         false
+    }
+
+    /// 是否就地处理（in-place，E1/v6.7）。
+    ///
+    /// 默认 true：滤波器直接修改传入的 `samples` 缓冲，无需额外中间副本。
+    /// 若某滤波器 `false`，Chain 需在调用其 `process` 前保存输入副本（E2 未来落点；
+    /// 当前内置滤波器均返回 true）。
+    fn is_in_place(&self) -> bool {
+        true
     }
 
     /// 过滤器的延迟（采样数）。默认 0。
@@ -135,6 +147,8 @@ pub struct DspContext {
     pub stage: ProcessingStage,
     /// 变量存储（`Eval:` 命令变量）。
     pub variables: HashMap<String, f64>,
+    /// RT 编译期见证（O1/v6.6）：标记此配置服务于实时路径。
+    pub rt_marker: PhantomData<RealtimeContext>,
 }
 
 /// 设备类型枚举。
@@ -186,6 +200,7 @@ mod tests {
             device_type: DeviceType::Render,
             stage: ProcessingStage::None,
             variables: HashMap::new(),
+            rt_marker: std::marker::PhantomData,
         }
     }
 

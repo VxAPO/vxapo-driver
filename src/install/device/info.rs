@@ -3,7 +3,7 @@
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口。
 //! 只读，不修改系统状态。
 
-use crate::install::device::endpoint::{query_endpoint, EndpointInfo};
+use crate::install::device::endpoint::{query_endpoint, EndpointInfo, EndpointState};
 use crate::install::device::format::{read_audio_format, AudioFormat};
 use crate::install::device::slots::{
     read_all_slots, ApoSlot, InstallMode, SlotValue, FX_PROPERTIES_KEY, INSTALL_VERSION,
@@ -94,6 +94,26 @@ impl DeviceInfo {
     /// 当前安装版本是否为 Legacy（"1"）。
     pub fn is_legacy(&self) -> bool {
         self.installed_version == INSTALL_VERSION_LEGACY
+    }
+
+    /// 设备是否已禁用（E3.2/v6.8，EAPO isDisabled 借鉴）。
+    ///
+    /// 由 `EndpointInfo::state == EndpointState::Disabled` 推导，零新增 I/O。
+    pub fn is_disabled(&self) -> bool {
+        matches!(
+            self.endpoint.as_ref().map(|e| e.state),
+            Some(EndpointState::Disabled)
+        )
+    }
+
+    /// 设备是否已拔除（E3.2/v6.8，EAPO isUnplugged 借鉴）。
+    ///
+    /// 由 `EndpointInfo::state == EndpointState::NotPresent` 推导，零新增 I/O。
+    pub fn is_unplugged(&self) -> bool {
+        matches!(
+            self.endpoint.as_ref().map(|e| e.state),
+            Some(EndpointState::NotPresent)
+        )
     }
 }
 

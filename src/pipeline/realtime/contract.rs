@@ -42,6 +42,29 @@ unsafe impl RtCopy for isize {}
 unsafe impl RtCopy for bool {}
 
 // ══════════════════════════════════════════════════════════════════════════════
+// RealtimeContext — RT 编译期见证（O1，v6.6）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// RT 编译期见证标记（零尺寸，O1/v6.6）。
+///
+/// 无字段、无用户可达构造函数。RT harness（pipeline/process.rs 的 RT 内部函数）
+/// 在实时路径创建后按引用传递。其出现在调用栈中即为设计原则：
+/// **编译期能解决的问题，绝不拖到运行时**。
+///
+/// `DspContext::rt_marker`（`PhantomData<RealtimeContext>`）将"此配置服务于 RT"的
+/// 语义前移到编译期；逐步将 `rt_assert_in_rt!` 运行时断言升级为编译期见证。
+pub struct RealtimeContext {
+    _private: (),
+}
+
+impl RealtimeContext {
+    /// 供 RT harness 内部创建（仅 pipeline 内部可见）。
+    pub(crate) fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // RT 上下文跟踪（Debug 模式）
 // ══════════════════════════════════════════════════════════════════════════════
 

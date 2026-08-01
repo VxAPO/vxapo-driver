@@ -72,6 +72,35 @@ pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: windows::core::GUID =
     IAudioProcessingObjectNotifications::IID;
 
 // ══════════════════════════════════════════════════════════════════════════════
+// AEC 接口预留（O4/v6.6，feature-gated）
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Windows 11 AEC（声学回声消除）APO 未来若支持，在此预留接口 re-export 与 IID 常量。
+// 当前**不实现**，仅声明与门控位置（`feature = "aec"` 非默认）。
+// 实现时 object/apo.rs 三接口 + 3 个 AEC 接口 = 六接口承载。
+
+#[cfg(feature = "aec")]
+pub use windows::Win32::Media::Audio::Apo::{
+    IApoAcousticEchoCancellation,
+    IApoAuxiliaryInputConfiguration,
+    IApoAuxiliaryInputRT,
+};
+
+/// `IApoAcousticEchoCancellation` IID（仅 `feature = "aec"` 时存在）。
+#[cfg(feature = "aec")]
+pub const IID_IAPO_ACOUSTIC_ECHO_CANCELLATION: windows::core::GUID =
+    IApoAcousticEchoCancellation::IID;
+
+/// `IApoAuxiliaryInputConfiguration` IID（仅 `feature = "aec"` 时存在）。
+#[cfg(feature = "aec")]
+pub const IID_IAPO_AUXILIARY_INPUT_CONFIGURATION: windows::core::GUID =
+    IApoAuxiliaryInputConfiguration::IID;
+
+/// `IApoAuxiliaryInputRT` IID（仅 `feature = "aec"` 时存在）。
+#[cfg(feature = "aec")]
+pub const IID_IAPO_AUXILIARY_INPUT_RT: windows::core::GUID = IApoAuxiliaryInputRT::IID;
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
 

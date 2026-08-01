@@ -559,6 +559,7 @@ mod tests {
             device_type: DeviceType::Render,
             stage: ProcessingStage::None,
             variables: HashMap::new(),
+            rt_marker: std::marker::PhantomData,
         }
     }
 

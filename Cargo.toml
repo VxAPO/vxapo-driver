@@ -39,8 +39,14 @@ version = "=0.60.2"
 version = "=0.59.3"
 
 
+[features]
+default = []
+# AEC 接口预留（O4/v6.6）：3 个 AEC 接口 + IID 常量声明，不实现。
+aec = []
+
 [profile.release]
-panic = "abort"
+panic = "abort"        # 必须（O3）：RT 路径 panic 若 unwind 会跨 FFI 传播（UB）
+codegen-units = 1      # 必须（O3）：内联/代码布局可预测，RT 抖动最小化
 lto = true
 
 [profile.dev]

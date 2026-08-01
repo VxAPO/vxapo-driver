@@ -147,7 +147,16 @@ pub fn process_audio(
 
         // Step 5: DSP 处理（先取长度避免借用冲突）
         let active_ch = out_ch.min(temp_buffers.len());
-        let result = chain.process(&mut temp_buffers[..active_ch], frames);
+
+        // R3（v6.9）：空链快路径——去交织缓冲原样即输出，跳过链遍历。
+        let result = if chain.is_empty() {
+            // 空链：temp_buffers 已是输入（deinterleave 写入），无操作即通过。
+            Ok(())
+        } else {
+            // 用 RT 编译期见证（O1）标记此路径为实时处理。
+            let _rt = crate::pipeline::realtime::contract::RealtimeContext::new();
+            chain.process(&mut temp_buffers[..active_ch], frames)
+        };
 
         // Step 6: 错误恢复
         if result.is_err() {
