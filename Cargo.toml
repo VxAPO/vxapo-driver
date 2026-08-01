@@ -38,13 +38,6 @@ version = "=0.60.2"
 [dependencies.windows-interface]
 version = "=0.59.3"
 
-[dependencies.libloading]
-version = "0.8"
-optional = true
-
-[features]
-default = []
-vst = ["libloading"]
 
 [profile.release]
 panic = "abort"

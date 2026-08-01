@@ -20,7 +20,6 @@ use crate::pipeline::dsp::graphic_eq::{parse_graphic_eq_params, GraphicEqFilter}
 use crate::pipeline::dsp::hp_lp::HighLowPassFilter;
 use crate::pipeline::dsp::loudness::{parse_loudness_params, LoudnessFilter};
 use crate::pipeline::dsp::peq::PeakingFilter;
-use crate::pipeline::dsp::vst::{parse_vst_params, VstFilter};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // FilterRegistry — 工厂注册表
@@ -468,26 +467,24 @@ impl FilterFactory for GraphicEqFactory {
     }
 }
 
-/// `VSTPlugin:` 命令工厂 → VstFilter。
+/// `VSTPlugin:` 命令工厂（预留入口）。
 ///
-/// 语法：`VSTPlugin: "plugin_name" "path/to/plugin.dll" [param=value ...]`
+/// 当前行为：**恒返回 NoMatch**（VST 插件加载暂不需要，见 `dsp/vst.rs` 注释）。
+/// 未来如需 VST2/VST3 支持，在此处恢复参数解析并创建对应 Filter。
+///
+/// 语法（预留）：`VSTPlugin: "plugin_name" "path/to/plugin.dll" [param=value ...]`
 #[derive(Debug)]
 pub struct VstFactory;
 
 impl FilterFactory for VstFactory {
     fn create_filter(
         &self,
-        params: &str,
+        _params: &str,
         _ctx: &DspContext,
         _loader: &dyn ConfigLoader,
     ) -> FilterCreateResult {
-        match parse_vst_params(params) {
-            Some((plugin_name, dll_path, _raw_params)) => {
-                // VstFilter::new(dll_path, plugin_name)：路径在前，名称在后。
-                FilterCreateResult::Filter(Box::new(VstFilter::new(&dll_path, &plugin_name)))
-            }
-            None => FilterCreateResult::NoMatch,
-        }
+        // 预留：VST 不支持，静默跳过（NoMatch → 继续尝试下一工厂 / 最终 Unmatched）。
+        FilterCreateResult::NoMatch
     }
 
     fn command_name(&self) -> &str {
@@ -719,26 +716,8 @@ mod tests {
         assert!(matches!(result, FilterCreateResult::NoMatch));
     }
 
-    // ── VST 工厂 ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn vst_parses_quoted() {
-        let factory = VstFactory;
-        let result = factory.create_filter(
-            "\"MyPlugin\" \"C:\\VST\\plugin.dll\"",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn vst_invalid_no_match() {
-        let factory = VstFactory;
-        // 缺引号对（仅一个 token）。
-        let result = factory.create_filter("plugin.dll", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
+    // ── VST 工厂（预留 NoMatch，无测试） ──────────────────────────────────
+    // 当前行为恒 NoMatch（见 VstFactory 注释）。未来实现 VST 后补测试。
 
     // ── Loudness 工厂 ───────────────────────────────────────────────────────
 
