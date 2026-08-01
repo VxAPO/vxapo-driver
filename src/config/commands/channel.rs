@@ -104,8 +104,8 @@ mod tests {
     use std::path::Path;
 
     fn test_ctx() -> ParseContext<'static> {
-        let mut filters: Vec<Box<dyn Filter>> = Vec::new();
-        let dsp = DspContext {
+        let filters: &'static mut Vec<Box<dyn Filter>> = Box::leak(Box::new(Vec::new()));
+        let dsp: &'static DspContext = Box::leak(Box::new(DspContext {
             sample_rate: 48000,
             channel_count: 2,
             channel_mask: 0x3,
@@ -115,12 +115,12 @@ mod tests {
             device_type: crate::pipeline::dsp::filter::DeviceType::Render,
             stage: crate::pipeline::dsp::filter::ProcessingStage::None,
             variables: HashMap::new(),
-        };
-        let registry = FilterRegistry::new();
+        }));
+        let registry: &'static FilterRegistry = Box::leak(Box::new(FilterRegistry::new()));
         ParseContext {
-            filters: &mut filters,
-            registry: &registry,
-            dsp_ctx: &dsp,
+            filters,
+            registry,
+            dsp_ctx: dsp,
             stage: ParseStage::None,
             is_capture: false,
             current_file: Path::new("<test>"),

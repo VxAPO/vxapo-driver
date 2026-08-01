@@ -105,10 +105,15 @@ mod tests {
     use super::*;
     use windows::Win32::System::Registry::HKEY_CURRENT_USER;
 
-    const TEST_PATH: &str = r"SOFTWARE\VxAPO_Test_Audiodg";
+    const TEST_PREFIX: &str = r"SOFTWARE\VxAPO_Test_Audiodg";
 
-    fn cleanup() {
-        if let Ok(key) = RegKey::open(HKEY_CURRENT_USER, TEST_PATH) {
+    /// 每个测试使用独立子键，避免并行测试互相干扰。
+    fn test_path(name: &str) -> String {
+        format!("{}\\{}", TEST_PREFIX, name)
+    }
+
+    fn cleanup(path: &str) {
+        if let Ok(key) = RegKey::open(HKEY_CURRENT_USER, path) {
             let _ = key.delete_value(VALUE_NAME);
         }
     }
@@ -121,32 +126,35 @@ mod tests {
 
     #[test]
     fn write_1_then_disabled() {
-        cleanup();
-        let key = RegKey::create(HKEY_CURRENT_USER, TEST_PATH).unwrap();
+        let path = test_path("write_1");
+        cleanup(&path);
+        let key = RegKey::create(HKEY_CURRENT_USER, &path).unwrap();
         key.write_dword(VALUE_NAME, 1).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, TEST_PATH).unwrap(), true);
-        cleanup();
+        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), true);
+        cleanup(&path);
     }
 
     #[test]
     fn write_0_means_not_disabled() {
-        cleanup();
-        let key = RegKey::create(HKEY_CURRENT_USER, TEST_PATH).unwrap();
+        let path = test_path("write_0");
+        cleanup(&path);
+        let key = RegKey::create(HKEY_CURRENT_USER, &path).unwrap();
         key.write_dword(VALUE_NAME, 0).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, TEST_PATH).unwrap(), false);
-        cleanup();
+        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), false);
+        cleanup(&path);
     }
 
     #[test]
     fn delete_restores_default() {
-        cleanup();
-        let key = RegKey::create(HKEY_CURRENT_USER, TEST_PATH).unwrap();
+        let path = test_path("delete_restore");
+        cleanup(&path);
+        let key = RegKey::create(HKEY_CURRENT_USER, &path).unwrap();
         key.write_dword(VALUE_NAME, 1).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, TEST_PATH).unwrap(), true);
+        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), true);
 
         // 模拟 delete_value（通过 key）
         key.delete_value(VALUE_NAME).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, TEST_PATH).unwrap(), false);
-        cleanup();
+        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), false);
+        cleanup(&path);
     }
 }

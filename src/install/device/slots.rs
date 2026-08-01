@@ -194,9 +194,9 @@ impl SlotValue {
 // GUID 辅助（windows-rs GUID 无 Display，用 Debug 格式化；字节按 Windows 小端存储）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// GUID → `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 字符串。
+/// GUID → `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 字符串（统一走 sys::com::prelude）。
 fn guid_to_string(g: &windows::core::GUID) -> String {
-    format!("{:?}", g)
+    crate::sys::com::prelude::guid_to_string(g)
 }
 
 /// 16 字节小端（data1/data2/data3）+ data4 原始 → GUID。

@@ -8,7 +8,15 @@
 //!
 //! 导出给：`sys/com/` 下所有子模块。
 //!
-//! 禁止：不包含任何自定义类型、函数或逻辑。
+//! 禁止：不包含任何自定义类型、函数或逻辑（重导出除外）。
+//!
+//! # GUID 字符串转换的安全边界
+//!
+//! `windows::core::GUID` 本身未实现 `Display`/`ToString`，若直接使用 `Debug` 输出（`{:?}`）
+//! 依赖不稳定格式，且无法保证可读性。官方 FFI 绑定 `StringFromGUID2` 需要 `unsafe` 调用，
+//! 但该 `unsafe` 已由 `guid_to_string` 函数收窄为单一安全边界。
+//!
+//! 调用方应使用重导出的 `guid_to_string(&GUID) -> String`，而非自行调用 `StringFromGUID2`。
 
 // ── 类型重导出 ──
 
@@ -35,6 +43,9 @@ pub use windows::core::interface;
 
 /// COM 类工厂接口。
 pub use windows::Win32::System::Com::IClassFactory;
+
+/// GUID → 字符串（标准 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式，带花括号）。
+pub use windows::Win32::System::Com::StringFromGUID2;
 
 // ── HRESULT 常量（v6.2 规范 3.1） ──
 
@@ -68,6 +79,23 @@ pub const E_OUTOFMEMORY: HRESULT = HRESULT(0x8007_000Eu32 as i32);
 /// 类不支持聚合。
 pub const CLASS_E_NOAGGREGATION: HRESULT = HRESULT(0x8004_0110u32 as i32);
 
+// ── GUID 格式化辅助 ──
+
+/// 将 GUID 格式化为标准字符串 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`。
+///
+/// 底层使用 `StringFromGUID2`（windows-rs 0.62.2 签名：`(rguid, lpsz: &mut [u16]) -> i32`），
+/// 返回**带花括号**的格式；与 `GUID::Debug`（不带花括号）不同。
+/// `StringFromGUID2` 需要至少 39 个 WCHAR（38 字符 + null 终止符）。
+pub fn guid_to_string(g: &GUID) -> String {
+    let mut buf = [0u16; 40];
+    // FFI：buf 长度足够，StringFromGUID2 保证 null 终止并返回写入字符数（含 null）。
+    let len = unsafe { StringFromGUID2(g, &mut buf) };
+    if len <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buf[..(len as usize - 1)])
+}
+
 // ── 测试 ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -86,6 +114,36 @@ mod tests {
         assert!(CLASS_E_CLASSNOTAVAILABLE.0 < 0);
         assert!(E_OUTOFMEMORY.0 < 0);
         assert!(CLASS_E_NOAGGREGATION.0 < 0);
+    }
+
+    #[test]
+    fn guid_to_string_zeroed() {
+        assert_eq!(
+            guid_to_string(&GUID::zeroed()),
+            "{00000000-0000-0000-0000-000000000000}"
+        );
+    }
+
+    #[test]
+    fn guid_to_string_standard_format() {
+        let guid = GUID::from_values(
+            0xA1B2C3D4,
+            0x1234,
+            0x5678,
+            [0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78],
+        );
+        assert_eq!(
+            guid_to_string(&guid),
+            "{A1B2C3D4-1234-5678-9ABC-DEF012345678}"
+        );
+    }
+
+    #[test]
+    fn guid_to_string_has_braces() {
+        let s = guid_to_string(&GUID::zeroed());
+        assert!(s.starts_with('{'));
+        assert!(s.ends_with('}'));
+        assert_eq!(s.len(), 38);
     }
 
     #[test]

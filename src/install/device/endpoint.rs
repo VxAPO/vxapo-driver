@@ -155,7 +155,7 @@ fn extract_endpoint_guid(endpoint_key: &RegKey) -> String {
                         raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15],
                     ],
                 };
-                return format!("{:?}", guid);
+                return crate::sys::com::prelude::guid_to_string(&guid);
             }
         }
     }

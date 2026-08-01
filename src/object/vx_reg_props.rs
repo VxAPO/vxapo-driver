@@ -274,7 +274,7 @@ pub struct ClsidEntry {
 
 impl ClsidEntry {
     pub fn new(clsid: windows::core::GUID) -> Self {
-        Self { clsid, clsid_str: format!("{:?}", clsid) }
+        Self { clsid, clsid_str: crate::sys::com::prelude::guid_to_string(&clsid) }
     }
     pub fn clsid_key_path(&self) -> String { format!("CLSID\\{}", self.clsid_str) }
     pub fn inproc_server_path(&self) -> String { format!("CLSID\\{}\\InprocServer32", self.clsid_str) }

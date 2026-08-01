@@ -170,18 +170,6 @@ pub fn process_audio(
 mod tests {
     use super::*;
 
-    fn test_params() -> ProcessParams {
-        ProcessParams {
-            input_channels: 2,
-            output_channels: 2,
-            sample_rate: 48000,
-            max_frame_count: 128,
-            valid_frame_count: 4,
-            error_policy: ErrorPolicy::Bypass,
-            allow_silent_buffer: true,
-        }
-    }
-
     #[test]
     fn error_policy_bypass_copies_input() {
         let stats = ProcessStatistics::new();

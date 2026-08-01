@@ -173,9 +173,9 @@ impl Drop for Transaction {
 // GUID 辅助（windows-rs GUID 无 Display，用 Debug 格式化；字节按小端存储）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// GUID → `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`。
+/// GUID → `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`（统一走 sys::com::prelude）。
 pub fn guid_to_string(g: &windows::core::GUID) -> String {
-    format!("{:?}", g)
+    crate::sys::com::prelude::guid_to_string(g)
 }
 
 /// GUID → 16 字节小端（data1/data2/data3 LE + data4）。
