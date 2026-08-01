@@ -3,10 +3,10 @@
 use windows::core::{HSTRING, PCWSTR, Result};
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::System::Registry::{
-    HKEY, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW,
-    RegQueryValueExW, RegSetValueExW, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER,
-    HKEY_LOCAL_MACHINE, HKEY_USERS, REG_BINARY, REG_DWORD, REG_MULTI_SZ, REG_OPEN_CREATE_OPTIONS,
-    REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
+    HKEY, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW,
+    RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY_CLASSES_ROOT,
+    HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS, REG_BINARY, REG_DWORD,
+    REG_MULTI_SZ, REG_OPEN_CREATE_OPTIONS, REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
 };
 
 const SAM_READ: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0002_0019); // KEY_READ = STANDARD_RIGHTS_READ | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY
@@ -185,11 +185,116 @@ impl RegKey {
         }
     }
 
+    /// 读取 REG_MULTI_SZ。
+    pub fn read_multi_value(&self, name: &str) -> Result<Vec<String>> {
+        match self.read_value(name)? {
+            RegValue::MultiSz(v) => Ok(v),
+            _ => Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                0x8000_000Du32 as i32,
+            ))),
+        }
+    }
+
     /// 检查值是否存在。
     pub fn value_exists(&self, name: &str) -> Result<bool> {
         let name = HSTRING::from(name);
         let err = unsafe { RegQueryValueExW(self.handle, &name, None, None, None, None) };
         Ok(err.0 == 0)
+    }
+
+    /// 检查当前键下指定子键是否存在。
+    pub fn key_exists_child(&self, sub_key: &str) -> Result<bool> {
+        Ok(Self::open(self.handle, sub_key).is_ok())
+    }
+
+    /// 枚举所有子键名称。
+    ///
+    /// **设备枚举的底层能力源**（供 `install/device/info::enumerate_devices` 遍历 MMDevices 子键）。
+    pub fn enum_sub_keys(&self) -> Result<Vec<String>> {
+        use windows::core::PWSTR;
+
+        let mut names = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut buf = [0u16; 512];
+            let mut len = buf.len() as u32;
+            let err = unsafe {
+                RegEnumKeyExW(
+                    self.handle,
+                    index,
+                    Some(PWSTR(buf.as_mut_ptr())),
+                    &mut len,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if err.0 == 0 {
+                names.push(String::from_utf16_lossy(&buf[..len as usize]));
+                index += 1;
+            } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
+                break;
+            } else {
+                win32_ok(err)?;
+            }
+        }
+        Ok(names)
+    }
+
+    /// 枚举所有值名称（含默认值 `""`）。
+    pub fn enum_values(&self) -> Result<Vec<String>> {
+        use windows::core::PWSTR;
+
+        let mut names = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut buf = [0u16; 512];
+            let mut len = buf.len() as u32;
+            let err = unsafe {
+                RegEnumValueW(
+                    self.handle,
+                    index,
+                    Some(PWSTR(buf.as_mut_ptr())),
+                    &mut len,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if err.0 == 0 {
+                names.push(String::from_utf16_lossy(&buf[..len as usize]));
+                index += 1;
+            } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
+                break;
+            } else {
+                win32_ok(err)?;
+            }
+        }
+        Ok(names)
+    }
+
+    /// 读取 GUID，支持 REG_BINARY（16 字节 LE）和 REG_SZ。
+    pub fn get_guid_string(&self, name: &str) -> Result<String> {
+        let value = self.read_value(name)?;
+        match value {
+            RegValue::Binary(b) if b.len() >= 16 => {
+                let guid = windows::core::GUID {
+                    data1: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                    data2: u16::from_le_bytes([b[4], b[5]]),
+                    data3: u16::from_le_bytes([b[6], b[7]]),
+                    data4: [
+                        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+                    ],
+                };
+                Ok(crate::sys::com::prelude::guid_to_string(&guid))
+            }
+            RegValue::Sz(s) => Ok(s),
+            _ => Err(windows::core::Error::from_hresult(
+                windows::core::HRESULT(0x8000_000Du32 as i32),
+            )),
+        }
     }
 
     /// 写入 REG_SZ。
@@ -316,6 +421,147 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
         }
     };
     Ok((root, rest))
+}
+
+/// 检查注册表键是否存在。
+pub fn key_exists(root: HKEY, sub_key: &str) -> Result<bool> {
+    Ok(RegKey::open(root, sub_key).is_ok())
+}
+
+/// 检查注册表值是否存在。
+pub fn value_exists(root: HKEY, sub_key: &str, name: &str) -> Result<bool> {
+    let key = match RegKey::open(root, sub_key) {
+        Ok(k) => k,
+        Err(_) => return Ok(false),
+    };
+    key.value_exists(name)
+}
+
+/// 递归删除子树（幂等，不需要已打开的句柄）。
+pub fn delete_tree(root: HKEY, sub_key: &str) -> Result<()> {
+    let sub_key = HSTRING::from(sub_key);
+    let err = unsafe { RegDeleteTreeW(root, &sub_key) };
+    if err.0 == 0 || is_not_found(err) {
+        Ok(())
+    } else {
+        win32_ok(err)
+    }
+}
+
+/// 读取 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` 检查 Windows 版本。
+pub fn is_windows_version_at_least(major: u32, minor: u32, build: u32) -> Result<bool> {
+    let key = RegKey::open(
+        HKEY_LOCAL_MACHINE,
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+    )?;
+    let cur_major = key
+        .read_dword_value("CurrentMajorVersionNumber")
+        .unwrap_or(0);
+    let cur_minor = key
+        .read_dword_value("CurrentMinorVersionNumber")
+        .unwrap_or(0);
+    let cur_build = key
+        .read_sz_value("CurrentBuildNumber")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let cur = (cur_major, cur_minor, cur_build);
+    let target = (major, minor, build);
+    Ok(cur >= target)
+}
+
+/// 递归导出注册表键为 `.reg` 文件（UTF-16LE with BOM），用于安装前备份。
+pub fn save_to_file(root: HKEY, sub_key: &str, path: &str) -> Result<()> {
+    let key = RegKey::open(root, sub_key)?;
+    let mut content = String::new();
+    content.push_str("Windows Registry Editor Version 5.00\r\n\r\n");
+    dump_key_recursive(&key, "", sub_key, &mut content)?;
+    let mut bytes = vec![0xFF, 0xFE]; // UTF-16LE BOM
+    let mut utf16: Vec<u8> = content
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    bytes.append(&mut utf16);
+    std::fs::write(path, bytes).map_err(|e| {
+        let code = e.raw_os_error().unwrap_or(5) as u32 & 0xFFFF;
+        windows::core::Error::from_hresult(windows::core::HRESULT(
+            (0x8007_0000u32 | code) as i32,
+        ))
+    })?;
+    Ok(())
+}
+
+/// 递归导出键及子键（`save_to_file` 内部）。
+fn dump_key_recursive(
+    key: &RegKey,
+    display_path: &str,
+    sub_key: &str,
+    content: &mut String,
+) -> Result<()> {
+    let full_display = if display_path.is_empty() {
+        sub_key.to_string()
+    } else {
+        format!("{}\\{}", display_path, sub_key)
+    };
+
+    content.push_str(&format!("[HKEY_LOCAL_MACHINE\\{}]\r\n", full_display));
+
+    // 枚举本键所有值。
+    let value_names = key.enum_values()?;
+    for name in &value_names {
+        match key.read_value(name) {
+            Ok(value) => {
+                let display_name = if name.is_empty() { "@" } else { name };
+                match value {
+                    RegValue::Sz(s) => content.push_str(&format!(
+                        "\"{}\"=\"{}\"\r\n",
+                        display_name,
+                        s.replace('\\', "\\\\").replace('"', "\\\"")
+                    )),
+                    RegValue::Dword(d) => content.push_str(&format!(
+                        "\"{}\"=dword:{:08x}\r\n",
+                        display_name, d
+                    )),
+                    RegValue::Qword(q) => content.push_str(&format!(
+                        "\"{}\"=hex(b):{},{}\r\n",
+                        display_name,
+                        (q & 0xFF) as u8,
+                        ((q >> 8) & 0xFF) as u8
+                    )),
+                    RegValue::Binary(b) => {
+                        let hex: Vec<String> = b.iter().map(|x| format!("{:02x}", x)).collect();
+                        content.push_str(&format!(
+                            "\"{}\"=hex:{}\r\n",
+                            display_name,
+                            hex.join(",")
+                        ));
+                    }
+                    RegValue::MultiSz(v) => {
+                        let items: Vec<String> = v
+                            .iter()
+                            .map(|s| s.replace('\\', "\\\\").replace('"', "\\\""))
+                            .collect();
+                        content.push_str(&format!(
+                            "\"{}\"=hex(7):{}\\0\r\n",
+                            display_name,
+                            items.join(",00,")
+                        ));
+                    }
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    content.push('\n');
+
+    // 递归子键。
+    let sub_keys = key.enum_sub_keys()?;
+    for child in &sub_keys {
+        let child_key = key.open_sub_key(child)?;
+        dump_key_recursive(&child_key, &full_display, child, content)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

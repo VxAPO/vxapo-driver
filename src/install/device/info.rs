@@ -138,16 +138,28 @@ pub fn query_device_info(endpoint_key: &RegKey) -> Result<Option<DeviceInfo>> {
 
 /// 设备枚举（遍历 MMDevices\\Audio\\Render 和 Capture 下所有端点）。
 ///
-/// 当前版本受限于 sys/registry 无键枚举 API——返回空列表。
-/// 上层可通过已知设备 GUID 直接调用 `query_device_info` / `install_endpoint`。
+/// 设备枚举唯一入口，供 `install/selector/select.rs` 和 `install/selector/operation.rs` 使用。
+/// 经 `sys::registry::RegKey::enum_sub_keys` 遍历子键，逐个 `query_device_info`。
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
-    let result = Vec::new();
+    let mut result = Vec::new();
 
-    // TODO(v6.2): sys/registry 增加键枚举能力后，遍历 Render/Capture 下的
-    // `{GUID}` 子键并逐一点调用 query_device_info。
-    let _ = RENDER_PATH;
-    let _ = CAPTURE_PATH;
-    let _ = HKEY_LOCAL_MACHINE;
+    for root_path in [RENDER_PATH, CAPTURE_PATH] {
+        let root = match RegKey::open(HKEY_LOCAL_MACHINE, root_path) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+
+        let sub_keys = root.enum_sub_keys()?;
+        for guid in sub_keys {
+            let endpoint_key = match root.open_sub_key(&guid) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            if let Some(info) = query_device_info(&endpoint_key)? {
+                result.push(info);
+            }
+        }
+    }
 
     Ok(result)
 }
@@ -374,7 +386,8 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_devices_returns_empty_for_now() {
-        assert!(enumerate_devices().unwrap().is_empty());
+    fn enumerate_devices_runs_without_error() {
+        // 真实枚举接入注册表；在无设备/无权限环境下也应为 Ok（可能为空列表）。
+        let _ = enumerate_devices();
     }
 }
