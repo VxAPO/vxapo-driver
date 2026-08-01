@@ -1,4 +1,4 @@
-# DSP 工厂注册表（9/15 已实现）
+# DSP 工厂注册表（8 个 DSP 工厂实现 + VST 预留）
 
 ## 注册顺序与 index 常量
 
@@ -17,7 +17,7 @@
 | 10 | FACTORY_COPY | CopyFactory | done |
 | 11 | FACTORY_CONVOLUTION | ConvolutionFactory | done |
 | 12 | FACTORY_GRAPHIC_EQ | GraphicEqFactory | done |
-| 13 | FACTORY_VST_PLUGIN | VstFactory | done |
+| 13 | FACTORY_VST_PLUGIN | VstFactory | 预留（恒 NoMatch） |
 | 14 | FACTORY_LOUDNESS_CORRECTION | LoudnessFactory | done |
 
 index 0-5 对应纯配置命令，由 parser 分发而非 FilterRegistry
@@ -32,15 +32,15 @@ index 0-5 对应纯配置命令，由 parser 分发而非 FilterRegistry
 - compute_coeffs(btype, fc, gain_db, q, sample_rate) -> BiquadCoeffs
 - GraphicEqFilter::new(Vec<EqBand>)
 - ConvolutionFilter::new(path, gain)
-- VstFilter::new(dll_path, plugin_name)（路径在前！）
 - LoudnessFilter::new(phon, ref)
+- ~~VstFilter~~（已删除：VST 评估后不需要，vst.rs 仅注释，VstFactory 恒 NoMatch）
 
 ## DspContext 字段
 sample_rate / channel_count / channel_mask / channel_names / max_frame_count / bits_per_sample / device_type / stage / variables
 
 ## 测试
-416 passed / 0 failed（含 20+ 工厂测试：各工厂解析/无效 NoMatch/iir_modal/注册顺序等）
+417 passed / 0 failed（含 20+ 工厂测试：各工厂解析/无效 NoMatch/iir_modal/注册顺序等）
 
-## 待完成度检查
-需要逐一验证每个 DSP 滤波器的 process() 是否有真实实现（不是空壳/TODO）：
-biquad / gain / delay / copy / graphic_eq / hp_lp / peq / loudness / convolution / vst / transition
+## 完成度结论（已验证）
+biquad / peq / hp_lp / loudness / graphic_eq / copy / gain / delay / transition / convolution 共 10 个滤波器 process() 全部真实实现，无空壳。
+convolution = 短 IR（<256 采样）时域 FIR 卷积 + WAV 解析（PCM16/f32）+ 环形延迟线（RT 安全）。VST = 预留 NoMatch。
