@@ -66,3 +66,4 @@ pub unsafe fn is_float_format(media_type: *mut IAudioMediaType) -> bool {
     let fmt = (wfx as *const WaveFormatEx).as_ref().unwrap();
     fmt.w_format_tag == 3
 }
+

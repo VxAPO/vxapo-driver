@@ -2,20 +2,77 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
-use windows::core::implement;
-use windows::core::{Result};
 
+use windows::core::implement;
+use windows::core::Result;
+
+use crate::config::commands::register_all_commands;
+use crate::config::parser::ConfigParser;
 use crate::object::ref_count;
+use crate::object::vx_reg_props::{REG_PROPS_PRE_MIX, REG_PROPS_POST_MIX};
 use crate::pipeline::chain::Chain;
 use crate::pipeline::context::PipelineContext;
-use crate::pipeline::process::ProcessStatistics;
+use crate::pipeline::dsp::factory::FilterRegistry;
+use crate::pipeline::dsp::filter::{DspContext, DeviceType, ProcessingStage};
+use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
+use crate::pipeline::format::extract_format;
+use crate::pipeline::process::{
+    ErrorPolicy, ProcessParams, ProcessStatistics, process_audio, process_chain_interleaved,
+};
+use crate::sys::audio_defs::get_channel_names;
 use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration, IAudioProcessingObjectRT,
     IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl, IAudioProcessingObjectConfiguration_Impl,
 };
 use windows::Win32::Media::Audio::Apo::{APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES};
+use windows::Win32::System::Com::CoTaskMemAlloc;
 
-use crate::sys::com::apo_types::{APOERR_FORMAT_NOT_SUPPORTED, APOERR_NOT_INITIALIZED};
+use crate::sys::com::apo_types::{
+    APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT, APOERR_NOT_INITIALIZED,
+    APOERR_NUM_CONNECTIONS_INVALID, BUFFER_VALID,
+};
+
+/// 配置文件默认路径（安装时写入的实际路径可从注册表读取，此处为约定默认值）。
+const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.txt";
+
+/// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
+fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> DspContext {
+    let channel_names = get_channel_names(ctx.channel_mask);
+    DspContext {
+        sample_rate: ctx.sample_rate,
+        channel_count: ctx.input_channels,
+        channel_mask: ctx.channel_mask,
+        channel_names,
+        max_frame_count: ctx.max_frame_count as u32,
+        bits_per_sample,
+        device_type: DeviceType::Render,
+        stage: ProcessingStage::None,
+        variables: std::collections::HashMap::new(),
+    }
+}
+
+/// RAII guard：LockForProcess 失败时自动回退状态。
+struct LockGuard<'a> {
+    state_cell: &'a StateCell,
+    armed: bool,
+}
+
+impl<'a> LockGuard<'a> {
+    fn new(state_cell: &'a StateCell) -> Self {
+        Self { state_cell, armed: true }
+    }
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LockGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.state_cell.transition(ApoState::Locked, ApoState::Initialized);
+        }
+    }
+}
 
 // ═══ 状态机 ═══
 #[repr(u8)]
@@ -39,6 +96,7 @@ pub struct ApoObjectInner {
     pub current_chain: Box<Chain>,
     pub outgoing_chain: Option<Box<Chain>>,
     pub pipeline_context: PipelineContext,
+    pub transition: Option<SmoothingProvider>,
     pub temp_buffers: Vec<Vec<f32>>,
     pub temp_buffer_old: Vec<f32>,
     pub temp_buffer_new: Vec<f32>,
@@ -50,6 +108,7 @@ impl ApoObjectInner {
             current_chain: Box::new(Chain::new()),
             outgoing_chain: None,
             pipeline_context: PipelineContext::new(),
+            transition: None,
             temp_buffers: Vec::new(),
             temp_buffer_old: Vec::new(),
             temp_buffer_new: Vec::new(),
@@ -86,6 +145,39 @@ impl ApoObject {
             process_stats: ProcessStatistics::new(),
         }
     }
+
+    /// 配置热重载（watcher 触发）：锁外解析新链，锁内设置过渡。
+    pub fn hot_reload(&self) {
+        // 锁外构建新 Chain（避免长时间持锁）。
+        let new_chain = {
+            let inner = self.mutex.lock().unwrap();
+            let ctx = inner.pipeline_context.clone();
+            drop(inner);
+            let dsp_ctx = build_dsp_context(&ctx, 32);
+            let mut registry = FilterRegistry::new();
+            register_all_commands(&mut registry);
+            let parser = ConfigParser::new(registry);
+            let filters = parser.parse_file(DEFAULT_CONFIG_PATH, &dsp_ctx).unwrap_or_default();
+            let mut chain = Chain::new();
+            for f in filters {
+                let _ = chain.add_filter(f);
+            }
+            chain
+        };
+
+        // 锁内切换：检查过渡中 → 排队；否则放入 outgoing（进入过渡模式）。
+        let mut inner = self.mutex.lock().unwrap();
+        if inner.transition.is_some() {
+            inner.pending_reload = true;
+            return;
+        }
+        let old = std::mem::replace(&mut inner.current_chain, Box::new(new_chain));
+        inner.outgoing_chain = Some(old);
+        let length = default_smoothing_length(inner.pipeline_context.sample_rate);
+        let mut sm = SmoothingProvider::new(length);
+        sm.begin();
+        inner.transition = Some(sm);
+    }
 }
 
 impl Drop for ApoObject {
@@ -98,10 +190,12 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         let mut inner = self.mutex.lock().unwrap();
         inner.current_chain = Box::new(Chain::new());
         inner.outgoing_chain = None;
+        inner.transition = None;
         inner.pipeline_context = PipelineContext::new();
         inner.temp_buffers.clear();
         inner.temp_buffer_old.clear();
         inner.temp_buffer_new.clear();
+        inner.pending_reload = false;
         self.latency_samples.store(0, Ordering::SeqCst);
         self.latency_frames_atomic.store(0, Ordering::SeqCst);
         Ok(())
@@ -117,8 +211,22 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn GetRegistrationProperties(&self) -> Result<*mut APO_REG_PROPERTIES> {
-        // 骨架：返回 null，后续批次用 vx_reg_props 实现
-        Ok(std::ptr::null_mut())
+        // 按 CLSID 选择对应注册属性，CoTaskMemAlloc 拷贝返回（调用方负责 CoTaskMemFree）。
+        let prop = if self.clsid == crate::object::vx_reg_props::CLSID_VXAPO_PRE_MIX {
+            &REG_PROPS_PRE_MIX
+        } else {
+            &REG_PROPS_POST_MIX
+        };
+        let size = std::mem::size_of::<APO_REG_PROPERTIES>();
+        // 分配并对齐（alignment_of<APO_REG_PROPERTIES>）。
+        let alloc = unsafe { CoTaskMemAlloc(size) };
+        if alloc.is_null() {
+            return Err(windows::core::Error::from(windows::core::HRESULT(0x8007_000Eu32 as i32))); // ERROR_OUTOFMEMORY
+        }
+        unsafe {
+            std::ptr::write(alloc as *mut APO_REG_PROPERTIES, *prop);
+        }
+        Ok(alloc as *mut APO_REG_PROPERTIES)
     }
 
     fn Initialize(&self, _cb_data_size: u32, _pby_data: *const u8) -> Result<()> {
@@ -129,17 +237,42 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     fn IsInputFormatSupported(
         &self,
         _p_opposite_format: windows::core::Ref<IAudioMediaType>,
-        _p_requested: windows::core::Ref<IAudioMediaType>,
+        p_requested: windows::core::Ref<IAudioMediaType>,
     ) -> Result<IAudioMediaType> {
-        Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+        // 提取请求格式并与当前 PipelineContext 比较（仅通道数/采样率）。
+        // Ref<IAudioMediaType> 的 Deref 目标是 Option<IAudioMediaType>。
+        let Some(req) = p_requested.as_ref() else {
+            return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
+        };
+        let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
+        let requested = unsafe { extract_format(mt_ptr) };
+        let inner = self.mutex.lock().unwrap();
+        let ctx = &inner.pipeline_context;
+        match requested {
+            Ok(fmt) if fmt.channels == ctx.input_channels
+                && fmt.sample_rate == ctx.sample_rate => Ok(req.clone()),
+            _ => Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED)),
+        }
     }
 
     fn IsOutputFormatSupported(
         &self,
         _p_opposite_format: windows::core::Ref<IAudioMediaType>,
-        _p_requested: windows::core::Ref<IAudioMediaType>,
+        p_requested: windows::core::Ref<IAudioMediaType>,
     ) -> Result<IAudioMediaType> {
-        Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+        // 输出格式与输入一致（INPLACE 模式）。
+        let Some(req) = p_requested.as_ref() else {
+            return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
+        };
+        let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
+        let requested = unsafe { extract_format(mt_ptr) };
+        let inner = self.mutex.lock().unwrap();
+        let ctx = &inner.pipeline_context;
+        match requested {
+            Ok(fmt) if fmt.channels == ctx.output_channels
+                && fmt.sample_rate == ctx.sample_rate => Ok(req.clone()),
+            _ => Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED)),
+        }
     }
 
     fn GetInputChannelCount(&self) -> Result<u32> {
@@ -155,12 +288,153 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
 impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
     fn APOProcess(
         &self,
-        _num_input: u32,
-        _pp_inputs: *const *const APO_CONNECTION_PROPERTY,
-        _num_output: u32,
-        _pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
+        num_input: u32,
+        pp_inputs: *const *const APO_CONNECTION_PROPERTY,
+        num_output: u32,
+        pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
-        // 骨架：空实现，后续批次接 pipeline::process::process_audio
+        if self.state_cell.current() != ApoState::Locked {
+            return;
+        }
+        if num_input == 0 || num_output == 0 || pp_inputs.is_null() || pp_outputs.is_null() {
+            return;
+        }
+
+        let mut inner = self.mutex.lock().unwrap();
+        let pending = inner.pending_reload;
+
+        // 过渡模式存在 → 双链处理 + 混合。
+        if pending || inner.transition.is_some() {
+            // 先把所有需要变异的字段移到栈上（每次仅单字段借用），避免互斥 guard 多 &mut。
+            let mut outgoing = inner.outgoing_chain.take();
+            let mut transition = inner.transition.take();
+            let mut owned_chain = std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
+            let mut tbufs = std::mem::take(&mut inner.temp_buffers);
+            let mut tbuf_old = std::mem::take(&mut inner.temp_buffer_old);
+            let mut tbuf_new = std::mem::take(&mut inner.temp_buffer_new);
+            let in_ch = inner.pipeline_context.input_channels as usize;
+            let out_ch = inner.pipeline_context.output_channels as usize;
+            let current_chain = owned_chain.as_mut();
+
+            let input_prop = unsafe { &**pp_inputs };
+            let output_prop = unsafe { &mut **pp_outputs };
+            let frames = input_prop.u32ValidFrameCount as usize;
+
+            // 输入切片（交织）。
+            let input_slice = unsafe {
+                std::slice::from_raw_parts(input_prop.pBuffer as *const f32, frames * in_ch)
+            };
+
+            // 旧链 → temp_buffer_old。
+            let mut old_ready = true;
+            if let Some(old_chain) = outgoing.as_mut() {
+                tbuf_old.resize(frames * out_ch, 0.0);
+                let _ = process_chain_interleaved(
+                    old_chain,
+                    input_slice,
+                    tbuf_old.as_mut_slice(),
+                    out_ch,
+                    frames,
+                    tbufs.as_mut_slice(),
+                );
+            } else {
+                old_ready = false;
+            }
+
+            // 新链 → temp_buffer_new。
+            tbuf_new.resize(frames * out_ch, 0.0);
+            let _ = process_chain_interleaved(
+                current_chain,
+                input_slice,
+                tbuf_new.as_mut_slice(),
+                out_ch,
+                frames,
+                tbufs.as_mut_slice(),
+            );
+
+            // 混合 → 输出。factor 从 0.0（旧）→ 1.0（新）。
+            if let Some(provider) = transition.as_mut() {
+                if let Some(factor) = provider.advance() {
+                    let out_slice = unsafe {
+                        std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+                    };
+                    for f in 0..frames {
+                        for c in 0..out_ch {
+                            let idx = f * out_ch + c;
+                            let old_v = if old_ready { tbuf_old[idx] } else { 0.0 };
+                            out_slice[idx] = old_v * (1.0 - factor)
+                                + tbuf_new[idx] * factor;
+                        }
+                    }
+                    output_prop.u32ValidFrameCount = frames as u32;
+                    output_prop.u32BufferFlags = BUFFER_VALID;
+                }
+            }
+
+            // 当前过渡结束条件：advance 到达上限或过渡原本未激活。
+            let finished = transition.as_ref().map_or(true, |p| p.counter() >= p.length());
+            if finished {
+                tbuf_old.clear();
+                tbuf_new.clear();
+                inner.outgoing_chain = None;
+                inner.transition = None;
+                inner.pending_reload = false;
+                if pending {
+                    // 丢弃过渡中字段（旧链/过渡/临时缓冲区），触发 1.0 收敛后热重载。
+                    drop(outgoing);
+                    drop(transition);
+                    drop(tbuf_old);
+                    drop(tbuf_new);
+                    inner.current_chain = owned_chain;
+                    inner.temp_buffers = tbufs;
+                    drop(inner);
+                    self.hot_reload();
+                    return;
+                }
+            } else {
+                // 过渡进行中 → 写回迁移状态。
+                inner.outgoing_chain = outgoing;
+                inner.transition = transition;
+            }
+            // 写回栈上字段。
+            inner.current_chain = owned_chain;
+            inner.temp_buffers = tbufs;
+            inner.temp_buffer_old = tbuf_old;
+            inner.temp_buffer_new = tbuf_new;
+            return;
+        }
+
+        // 正常模式：构造 ProcessParams 并调用 process_audio。
+        let in_ch = inner.pipeline_context.input_channels;
+        let out_ch = inner.pipeline_context.output_channels;
+        let frames = unsafe { (**pp_inputs).u32ValidFrameCount as usize };
+        let params = ProcessParams {
+            input_channels: in_ch,
+            output_channels: out_ch,
+            sample_rate: inner.pipeline_context.sample_rate,
+            max_frame_count: inner.pipeline_context.max_frame_count,
+            valid_frame_count: frames,
+            error_policy: ErrorPolicy::Bypass,
+            allow_silent_buffer: true,
+        };
+        // pp_inputs / pp_outputs 是 APO_CONNECTION_PROPERTY**（指针数组）。
+        // APO 通常单连接（1:1），直接用首元素解引用构造 slice，零分配。
+        let input_one = unsafe { &**pp_inputs };
+        let inputs = std::slice::from_ref(input_one);
+        let output_one = unsafe { &mut **pp_outputs };
+        let outputs = std::slice::from_mut(output_one);
+        let mut owned_chain = std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
+        let mut tbufs = std::mem::take(&mut inner.temp_buffers);
+        let _ = process_audio(
+            inputs,
+            outputs,
+            &params,
+            owned_chain.as_mut(),
+            &self.process_stats,
+            tbufs.as_mut_slice(),
+        );
+        inner.current_chain = owned_chain;
+        inner.temp_buffers = tbufs;
     }
 
     fn CalcInputFrames(&self, output_frames: u32) -> u32 {
@@ -177,16 +451,103 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
 impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
     fn LockForProcess(
         &self,
-        _num_input: u32,
-        _pp_inputs: *const *const APO_CONNECTION_DESCRIPTOR,
+        num_input: u32,
+        pp_inputs: *const *const APO_CONNECTION_DESCRIPTOR,
         _num_output: u32,
         _pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
     ) -> Result<()> {
-        Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+        // Step 0: 状态机 Initialized → Locked，失败自动回退。
+        self.state_cell
+            .transition(ApoState::Initialized, ApoState::Locked)
+            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+        let _guard = LockGuard::new(&self.state_cell);
+
+        if num_input == 0 || pp_inputs.is_null() {
+            return Err(windows::core::Error::from(APOERR_NUM_CONNECTIONS_INVALID));
+        }
+
+        // Step 1: 从输入连接描述符提取格式（pFormat 为 ManuallyDrop<Option<IAudioMediaType>>）。
+        let input_descriptor = unsafe { &**pp_inputs };
+        let format = match input_descriptor.pFormat.as_ref() {
+            Some(media_type) => {
+                let mt_ptr: *mut IAudioMediaType =
+                    media_type as *const IAudioMediaType as *mut IAudioMediaType;
+                unsafe { extract_format(mt_ptr) }
+                    .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?
+            }
+            None => return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT)),
+        };
+
+        // Step 2: 构建 PipelineContext + DspContext。
+        let pipeline_context = PipelineContext {
+            sample_rate: format.sample_rate,
+            input_channels: format.channels,
+            output_channels: format.channels,
+            channel_mask: format.channel_mask,
+            max_frame_count: input_descriptor.u32MaxFrameCount as usize,
+        };
+
+        let channel_names = get_channel_names(format.channel_mask);
+        let dsp_ctx = DspContext {
+            sample_rate: format.sample_rate,
+            channel_count: format.channels,
+            channel_mask: format.channel_mask,
+            channel_names,
+            max_frame_count: input_descriptor.u32MaxFrameCount,
+            bits_per_sample: format.bits_per_sample,
+            device_type: DeviceType::Render,
+            stage: ProcessingStage::None,
+            variables: std::collections::HashMap::new(),
+        };
+
+        // Step 3: 构建 FilterRegistry + ConfigParser，解析配置文件。
+        let mut registry = FilterRegistry::new();
+        register_all_commands(&mut registry);
+        let parser = ConfigParser::new(registry);
+        let filters = parser.parse_file(DEFAULT_CONFIG_PATH, &dsp_ctx)
+            .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
+
+        // Step 4: 组装 Chain。
+        let mut chain = Chain::new();
+        for f in filters {
+            chain.add_filter(f)
+                .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
+        }
+        let total_latency = chain.total_latency();
+
+        // Step 5: 预分配临时缓冲区（deinterleave 空间，channels 个 Vec）。
+        let mut temp_buffers: Vec<Vec<f32>> = Vec::with_capacity(format.channels as usize);
+        for _ in 0..format.channels {
+            temp_buffers.push(Vec::with_capacity(pipeline_context.max_frame_count));
+        }
+
+        // Step 6: 更新内部状态。
+        {
+            let mut inner = self.mutex.lock().unwrap();
+            inner.current_chain = Box::new(chain);
+            inner.outgoing_chain = None;
+            inner.transition = None;
+            inner.pipeline_context = pipeline_context;
+            inner.temp_buffers = temp_buffers;
+            inner.temp_buffer_old = Vec::new();
+            inner.temp_buffer_new = Vec::new();
+            inner.pending_reload = false;
+        }
+        self.latency_samples.store(total_latency, Ordering::SeqCst);
+        self.latency_frames_atomic.store(total_latency, Ordering::SeqCst);
+
+        // Step 7: 确保第三方 APO 可加载（DisableProtectedAudioDG）。
+        crate::install::audiodg::ensure_can_load()
+            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+
+        // 全部成功 → 解除守卫（不再回退状态）。
+        _guard.disarm();
+        Ok(())
     }
 
     fn UnlockForProcess(&self) -> Result<()> {
-        self.state_cell.transition(ApoState::Locked, ApoState::Initialized)
+        self.state_cell
+            .transition(ApoState::Locked, ApoState::Initialized)
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
     }
 }
