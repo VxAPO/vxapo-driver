@@ -46,6 +46,12 @@ text
 - KEY_READ: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0002_0019) = STANDARD_RIGHTS_READ|KEY_QUERY_VALUE|KEY_ENUMERATE_SUB_KEYS|KEY_NOTIFY
 - KEY_ALL_ACCESS = REG_SAM_FLAGS(983103)
 
+## Registry 枚举 API（v6.4 实测追加，经 rust-analyzer 报错 + cargo check 实证）
+- RegEnumKeyExW: `(hkey, dwindex: u32, lpname: Option<PWSTR>, lpcchname: &mut u32, lpreserved: ...)` —— 第 3 参是 `Option<PWSTR>`，不是 `&mut [u16]`；用 `Some(PWSTR(buf.as_mut_ptr()))` + `&mut buf.len() as u32`
+- RegEnumValueW: 同上，第 3 参也是 `Option<PWSTR>`
+- REG_SAM_FLAGS 是 `#[repr(transparent)] pub struct REG_SAM_FLAGS(pub u32)`（非 typealias，需 import 才能用 `REG_SAM_FLAGS(...)`）
+- 枚举终止：err.0 == 259（ERROR_NO_MORE_ITEMS）或 is_not_found(2/3) 时 break
+
 ## 错误映射
 - RegOpenKeyExW 的 ERROR_FILE_NOT_FOUND → 文件未找到
 - RegQueryValueExW 的 0x80070005 → 拒绝访问（SAM_READ 缺 KEY_QUERY_VALUE 导致，已修复）
