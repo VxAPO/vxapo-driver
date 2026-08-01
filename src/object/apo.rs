@@ -1,4 +1,4 @@
-﻿//! object/apo.rs — ApoObject 核心（v6.2 规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
+﻿//! object/apo.rs — ApoObject 核心（v6.3 规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;

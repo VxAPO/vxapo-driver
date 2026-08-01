@@ -1,4 +1,4 @@
-//! install/selector.rs — 设备选择 + 安装/卸载/回滚（v6.2 规范 5.5，合并原 install+rollback）
+﻿//! install/selector.rs — 设备选择 + 安装/卸载/回滚（v6.3 规范 5.5，合并原 install+rollback）
 //!
 //! 职责：
 //! - 遍历音频端点（Render/Capture），列出可用设备，供调用方选定

@@ -1,4 +1,4 @@
-//! config/commands/include.rs — Include: 命令（v6.2 规范 6.8）
+﻿//! config/commands/include.rs — Include: 命令（v6.3 规范 6.8）
 //!
 //! 语法：`Include: "presets/default.txt"`
 //!

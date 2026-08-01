@@ -1,4 +1,4 @@
-//! config/commands/channel.rs — Channel: 命令（v6.2 规范 6.4）
+﻿//! config/commands/channel.rs — Channel: 命令（v6.3 规范 6.4）
 //!
 //! 语法：
 //! - `Channel: L R C LFE` — 仅操作指定通道

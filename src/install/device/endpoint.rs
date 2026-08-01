@@ -1,4 +1,4 @@
-//! install/device/endpoint.rs — 音频端点状态查询（v6.2 规范 5.1）
+﻿//! install/device/endpoint.rs — 音频端点状态查询（v6.3 规范 5.1）
 //!
 //! 查询 Windows 音频端点的设备 ID、友好名称与连接状态。只读。
 

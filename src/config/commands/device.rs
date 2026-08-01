@@ -1,4 +1,4 @@
-//! config/commands/device.rs — Device: 命令（v6.2 规范 6.6）
+﻿//! config/commands/device.rs — Device: 命令（v6.3 规范 6.6）
 //!
 //! 语法：
 //! - `Device: <path>` — 绑定配置到指定设备路径

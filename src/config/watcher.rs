@@ -1,4 +1,4 @@
-//! config/watcher.rs — 配置文件变更监控（v6.2 规范 6.2）
+﻿//! config/watcher.rs — 配置文件变更监控（v6.3 规范 6.2）
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

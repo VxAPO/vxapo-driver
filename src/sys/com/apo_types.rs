@@ -1,4 +1,4 @@
-﻿//! sys/com/apo_types.rs — APO 类型（v6.2 规范 3.3，修正版）
+﻿//! sys/com/apo_types.rs — APO 类型（v6.3 规范 3.3，修正版）
 //!
 //! 修正：windows-rs 0.62.2 已提供 APO_REG_PROPERTIES / APO_CONNECTION_DESCRIPTOR /
 //! APO_CONNECTION_PROPERTY / APO_FLAG / APO_BUFFER_FLAGS，此处全部 re-export。

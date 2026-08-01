@@ -1,4 +1,4 @@
-//! config/commands/copy.rs — Copy: 命令（v6.2 规范 6.12）
+﻿//! config/commands/copy.rs — Copy: 命令（v6.3 规范 6.12）
 //!
 //! 语法：`Copy: L2=L R2=R`
 //!

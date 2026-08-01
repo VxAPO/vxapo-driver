@@ -1,4 +1,4 @@
-//! config/commands/expr.rs — Eval: 命令 + 表达式求值（v6.2 规范 6.7）
+﻿//! config/commands/expr.rs — Eval: 命令 + 表达式求值（v6.3 规范 6.7）
 //!
 //! 语法：
 //! - `Eval: gain = -3.0` — 常量赋值

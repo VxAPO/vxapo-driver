@@ -1,4 +1,4 @@
-//! config/commands/filter.rs — Filter: ON HP/LP/PK/... 命令（v6.2 规范 6.14）
+﻿//! config/commands/filter.rs — Filter: ON HP/LP/PK/... 命令（v6.3 规范 6.14）
 //!
 //! 语法：`Filter: ON PK Fc 1000 Hz Gain +3.0 dB Q 1.0`
 //!

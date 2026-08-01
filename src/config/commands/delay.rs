@@ -1,4 +1,4 @@
-//! config/commands/delay.rs — Delay: 命令（v6.2 规范 6.13）
+﻿//! config/commands/delay.rs — Delay: 命令（v6.3 规范 6.13）
 //!
 //! 语法：`Delay: 500 ms`
 //!

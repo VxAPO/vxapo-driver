@@ -1,4 +1,4 @@
-//! install/device/info.rs — 设备组合查询层（v6.2 规范 5.4）
+﻿//! install/device/info.rs — 设备组合查询层（v6.3 规范 5.4）
 //!
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口。
 //! 只读，不修改系统状态。

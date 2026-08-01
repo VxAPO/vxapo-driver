@@ -1,4 +1,4 @@
-//! config/commands/graphic.rs — GraphicEQ: 命令（v6.2 规范 6.10）
+﻿//! config/commands/graphic.rs — GraphicEQ: 命令（v6.3 规范 6.10）
 //!
 //! 语法：`GraphicEQ: 20 -3.1; 25 -3.1; ...`
 //!

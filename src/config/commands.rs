@@ -1,4 +1,4 @@
-//! config/commands.rs — 命令工厂入口（v6.2 规范 6.3）
+﻿//! config/commands.rs — 命令工厂入口（v6.3 规范 6.3）
 //!
 //! 注册所有命令工厂到 FilterRegistry。
 //!

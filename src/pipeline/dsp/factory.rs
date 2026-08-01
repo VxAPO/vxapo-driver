@@ -1,4 +1,4 @@
-//! pipeline/dsp/factory.rs — FilterRegistry + 工厂注册 + 工厂遍历匹配（v6.2 规范 4.10）
+﻿//! pipeline/dsp/factory.rs — FilterRegistry + 工厂注册 + 工厂遍历匹配（v6.3 规范 4.10）
 //!
 //! 职责：注册表持有按优先级排序的工厂列表，按遍历顺序尝试创建过滤器。
 //! 同时定义内置 DSP 工厂（IIR/Biquad/Preamp/Delay/Copy/...）与 `register_builtin_filters`。
@@ -139,7 +139,7 @@ pub enum OutcomeKind {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 工厂索引常量（v6.2 规范 4.10）
+// 工厂索引常量（v6.3 规范 4.10）
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 内置工厂总数（15）。
@@ -525,7 +525,7 @@ impl FilterFactory for LoudnessFactory {
 // register_builtin_filters
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 注册所有内置 Filter 工厂到 FilterRegistry（v6.2 规范 4.10）。
+/// 注册所有内置 Filter 工厂到 FilterRegistry（v6.3 规范 4.10）。
 ///
 /// 注册顺序与 `index` 常量保持一致（优先级从高到低）：
 /// IIR → BIQUAD → PREAMP → DELAY → COPY → CONVOLUTION → GRAPHIC_EQ → VST_PLUGIN → LOUDNESS_CORRECTION

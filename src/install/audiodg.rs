@@ -1,4 +1,4 @@
-//! install/audiodg.rs — DisableProtectedAudioDG 检查与修复（v6.2 规范 5.6）
+﻿//! install/audiodg.rs — DisableProtectedAudioDG 检查与修复（v6.3 规范 5.6）
 //!
 //! 保护模式阻止第三方 APO 加载。通过注册表
 //! `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio` 下的

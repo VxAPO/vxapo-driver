@@ -265,7 +265,7 @@ mod tests {
     }
 }
 
-/// 单个 CLSID 的注册信息（v6.2 规范 7.5）。
+/// 单个 CLSID 的注册信息（v6.3 规范 7.5）。
 #[derive(Debug)]
 pub struct ClsidEntry {
     pub clsid: windows::core::GUID,

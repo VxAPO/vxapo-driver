@@ -1,4 +1,4 @@
-//! pipeline/chain.rs — Filter 链执行 + 延迟累计（v6.2 规范 4.5）
+﻿//! pipeline/chain.rs — Filter 链执行 + 延迟累计（v6.3 规范 4.5）
 //!
 //! 工作在去交织空间。不拥有缓冲区，接受外部传入。
 

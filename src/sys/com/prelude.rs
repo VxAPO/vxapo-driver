@@ -1,4 +1,4 @@
-//! sys/com/prelude.rs — COM 基础类型重导出 + HRESULT 常量（v6.2 规范 3.1）
+﻿//! sys/com/prelude.rs — COM 基础类型重导出 + HRESULT 常量（v6.3 规范 3.1）
 //!
 //! 职责：重导出 `windows-rs` 的 COM 基础类型与 HRESULT 常量。
 //!
@@ -47,7 +47,7 @@ pub use windows::Win32::System::Com::IClassFactory;
 /// GUID → 字符串（标准 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式，带花括号）。
 pub use windows::Win32::System::Com::StringFromGUID2;
 
-// ── HRESULT 常量（v6.2 规范 3.1） ──
+// ── HRESULT 常量（v6.3 规范 3.1） ──
 
 /// 操作成功。
 pub const S_OK: HRESULT = HRESULT(0);

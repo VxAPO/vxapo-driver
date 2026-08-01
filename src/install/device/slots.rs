@@ -1,4 +1,4 @@
-//! install/device/slots.rs — APO 槽位管理（Note 25/26/46，v6.2 规范 5.3）
+﻿//! install/device/slots.rs — APO 槽位管理（Note 25/26/46，v6.3 规范 5.3）
 //!
 //! 管理 Windows 音频端点 FxProperties 注册表键下的 5 个 APO GUID 槽位，
 //! 提供安装模式选择与原始 APO GUID 回退查询。

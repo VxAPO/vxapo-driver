@@ -1,4 +1,4 @@
-//! pipeline/dsp.rs — DSP 算法模块入口（v6.2 规范）
+﻿//! pipeline/dsp.rs — DSP 算法模块入口（v6.3 规范）
 //!
 //! 职责：Filter trait、工厂注册表、过渡混合。
 //!
@@ -19,7 +19,7 @@ pub mod peq;
 pub mod transition;
 pub mod vst;
 
-/// 注册所有内置 Filter 工厂到 FilterRegistry（v6.2 规范 4.10）。
+/// 注册所有内置 Filter 工厂到 FilterRegistry（v6.3 规范 4.10）。
 ///
 /// 实现位于 `factory::register_builtin_filters`——这里是重导出，
 /// 供 `config/commands.rs` 的 `register_all_commands` 调用。

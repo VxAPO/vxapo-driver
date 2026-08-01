@@ -1,7 +1,7 @@
-﻿//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（v6.2 规范 4.3）
+﻿//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（v6.3 规范 4.3）
 
+use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::utils::vx_error::{Result, VxApoError};
-use windows::Win32::Media::Audio::Apo::IAudioMediaType;
 
 /// 提取的音频格式。
 #[derive(Debug, Clone)]

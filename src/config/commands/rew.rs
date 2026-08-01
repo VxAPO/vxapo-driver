@@ -1,4 +1,4 @@
-//! config/commands/rew.rs — REW 导出格式（v6.2 规范 6.15）
+﻿//! config/commands/rew.rs — REW 导出格式（v6.3 规范 6.15）
 //!
 //! 语法：`Filter 1: ON PK Fc 50,0 Hz Gain -10,0 dB Q 2,50`
 //!

@@ -1,4 +1,4 @@
-//! pipeline/buffer.rs — 缓冲区描述与状态判定（v6.2 规范 4.2）
+﻿//! pipeline/buffer.rs — 缓冲区描述与状态判定（v6.3 规范 4.2）
 
 use crate::sys::com::apo_types::{APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID};
 
@@ -76,7 +76,7 @@ impl BufferInfo {
     }
 }
 
-/// 缓冲区处理动作（v6.2 规范 4.2）。
+/// 缓冲区处理动作（v6.3 规范 4.2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferAction {
     /// 正常处理。

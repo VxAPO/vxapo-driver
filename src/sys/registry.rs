@@ -1,4 +1,4 @@
-﻿//! sys/registry.rs — 注册表模块（v6.2 规范 3.4，按 windows-rs 0.62.2 真实 API）
+﻿//! sys/registry.rs — 注册表模块（v6.3 规范 3.4，按 windows-rs 0.62.2 真实 API）
 
 use windows::core::{HSTRING, PCWSTR, Result};
 use windows::Win32::Foundation::WIN32_ERROR;

@@ -1,4 +1,4 @@
-﻿//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（v6.2 规范 4.6）
+﻿//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（v6.3 规范 4.6）
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -88,7 +88,7 @@ pub fn process_chain_interleaved(
     Ok(())
 }
 
-/// APOProcess 正常模式的完整处理流程（v6.2 规范 4.6）。
+/// APOProcess 正常模式的完整处理流程（v6.3 规范 4.6）。
 pub fn process_audio(
     input_props: &[APO_CONNECTION_PROPERTY],
     output_props: &mut [APO_CONNECTION_PROPERTY],

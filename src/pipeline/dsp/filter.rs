@@ -1,4 +1,4 @@
-//! pipeline/dsp/filter.rs — Filter trait + FilterCreateResult + FilterFactory + DspContext + ConfigLoader（v6.2 规范 4.9）
+﻿//! pipeline/dsp/filter.rs — Filter trait + FilterCreateResult + FilterFactory + DspContext + ConfigLoader（v6.3 规范 4.9）
 //!
 //! 职责：纯 Rust 定义，不包含任何 Windows API 依赖。
 //!
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 // Filter trait
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 音频处理过滤器 trait（v6.2 规范）。
+/// 音频处理过滤器 trait（v6.3 规范）。
 ///
 /// 所有 DSP 滤波器实现此 trait。
 /// `process` 方法运行在实时音频线程中，禁止堆分配、互斥锁、I/O、panic。

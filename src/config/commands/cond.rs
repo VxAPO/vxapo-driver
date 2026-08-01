@@ -1,4 +1,4 @@
-//! config/commands/cond.rs — If:/ElseIf:/Else:/EndIf: 条件分支系统（v6.2 规范 6.5）
+﻿//! config/commands/cond.rs — If:/ElseIf:/Else:/EndIf: 条件分支系统（v6.3 规范 6.5）
 
 use std::collections::HashMap;
 

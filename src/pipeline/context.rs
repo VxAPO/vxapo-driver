@@ -1,4 +1,4 @@
-//! pipeline/context.rs — PipelineContext（v6.2 规范 4.1）
+﻿//! pipeline/context.rs — PipelineContext（v6.3 规范 4.1）
 //!
 //! 职责：运行时上下文。存放 LockForProcess 时确定的静态格式信息，APOProcess 期间只读。
 

@@ -1,4 +1,4 @@
-//! config/commands/preamp.rs — Preamp: 命令（v6.2 规范 6.11）
+﻿//! config/commands/preamp.rs — Preamp: 命令（v6.3 规范 6.11）
 //!
 //! 语法：`Preamp: -6.0 dB`
 //!

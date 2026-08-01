@@ -1,4 +1,4 @@
-//! config/commands/stage.rs — Stage: 命令（v6.2 规范 6.9）
+﻿//! config/commands/stage.rs — Stage: 命令（v6.3 规范 6.9）
 //!
 //! 语法：`Stage: PreMix | PostMix | Capture`
 //!

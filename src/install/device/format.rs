@@ -1,4 +1,4 @@
-//! install/device/format.rs — WAVEFORMATEX / EXTENSIBLE 解析（v6.2 规范 5.2）
+﻿//! install/device/format.rs — WAVEFORMATEX / EXTENSIBLE 解析（v6.3 规范 5.2）
 //!
 //! 从注册表二进制值解析音频格式，提取通道数、采样率、位深和通道掩码。
 //! 只读，不修改系统状态。

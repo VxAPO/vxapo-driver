@@ -1,4 +1,4 @@
-﻿//! config/parser.rs — 配置文件解析器（v6.2 规范 6.1）
+﻿//! config/parser.rs — 配置文件解析器（v6.3 规范 6.1）
 
 use std::collections::HashMap;
 use std::path::Path;

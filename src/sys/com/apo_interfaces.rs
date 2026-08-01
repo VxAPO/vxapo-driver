@@ -1,4 +1,4 @@
-//! sys/com/apo_interfaces.rs — APO 接口 re-export + IID 常量（v6.2 规范 3.2，修正版）
+﻿//! sys/com/apo_interfaces.rs — APO 接口 re-export + IID 常量（v6.3 规范 3.2，修正版）
 //!
 //! 职责：re-export windows-rs 0.62.2 已提供的 4 个 APO 接口结构体
 //! （IAudioMediaType、IAudioProcessingObject、IAudioProcessingObjectRT、
