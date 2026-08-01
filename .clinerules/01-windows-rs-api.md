@@ -30,7 +30,9 @@ text
 
 ## APO 类型（camelCase，re-export 自 windows::Win32::Media::Audio::Apo）
 - APO_CONNECTION_DESCRIPTOR: { Type, pBuffer, u32MaxFrameCount, pFormat, u32Signature }
+- **pFormat 实测类型（windows-rs 0.62.2）**：`ManuallyDrop<Option<IAudioMediaType>>`（非裸指针！）——SDK 头文件写 `IAudioMediaType *pFormat`，但 windows-rs 绑定为 ManuallyDrop 包装；读取用 `.pFormat.as_ref()` 得 `Option<&IAudioMediaType>`，再转 `*mut IAudioMediaType` 传给 extract_format
 - APO_CONNECTION_PROPERTY: { pBuffer, u32ValidFrameCount, u32BufferFlags, u32Signature }
+- `windows::core::Ref<T>` 无 `as_ptr`/`get` 方法，Deref 到 `T`；对接口 `Ref<IAudioMediaType>` Deref 目标为 `Option<IAudioMediaType>`，用 `.as_ref()` 取 `Option<&T>`，返回接口值用 clone
 - APO_REG_PROPERTIES: { clsid, Flags, szFriendlyName, szCopyrightInfo, u32MajorVersion, u32MinorVersion, ... }
 - APO_FLAG 常量: INPLACE(1)/SAMPLESPERFRAME_MUST_MATCH(2)/FRAMESPERSECOND_MUST_MATCH(4)/BITSPERSAMPLE_MUST_MATCH(8)/MIXER(16)/DEFAULT(14)/NONE(0)
 - BUFFER_INVALID/VALID/SILENT 为 APO_BUFFER_FLAGS 常量
