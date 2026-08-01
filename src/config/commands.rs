@@ -24,12 +24,9 @@ use crate::pipeline::dsp::factory::FilterRegistry;
 ///
 /// DSP 工厂由 pipeline/dsp 统一注册（完全下沉）。
 pub fn register_all_commands(registry: &mut FilterRegistry) {
-    // DSP 工厂（pipeline/dsp.rs 的 register_builtin_filters）
+    // DSP 工厂（pipeline/dsp.rs 的 register_builtin_filters：Preamp/Copy 已注册）
     crate::pipeline::dsp::register_builtin_filters(registry);
 
-    // 纯配置语义命令由 config 自己注册。
-    // 每个工厂实现 FilterFactory trait，通过 registry.register 加入。
-    // 注：DSP 工厂尚未注册（pipeline/dsp.rs 当前为骨架），
-    //     待滤波器 API 对齐后由 register_builtin_filters 补全。
-    let _ = registry;
+    // 注：纯配置语义工厂（Device/If/Stage/Channel/Eval/Include/GraphicEQ/Delay/Filter/REW）
+    // 由 parser.rs 直接按命令名分发（handle_* 函数），无需注册到 FilterRegistry。
 }
