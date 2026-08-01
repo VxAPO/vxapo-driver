@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn u32NumAPOInterfaces_is_3() {
+    fn u32_num_apointerfaces_is_3() {
         assert_eq!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces, 3);
     }
 
