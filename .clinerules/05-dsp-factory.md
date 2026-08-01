@@ -36,7 +36,7 @@ index 0-5 对应纯配置命令，由 parser 分发而非 FilterRegistry
 - ~~VstFilter~~（已删除：VST 评估后不需要，vst.rs 仅注释，VstFactory 恒 NoMatch）
 
 ## DspContext 字段
-sample_rate / channel_count / channel_mask / channel_names / max_frame_count / bits_per_sample / device_type / stage / variables
+sample_rate / channel_count / channel_mask / channel_names / max_frame_count / bits_per_sample / device_type / stage / variables / rt_marker（O1：`PhantomData<RealtimeContext>`，v6.6）
 
 ## 测试
 417 passed / 0 failed（含 20+ 工厂测试：各工厂解析/无效 NoMatch/iir_modal/注册顺序等）
