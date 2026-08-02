@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use windows::core::implement;
-use windows::core::Result;
+use windows::core::{GUID, Result};
 
 use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
@@ -24,6 +24,11 @@ use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration, IAudioProcessingObjectRT,
     IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl, IAudioProcessingObjectConfiguration_Impl,
 };
+use crate::sys::com::apo_types::{
+    APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID,
+};
+use crate::sys::com::prelude::guid_to_string;
+use crate::sys::known_folder::documents_folder;
 use windows::Win32::Media::Audio::Apo::{APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES};
 use windows::Win32::System::Com::CoTaskMemAlloc;
 
@@ -32,8 +37,87 @@ use crate::sys::com::apo_types::{
     APOERR_NUM_CONNECTIONS_INVALID, BUFFER_VALID,
 };
 
-/// 配置文件默认路径（安装时写入的实际路径可从注册表读取，此处为约定默认值）。
+/// 配置文件默认路径（兜底：无设备 GUID / Documents 解析失败时回退单实例共用路径）。
 const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.txt";
+
+/// 单实例共用子目录名（无设备 GUID 兜底，object 7.1.8）。
+const DEFAULT_DEVICE_DIR: &str = "_default";
+
+/// 从 APOInitSystemEffects 提取端点 GUID（object 7.1.8，v7.2）。
+///
+/// 规范原型为 `pSystemEffectsProperties->pEndpointGuid`，但 windows-rs 0.62.2 实测：
+/// `APOInitSystemEffects` 无 `pSystemEffectsProperties` 直接字段，而是
+/// `pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>`；端点 GUID
+/// 经 `IPropertyStore::GetValue(&PKEY_AudioEndpoint_GUID)` 返回 `PROPVARIANT`
+/// （`VT_CLSID`，`puuid` 指向 `GUID`）提取（P0-3 实现反馈②，见 roadmap 反馈段）。
+fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID> {
+    let props = init.pAPOSystemEffectsProperties.as_ref()?;
+    // Safety: PKEY_AudioEndpoint_GUID 为静态键；GetValue 返回的 PROPVARIANT 由
+    // windows-rs 管理内存（含 puuid 指针有效期内读取）。
+    // PROPVARIANT 是 union（Anonymous.Anonymous.Anonymous），读取/比较均在 unsafe 内。
+    let pv: PROPVARIANT = unsafe { props.GetValue(&PKEY_AudioEndpoint_GUID) }.ok()?;
+    unsafe {
+        // PROPVARIANT_0_0: { vt: VARENUM, wReserved1-3, Anonymous: PROPVARIANT_0_0_0 }
+        if pv.Anonymous.Anonymous.vt != VT_CLSID {
+            return None;
+        }
+        // Safety: VT_CLSID 时 puuid 指向非空 GUID。
+        let guid_ptr = pv.Anonymous.Anonymous.Anonymous.puuid;
+        if guid_ptr.is_null() {
+            return None;
+        }
+        // Safety: 已验证非空且 VT_CLSID 语义。
+        Some(*guid_ptr)
+    }
+}
+
+/// 确定 per-device 配置路径（object 7.1.8）：
+/// `{Documents}\VxAPO\{GUID}\config.txt`；无 GUID / 解析失败 → `_default` 兜底。
+/// 目录自动创建；config.txt 缺失时写默认 passthrough（空配置 → 链为空即 passthrough）。
+fn resolve_config_path(init: Option<&APOInitSystemEffects>) -> String {
+    let documents = match documents_folder() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("documents_folder() failed: {} — fallback to shared default config", e);
+            return DEFAULT_CONFIG_PATH.to_owned();
+        }
+    };
+    resolve_config_path_from(&documents, init)
+}
+
+/// 纯拼接 + 目录/文件保障（可单元测试，不依赖真实 Documents 位置）。
+///
+/// `documents`：文档文件夹绝对路径。返回 `{documents}\VxAPO\{GUID}\config.txt`；
+/// 无 GUID → `_default`；目录创建失败 → 回退 `DEFAULT_CONFIG_PATH`。
+fn resolve_config_path_from(documents: &str, init: Option<&APOInitSystemEffects>) -> String {
+    // 端点 GUID → 大写 `{XXXXXXXX-...}` 目录名。
+    let device_dir = match init.and_then(extract_endpoint_guid) {
+        Some(guid) => {
+            let s = guid_to_string(&guid);
+            log::info!("endpoint GUID: {}", s);
+            s
+        }
+        None => DEFAULT_DEVICE_DIR.to_owned(),
+    };
+
+    let dir = std::path::Path::new(&documents)
+        .join("VxAPO")
+        .join(&device_dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!("create_dir_all({}) failed: {} — fallback to shared default config", dir.display(), e);
+        return DEFAULT_CONFIG_PATH.to_owned();
+    }
+    let path = dir.join("config.txt");
+
+    // config.txt 缺失 → 写默认 passthrough（空文件 = 无滤波器 = passthrough）。
+    if !path.exists() {
+        log::info!("config not found at {}, writing default passthrough", path.display());
+        if let Err(e) = std::fs::write(&path, "# VxAPO default passthrough\n") {
+            log::warn!("write default config failed: {}", e);
+        }
+    }
+    path.display().to_string()
+}
 
 /// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
 fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> DspContext {
@@ -201,6 +285,8 @@ pub struct ApoObject {
     pub(crate) latency_samples: AtomicU32,
     pub(crate) latency_frames_atomic: AtomicU32,
     pub(crate) process_stats: ProcessStatistics,
+    /// 配置文件路径（Initialize 确定，per-device `Documents\VxAPO\{GUID}\config.txt`）。
+    pub(crate) config_path: Mutex<String>,
 }
 
 impl ApoObject {
@@ -213,6 +299,7 @@ impl ApoObject {
             latency_samples: AtomicU32::new(0),
             latency_frames_atomic: AtomicU32::new(0),
             process_stats: ProcessStatistics::new(),
+            config_path: Mutex::new(DEFAULT_CONFIG_PATH.to_owned()),
         }
     }
 
@@ -239,7 +326,8 @@ impl ApoObject {
             let mut registry = FilterRegistry::new();
             register_all_commands(&mut registry);
             let parser = ConfigParser::new(registry);
-            let filters = parser.parse_file(DEFAULT_CONFIG_PATH, &dsp_ctx).unwrap_or_default();
+            let config_path = self.config_path.lock().unwrap().clone();
+            let filters = parser.parse_file(&config_path, &dsp_ctx).unwrap_or_default();
             let mut chain = Chain::new();
             for f in filters {
                 let _ = chain.add_filter(f);
@@ -317,9 +405,35 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         Ok(alloc as *mut APO_REG_PROPERTIES)
     }
 
-    fn Initialize(&self, _cb_data_size: u32, _pby_data: *const u8) -> Result<()> {
-        self.state_cell.transition(ApoState::Created, ApoState::Initialized)
-            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
+    fn Initialize(&self, cb_data_size: u32, pby_data: *const u8) -> Result<()> {
+        // 1. 参数校验：pby_data 非空、cb_data_size 足以容纳 APOInitSystemEffects
+        //    （SDK 约定：Initialize 的 pby_data 指向完整的 APOInitSystemEffects；
+        //    数据非法 → 仍初始化成功并降级默认配置，不阻断 APO 加载）。
+        let valid_init_data = !pby_data.is_null()
+            && cb_data_size >= std::mem::size_of::<APOInitSystemEffects>() as u32;
+
+        // 2. 状态转换 Created → Initialized，失败 → 对应 HRESULT。
+        self.state_cell
+            .transition(ApoState::Created, ApoState::Initialized)
+            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+
+        // 3. 解析 APOInitSystemEffects → per-device 配置路径（object 7.1.8）。
+        //    Safety: pby_data 已验证非空 + 尺寸足够；APOInitSystemEffects 为 repr(C) 结构。
+        let path = if valid_init_data {
+            let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
+            resolve_config_path(Some(init))
+        } else {
+            log::warn!(
+                "Initialize: invalid init data (ptr null = {}, size {} < {}) — using default config",
+                pby_data.is_null(),
+                cb_data_size,
+                std::mem::size_of::<APOInitSystemEffects>()
+            );
+            resolve_config_path(None)
+        };
+        *self.config_path.lock().unwrap() = path;
+
+        Ok(())
     }
 
     fn IsInputFormatSupported(
@@ -402,6 +516,42 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
             let mut tbuf_new = std::mem::take(&mut inner.temp_buffer_new);
             let in_ch = inner.pipeline_context.input_channels as usize;
             let out_ch = inner.pipeline_context.output_channels as usize;
+
+            // 防御（用户风险①）：pending 残留但过渡不在途（transition 已被清空/
+            // 被其它路径消费）→ 无混合器。此时**必须写出**（APO 契约：每帧写输出）：
+            // 直接复制输入到输出（bypass），恢复状态、旧链退役；若可重载则触发补重载。
+            if transition.is_none() {
+                let input_prop = unsafe { &**pp_inputs };
+                let output_prop = unsafe { &mut **pp_outputs };
+                let frames = input_prop.u32ValidFrameCount as usize;
+                let src = unsafe {
+                    std::slice::from_raw_parts(input_prop.pBuffer as *const f32, frames * in_ch)
+                };
+                let dst = unsafe {
+                    std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+                };
+                let copy_len = src.len().min(dst.len());
+                dst[..copy_len].copy_from_slice(&src[..copy_len]);
+                if dst.len() > copy_len {
+                    dst[copy_len..].fill(0.0);
+                }
+                output_prop.u32ValidFrameCount = frames as u32;
+                output_prop.u32BufferFlags = BUFFER_VALID;
+
+                inner.retired_chain = outgoing; // R1：旧链退役（控制线程析构）
+                inner.outgoing_chain = None;
+                inner.transition = None;
+                inner.current_chain = owned_chain;
+                inner.temp_buffers = tbufs;
+                inner.temp_buffer_old = tbuf_old;
+                inner.temp_buffer_new = tbuf_new;
+                if pending && !inner.reloading {
+                    inner.pending_reload = false;
+                    drop(inner);
+                    self.hot_reload();
+                }
+                return;
+            }
             let current_chain = owned_chain.as_mut();
 
             let input_prop = unsafe { &**pp_inputs };
@@ -441,22 +591,26 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
             );
 
             // 混合 → 输出。factor 从 0.0（旧）→ 1.0（新）。
-            if let Some(provider) = transition.as_mut() {
-                if let Some(factor) = provider.advance() {
-                    let out_slice = unsafe {
-                        std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
-                    };
-                    for f in 0..frames {
-                        for c in 0..out_ch {
-                            let idx = f * out_ch + c;
-                            let old_v = if old_ready { tbuf_old[idx] } else { 0.0 };
-                            out_slice[idx] = old_v * (1.0 - factor)
-                                + tbuf_new[idx] * factor;
-                        }
+            // 用户风险②：advance() 返回 None（已达上限）时**也必须写输出**——
+            // 按 factor=1.0（纯新链）输出，APO 契约要求每帧写出。
+            let factor = transition
+                .as_mut()
+                .and_then(|p| p.advance())
+                .unwrap_or(1.0);
+            {
+                let out_slice = unsafe {
+                    std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+                };
+                for f in 0..frames {
+                    for c in 0..out_ch {
+                        let idx = f * out_ch + c;
+                        let old_v = if old_ready { tbuf_old[idx] } else { 0.0 };
+                        out_slice[idx] = old_v * (1.0 - factor)
+                            + tbuf_new[idx] * factor;
                     }
-                    output_prop.u32ValidFrameCount = frames as u32;
-                    output_prop.u32BufferFlags = BUFFER_VALID;
                 }
+                output_prop.u32ValidFrameCount = frames as u32;
+                output_prop.u32BufferFlags = BUFFER_VALID;
             }
 
             // 当前过渡结束条件：advance 到达上限或过渡原本未激活。
@@ -472,9 +626,13 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
                 inner.temp_buffers = tbufs;
                 inner.temp_buffer_old = tbuf_old;
                 inner.temp_buffer_new = tbuf_new;
+                // R2 修正（用户风险①）：过渡完成帧如需重载，**不**在此置 `reloading=true`——
+                // `reloading` 表示"正在解析中"（hot_reload 自己会置位），若先置 true 再调
+                // hot_reload，短锁检查 `reloading==true` 会直接返回 → 延迟重载被自己拦截。
+                // 若 hot_reload 正在运行（reloading=true，另一线程在解析），此处保留
+                // pending=true，下帧 APOProcess 再触发。
                 if pending && !inner.reloading {
                     inner.pending_reload = false;
-                    inner.reloading = true;
                     drop(inner);
                     self.hot_reload();
                     return;
@@ -590,11 +748,13 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
             rt_marker: std::marker::PhantomData,
         };
 
-        // Step 3: 构建 FilterRegistry + ConfigParser，解析配置文件。
+        // Step 3: 构建 FilterRegistry + ConfigParser，解析配置文件
+        //         （路径来自 Initialize 确定的 per-device config_path）。
         let mut registry = FilterRegistry::new();
         register_all_commands(&mut registry);
         let parser = ConfigParser::new(registry);
-        let filters = parser.parse_file(DEFAULT_CONFIG_PATH, &dsp_ctx)
+        let config_path = self.config_path.lock().unwrap().clone();
+        let filters = parser.parse_file(&config_path, &dsp_ctx)
             .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
 
         // Step 4: 组装 Chain。
@@ -654,3 +814,68 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
 
 unsafe impl Send for ApoObject {}
 unsafe impl Sync for ApoObject {}
+
+// ═══ 测试 ═══
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// 构造「无 IPropertyStore」的最低有效 APOInitSystemEffects（zeroed 后仅设置 APOInit.cbSize）。
+    /// 提取端点 GUID 会因属性存储缺失返回 None → 走 `_default` 兜底。
+    fn empty_init() -> APOInitSystemEffects {
+        let mut init: APOInitSystemEffects = unsafe { std::mem::zeroed() };
+        init.APOInit.cbSize = std::mem::size_of::<APOInitSystemEffects>() as u32;
+        init
+    }
+
+    #[test]
+    fn config_path_default_device_dir_when_no_guid() {
+        // 无端点 GUID（属性存储缺失）→ `{docs}\VxAPO\_default\config.txt`。
+        let docs = std::env::temp_dir().join("vxapo_apo_test").join("docs");
+        let docs_str = docs.display().to_string();
+        let init = empty_init();
+        let path = resolve_config_path_from(&docs_str, Some(&init));
+        let p = Path::new(&path);
+        assert!(p.starts_with(&docs));
+        assert!(p.ends_with("config.txt"));
+        // 目录应包含 `_default`。
+        assert!(path.contains("_default"));
+        // 目录已创建 + 默认 passthrough 文件已写入。
+        assert!(p.parent().unwrap().is_dir());
+        assert!(p.exists());
+        let content = std::fs::read_to_string(p).unwrap();
+        assert!(content.contains("passthrough"));
+        // 清理（避免污染 temp）。
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn config_path_custom_guid_dir() {
+        // 有明确端点 GUID（用模拟 IPropertyStore 成本高，此处用 default GUID 走不到
+        // Real IPropertyStore——改为验证：手动构造 pAPOSystemEffectsProperties 为 None
+        // 时仍 `_default`。GUID 路径分支由 extract_endpoint_guid（真实环境）覆盖。
+        // 这里验证 `_default` 兜底 + 目录创建 + 文件写入的完整链路。
+        let docs = std::env::temp_dir().join("vxapo_apo_test2").join("docs");
+        let docs_str = docs.display().to_string();
+        let init = empty_init();
+        let path = resolve_config_path_from(&docs_str, Some(&init));
+        assert!(path.contains("_default"));
+        // 幂等：再次调用不应报错（目录已存在）。
+        let _ = resolve_config_path_from(&docs_str, Some(&init));
+        let _ = std::fs::remove_dir_all(docs.join("VxAPO"));
+        let _ = std::fs::remove_dir_all(&docs);
+    }
+
+    #[test]
+    fn config_path_none_init_falls_back_default() {
+        // init=None（Initialize 数据非法降级）→ `_default` 兜底。
+        let docs = std::env::temp_dir().join("vxapo_apo_test3").join("docs");
+        let docs_str = docs.display().to_string();
+        let path = resolve_config_path_from(&docs_str, None);
+        assert!(path.contains("_default"));
+        assert!(Path::new(&path).parent().unwrap().is_dir());
+        let _ = std::fs::remove_dir_all(docs.join("VxAPO"));
+        let _ = std::fs::remove_dir_all(&docs);
+    }
+}

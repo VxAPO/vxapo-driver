@@ -22,7 +22,27 @@ pub use windows::Win32::Media::Audio::Apo::{
     APO_REG_PROPERTIES,
     APO_CONNECTION_DESCRIPTOR,
     APO_CONNECTION_PROPERTY,
+    // APOInitSystemEffects：Initialize 初始化数据（v7.2，P0-3 per-device 配置路径）。
+    // 实测字段：{ APOInit: APOInitBaseStruct, pAPOEndpointProperties,
+    //   pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>,
+    //   pReserved, pDeviceCollection }——端点 GUID 经 pAPOSystemEffectsProperties
+    //   ->IPropertyStore::GetValue(PKEY_AudioEndpoint_GUID) 提取（windows-rs 0.62.2 实测）。
+    APOInitSystemEffects,
 };
+
+// APOInit 基础结构（Initialize 参数校验 cb_size 用）
+pub use windows::Win32::Media::Audio::Apo::APOInitBaseStruct;
+
+// PKEY_AudioEndpoint_GUID（端点 GUID 属性键，Windows SDK 已提供）
+pub use windows::Win32::Media::Audio::PKEY_AudioEndpoint_GUID;
+
+// IPropertyStore（端点属性查询，IPropertyStore::GetValue 提取端点 GUID）
+pub use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+
+// PROPVARIANT（IPropertyStore::GetValue 返回，含 GUID 类型 VT_CLSID）
+pub use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+pub use windows::Win32::System::Variant::VARENUM;
+pub use windows::Win32::System::Variant::{VT_CLSID, VT_LPWSTR, VT_BSTR};
 
 /// windows-rs 的 APO_BUFFER_FLAGS 别名（对外交互用）。
 pub use windows::Win32::Media::Audio::Apo::APO_BUFFER_FLAGS as WinAPO_BUFFER_FLAGS;
