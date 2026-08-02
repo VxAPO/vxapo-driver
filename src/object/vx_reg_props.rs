@@ -20,19 +20,23 @@ use crate::sys::com::apo_types::{APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, AP
 // ══════════════════════════════════════════════════════════════════════════════
 // CLSID 常量
 // ══════════════════════════════════════════════════════════════════════════════
+// 2026-08-02 由 PowerShell `[guid]::NewGuid()` 生成，**定死不改动**。
+// 备份见 .clinerules/07-VxAPO_GUID.md。
+// PRE_MIX  = 41C34613-D391-459D-A039-72B2B15A1A1D
+// POST_MIX = B4A97313-ABC0-45ED-9C33-428B20D39428
 
 pub const CLSID_VXAPO_PRE_MIX: GUID = GUID::from_values(
-    0xA1B2C3D4,
-    0x1234,
-    0x5678,
-    [0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78],
+    0x41C34613,
+    0xD391,
+    0x459D,
+    [0xA0, 0x39, 0x72, 0xB2, 0xB1, 0x5A, 0x1A, 0x1D],
 );
 
 pub const CLSID_VXAPO_POST_MIX: GUID = GUID::from_values(
-    0xD4C3B2A1,
-    0x4321,
-    0x8765,
-    [0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x79],
+    0xB4A97313,
+    0xABC0,
+    0x45ED,
+    [0x9C, 0x33, 0x42, 0x8B, 0x20, 0xD3, 0x94, 0x28],
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
