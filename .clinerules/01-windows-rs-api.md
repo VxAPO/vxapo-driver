@@ -54,6 +54,24 @@ text
 - REG_SAM_FLAGS 是 `#[repr(transparent)] pub struct REG_SAM_FLAGS(pub u32)`（非 typealias，需 import 才能用 `REG_SAM_FLAGS(...)`）
 - 枚举终止：err.0 == 259（ERROR_NO_MORE_ITEMS）或 is_not_found(2/3) 时 break
 
+## P0-3 实测追加（windows-rs 0.62.2 源码级确认，P0-3 commit bb708b3）
+- `SHGetKnownFolderPath(rfid: *const GUID, dwflags: KNOWN_FOLDER_FLAG, htoken: Option<HANDLE>) -> Result<PWSTR>`（非裸 HRESULT；需 Win32_UI_Shell feature）
+- `FOLDERID_Documents: GUID = 0xfdd39ad0_238f_46af_adb4_6c85480369c7`（windows::Win32::UI::Shell）
+- `CoTaskMemFree(pv: Option<*const c_void>)`（windows::Win32::System::Com）
+- `PWSTR::to_string(&self) -> Result<String, FromUtf16Error>`（unsafe，windows-strings 0.5.1 / pwstr.rs:61）
+- `APOInitSystemEffects`（windows::Win32::Media::Audio::Apo，需 Win32_UI_Shell_PropertiesSystem feature）：
+  - 字段（实测，非规范假设）：`{ APOInit: APOInitBaseStruct, pAPOEndpointProperties: ManuallyDrop<Option<IPropertyStore>>, pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>, pReserved: *mut c_void, pDeviceCollection: ManuallyDrop<Option<IMMDeviceCollection>> }`
+  - **无 `pSystemEffectsProperties->pEndpointGuid` 直接字段**——端点 GUID 经 `pAPOSystemEffectsProperties.get()?.GetValue(&PKEY_AudioEndpoint_GUID)` 返回 PROPVARIANT 提取
+- `APOInitBaseStruct { cbSize: u32, clsid: GUID }`（Initialize 参数校验 cb_size 用）
+- `PKEY_AudioEndpoint_GUID: PROPERTYKEY`（fmtid 0x1da5d803_d492_4edd_8c23_e0c0ffee7f0e, pid 4）
+- `IPropertyStore::GetValue(&PROPERTYKEY) -> Result<PROPVARIANT>`（unsafe；需 Win32_UI_Shell_PropertiesSystem）
+- `PROPVARIANT`（需 Win32_System_Com_StructuredStorage + Win32_System_Variant）：`{ Anonymous: PROPVARIANT_0 }`（union）→ `Anonymous.Anonymous.vt`（VARENUM）/ `Anonymous.Anonymous.Anonymous.puuid: *mut GUID`
+- `VT_CLSID: VARENUM = VARENUM(72)`（windows::Win32::System::Variant）
+
 ## 错误映射
-- RegOpenKeyExW 的 ERROR_FILE_NOT_FOUND → 文件未找到
+- `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND` 已在 `windows::Win32::Foundation` 导出：
+  `pub const ERROR_FILE_NOT_FOUND: WIN32_ERROR = WIN32_ERROR(2u32)`（Foundation/mod.rs:2355）、
+  `pub const ERROR_PATH_NOT_FOUND: WIN32_ERROR = WIN32_ERROR(3u32)`（:3689）
+  ——**无需自定义**，直接用 `windows::Win32::Foundation::ERROR_FILE_NOT_FOUND` 等
+- RegOpenKeyExW 返回 ERROR_FILE_NOT_FOUND(2) → 键不存在（文件未找到）
 - RegQueryValueExW 的 0x80070005 → 拒绝访问（SAM_READ 缺 KEY_QUERY_VALUE 导致，已修复）
