@@ -15,7 +15,7 @@ use crate::pipeline::context::PipelineContext;
 use crate::pipeline::dsp::factory::FilterRegistry;
 use crate::pipeline::dsp::filter::{DspContext, DeviceType, ProcessingStage};
 use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
-use crate::pipeline::format::extract_format;
+use crate::pipeline::format::{extract_format, is_float_format};
 use crate::pipeline::process::{
     ErrorPolicy, ProcessParams, ProcessStatistics, process_audio, process_chain_interleaved,
 };
@@ -117,6 +117,38 @@ fn resolve_config_path_from(documents: &str, init: Option<&APOInitSystemEffects>
         }
     }
     path.display().to_string()
+}
+
+/// 格式协商独立属性检查（object 7.1.16，v7.7 修订）。
+///
+/// `IsInputFormatSupported`/`IsOutputFormatSupported` 由 Windows 引擎在**格式协商阶段**
+/// 调用，**早于 LockForProcess**——此时 `pipeline_context` 为全零 `PipelineContext::new()`，
+/// **禁止依赖 pipeline_context 做等值比较**（真实格式 vs 全零永远不等 → 拒绝所有格式、
+/// APO 无法协商）。正确做法：浮点格式 + 采样率 44.1k~192k + 通道数 1~8 独立检查，
+/// 这些属性在协商时即已确定、与锁定后上下文无关。
+///
+/// `p_requested` 是 `Ref<IAudioMediaType>`（Deref 到 `Option<IAudioMediaType>`）。
+fn check_format_supported(p_requested: &windows::core::Ref<IAudioMediaType>) -> Result<()> {
+    let Some(req) = p_requested.as_ref() else {
+        return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
+    };
+    let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
+    // 浮点格式检查（WAVE_FORMAT_IEEE_FLOAT）。
+    if !unsafe { is_float_format(mt_ptr) } {
+        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+    }
+    // 提取格式属性。
+    let fmt = unsafe { extract_format(mt_ptr) }
+        .map_err(|_| windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))?;
+    // 采样率范围：44.1kHz ~ 192kHz。
+    if fmt.sample_rate < 44100 || fmt.sample_rate > 192000 {
+        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+    }
+    // 通道数范围：1 ~ 8。
+    if fmt.channels == 0 || fmt.channels > 8 {
+        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+    }
+    Ok(())
 }
 
 /// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
@@ -441,20 +473,10 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         _p_opposite_format: windows::core::Ref<IAudioMediaType>,
         p_requested: windows::core::Ref<IAudioMediaType>,
     ) -> Result<IAudioMediaType> {
-        // 提取请求格式并与当前 PipelineContext 比较（仅通道数/采样率）。
-        // Ref<IAudioMediaType> 的 Deref 目标是 Option<IAudioMediaType>。
-        let Some(req) = p_requested.as_ref() else {
-            return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
-        };
-        let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
-        let requested = unsafe { extract_format(mt_ptr) };
-        let inner = self.mutex.lock().unwrap();
-        let ctx = &inner.pipeline_context;
-        match requested {
-            Ok(fmt) if fmt.channels == ctx.input_channels
-                && fmt.sample_rate == ctx.sample_rate => Ok(req.clone()),
-            _ => Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED)),
-        }
+        check_format_supported(&p_requested)?;
+        // 通过检查：返回请求格式（INPLACE 模式输入输出同格式）。
+        let req = p_requested.as_ref().expect("checked above");
+        Ok(req.clone())
     }
 
     fn IsOutputFormatSupported(
@@ -462,19 +484,10 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         _p_opposite_format: windows::core::Ref<IAudioMediaType>,
         p_requested: windows::core::Ref<IAudioMediaType>,
     ) -> Result<IAudioMediaType> {
-        // 输出格式与输入一致（INPLACE 模式）。
-        let Some(req) = p_requested.as_ref() else {
-            return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
-        };
-        let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
-        let requested = unsafe { extract_format(mt_ptr) };
-        let inner = self.mutex.lock().unwrap();
-        let ctx = &inner.pipeline_context;
-        match requested {
-            Ok(fmt) if fmt.channels == ctx.output_channels
-                && fmt.sample_rate == ctx.sample_rate => Ok(req.clone()),
-            _ => Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED)),
-        }
+        // 输出格式与输入格式使用相同的检查逻辑（INPLACE 模式）。
+        check_format_supported(&p_requested)?;
+        let req = p_requested.as_ref().expect("checked above");
+        Ok(req.clone())
     }
 
     fn GetInputChannelCount(&self) -> Result<u32> {
