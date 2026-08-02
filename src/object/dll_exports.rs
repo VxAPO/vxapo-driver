@@ -28,21 +28,13 @@ use std::sync::atomic::AtomicPtr;
 use windows::core::{BOOL, GUID, HRESULT};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Com::IClassFactory;
-use windows::Win32::System::Registry::*;
+use windows::Win32::System::Registry::HKEY_CLASSES_ROOT;
 
 use crate::sys::com::prelude::*;
 use crate::object::factory;
 use crate::object::ref_count as inst_count;
 
 use crate::object::vx_reg_props;
-
-/// 将字符串转换为注册表所需的 null-terminated UTF-16 字节数组。
-fn to_registry_bytes(s: &str) -> Vec<u8> {
-    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2).to_vec()
-    }
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 全局状态
@@ -188,36 +180,40 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
+/// SELFREG_E_CLASS = 0x80040201（windows crate 未导出该常量，本地定义）。
+const SELFREG_E_CLASS: HRESULT = HRESULT(0x8004_0201u32 as i32);
+
 // ══════════════════════════════════════════════════════════════════════════════
 // DllRegisterServer（Note 29）
 //
-// 注册顺序：PostMix → PreMix。
-// 注册失败时回滚已注册的条目。
+// 职责边界（v7.1 澄清）：regsvr32 无设备参数，只做全局 COM 类注册
+// （不触碰 MMDevices / FxProperties——设备绑定属 install_endpoint）。
+// 注册顺序：PostMix → PreMix。任一步失败 → 逆序回滚已注册条目 → SELFREG_E_CLASS。
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 注册 COM 类。
+/// 注册 COM 类（全局 COM 类注册，使 DLL 可被 CoCreateInstance 实例化）。
 ///
-/// 由 `regsvr32 vxapo.dll` 调用。
-/// 注册顺序：PostMix → PreMix（Note 29）。
+/// 由 `regsvr32 vxapo.dll` 调用。幂等：键已存在时覆盖写入。
+/// 注册顺序：PostMix → PreMix（Note 29）；失败逆序回滚 → `SELFREG_E_CLASS`。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
     // 获取 DLL 路径 — 需要 HMODULE（DllMain 中保存）。
     let dll_path = match get_dll_path() {
         Some(p) => p,
-        None => return E_FAIL,
+        None => return SELFREG_E_CLASS,
     };
 
     // 注册顺序（Note 29）：PostMix → PreMix
     let entries = vx_reg_props::registration_order();
 
     for (i, entry) in entries.iter().enumerate() {
-        if let Err(hr) = register_com_class(entry, &dll_path) {
-            // 注册失败，回滚已注册的条目
-            for j in 0..i {
+        if let Err(_hr) = register_com_class(entry, &dll_path) {
+            // 注册失败，按逆序回滚已注册的条目
+            for j in (0..i).rev() {
                 let _ = unregister_com_class(&entries[j]);
             }
-            return hr;
+            return SELFREG_E_CLASS;
         }
     }
 
@@ -275,98 +271,37 @@ fn get_dll_path() -> Option<String> {
 
 /// 注册单个 CLSID 的 COM 类。
 ///
-/// 写入 `HKCR\CLSID\{GUID}\InprocServer32` 路径和 ThreadingModel。
+/// 写入 `HKCR\CLSID\{GUID}\InprocServer32`（创建/打开 + 写值，经 `sys/registry`）。
+/// 失败返回具体 HRESULT，由 `DllRegisterServer` 统一回滚。
 fn register_com_class(
     entry: &vx_reg_props::ClsidEntry,
     dll_path: &str,
 ) -> Result<(), HRESULT> {
     let inproc_path = entry.inproc_server_path();
 
-    // 创建 InprocServer32 键
-    // SAFETY: 调用 RegCreateKeyExW 创建注册表键。
-    let hkey = unsafe {
-        let mut hkey = HKEY::default();
-        let sub_key = windows::core::HSTRING::from(&inproc_path);
-        let result = RegCreateKeyExW(
-            HKEY_CLASSES_ROOT,
-            &sub_key,
-            Some(0),
-            None,
-            REG_OPTION_NON_VOLATILE,
-            KEY_WRITE,
-            None,
-            &mut hkey,
-            None,
-        );
-        if result.is_err() {
-            return Err(E_FAIL);
-        }
-        hkey
-    };
+    // 创建/打开 InprocServer32 键（KEY_ALL_ACCESS；键已存在时覆盖写入 → 幂等）
+    let key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &inproc_path)
+        .map_err(|e| e.code())?;
 
-    // 写入 Default = DLL 路径
-    // SAFETY: dll_path 是合法 UTF-8 → HSTRING 转换保证 UTF-16 null 结尾。
-    let write_result = unsafe {
-        let value_name = windows::core::HSTRING::from("");
-        RegSetValueExW(
-            hkey,
-            &value_name,
-            Some(0),
-            REG_SZ,
-            Some(to_registry_bytes(dll_path).as_slice()),
-        )
-    };
+    // 写 (Default) = DLL 路径
+    key.write_sz("", dll_path).map_err(|e| e.code())?;
 
-    if write_result.is_err() {
-        // SAFETY: hkey 由 RegCreateKeyExW 成功打开。
-        unsafe { let _ = RegCloseKey(hkey); }
-        return Err(E_FAIL);
-    }
-
-    // 写入 ThreadingModel = "Both"（Note 5）
-    let tm_result = unsafe {
-        let value_name = windows::core::HSTRING::from("ThreadingModel");
-        RegSetValueExW(
-            hkey,
-            &value_name,
-            Some(0),
-            REG_SZ,
-            Some(to_registry_bytes("Both").as_slice()),
-        )
-    };
-
-    // 关闭键句柄
-    // SAFETY: hkey 由 RegCreateKeyExW 成功打开。
-    unsafe { let _ = RegCloseKey(hkey); }
-
-    if tm_result.is_err() {
-        return Err(E_FAIL);
-    }
+    // 写 ThreadingModel = "Both"（Note 5）
+    key.write_sz("ThreadingModel", "Both").map_err(|e| e.code())?;
 
     Ok(())
 }
 
 /// 注销单个 CLSID 的 COM 类。
 ///
-/// 先删 InprocServer32 子键，再删 CLSID 父键（Note 30）。
+/// 先删 `InprocServer32` 子键，再删 `CLSID\{GUID}` 父键；键不存在视为成功（幂等）。
 fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT> {
-    let inproc_path = entry.inproc_server_path();
-    let clsid_path = entry.clsid_key_path();
-
-    // 删除 InprocServer32 子键
-    // SAFETY: 删除注册表键。路径由 ClsidEntry 生成，格式安全。
-    unsafe {
-        let sub_key = windows::core::HSTRING::from(&inproc_path);
-        let _ = RegDeleteTreeW(HKEY_CLASSES_ROOT, &sub_key);
-    }
-
-    // 删除 CLSID 父键
-    // SAFETY: 删除注册表键。路径由 ClsidEntry 生成，格式安全。
-    unsafe {
-        let sub_key = windows::core::HSTRING::from(&clsid_path);
-        let _ = RegDeleteTreeW(HKEY_CLASSES_ROOT, &sub_key);
-    }
-
+    // 删除 InprocServer32 子键（幂等）
+    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())
+        .map_err(|e| e.code())?;
+    // 删除 CLSID 父键（幂等）
+    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.clsid_key_path())
+        .map_err(|e| e.code())?;
     Ok(())
 }
 
