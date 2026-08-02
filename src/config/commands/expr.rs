@@ -373,7 +373,7 @@ mod tests {
             dsp_ctx: dsp,
             stage: ParseStage::None,
             is_capture: false,
-            current_file: Path::new("<test>"),
+            current_file: Path::new("<test>").to_path_buf(),
             line_number: 1,
             abort_file: false,
             cond_stack: Vec::new(),

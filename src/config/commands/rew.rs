@@ -37,7 +37,9 @@ pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
         (true, rest)
     };
 
+    // OFF：创建 PassthroughFilter（与 6.14 Filter: OFF 语义一致）。
     if !enabled {
+        ctx.filters.push(Box::new(crate::pipeline::dsp::filter::PassthroughFilter));
         return Ok(());
     }
 

@@ -30,8 +30,10 @@ pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
         (true, trimmed)
     };
 
-    // OFF：不创建滤波器（Passthrough 语义由上层保证，或跳过）。
+    // OFF：创建 PassthroughFilter（规范 6.14：「OFF 标志……创建 PassthroughFilter」）。
+    // 保留链中位置（滤波器序号稳定），Passthrough 不修改采样。
     if !enabled {
+        ctx.filters.push(Box::new(crate::pipeline::dsp::filter::PassthroughFilter));
         return Ok(());
     }
 

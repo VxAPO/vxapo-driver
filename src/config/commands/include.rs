@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::error::ConfigError;
-use crate::config::parser::{read_config_file, ParseContext};
+use crate::config::parser::{parse_lines_impl, read_config_file, ParseContext};
 
 /// 最大 Include 递归深度。
 pub const MAX_INCLUDE_DEPTH: usize = 16;
@@ -19,15 +19,17 @@ pub const MAX_INCLUDE_DEPTH: usize = 16;
 /// 2. 解析相对路径（相对于当前文件目录）
 /// 3. 检查文件存在
 /// 4. 读取文件内容
-/// 5. 递归调用 parse_content（depth + 1）
-#[allow(dead_code)]
+/// 5. 递归调用 parse_lines_impl（depth + 1）
 pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
     // Step 1: 深度限制
     if ctx.include_depth >= MAX_INCLUDE_DEPTH {
         return Err(ConfigError::SyntaxError {
             file: ctx.current_file.display().to_string(),
             line: ctx.line_number,
-            message: format!("Include: recursion depth exceeded (max {})", MAX_INCLUDE_DEPTH),
+            message: format!(
+                "Include: recursion depth exceeded (max {})",
+                MAX_INCLUDE_DEPTH
+            ),
         });
     }
 
@@ -47,15 +49,15 @@ pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
     // Step 3-4: 读取文件内容（存在性检查由 read_config_file 隐式完成）
     let content = read_config_file(&path)?;
 
-    // Step 5: 递归解析（新上下文）
-    let sub_lines: Vec<String> = content.lines().map(|s| s.to_owned()).collect();
+    // Step 5: 递归解析（子上下文覆盖 filters/dsp_ctx 等借用字段，
+    // 其余可变状态独立；current_file 为所有权 PathBuf，无 Box::leak）。
     let mut sub_ctx = ParseContext {
         filters: ctx.filters,
         registry: ctx.registry,
         dsp_ctx: ctx.dsp_ctx,
         stage: ctx.stage,
         is_capture: ctx.is_capture,
-        current_file: Box::leak(path.into_boxed_path()),
+        current_file: path,
         line_number: 0,
         abort_file: false,
         cond_stack: Vec::new(),
@@ -66,8 +68,8 @@ pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
         current_device: ctx.current_device.clone(),
     };
 
-    // 解析子文件（借用 sub_ctx 的 filters）
-    let result = crate::config::parser::parse_lines_impl(&sub_lines, &mut sub_ctx, ctx.include_depth + 1);
+    // 解析子文件（复用父 filters 缓冲，子上下文文件私有状态独立）。
+    let result = parse_lines_impl(&content, &mut sub_ctx, ctx.include_depth + 1);
 
     // 同步回父上下文
     ctx.variables = sub_ctx.variables;
