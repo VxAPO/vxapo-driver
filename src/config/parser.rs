@@ -246,9 +246,10 @@ pub(crate) fn parse_lines_impl(
                 "delay" => delay::handle(value, ctx),
                 _ => {
                     // REW 导出格式行：`Filter 1: ON PK ...`（命令名是动态的 `Filter N`，
-                    // 不会被上面的静态匹配命中）。传原始整行（rew::handle 自剥前缀）。
+                    // 不会被上面的静态匹配命中）。v7.4 修订：传剥离后的 value
+                    // （不含 `Filter N:` 前缀），前缀剥离由分发层完成。
                     if cmd_lower.starts_with("filter ") {
-                        rew::handle(trimmed, ctx)
+                        rew::handle(value, ctx)
                     } else {
                         // 其他命令经 FilterRegistry 匹配（裸 DSP 命令：IIR/Biquad/
                         // Convolution/LoudnessCorrection 等，value 直接可被工厂消费）。
