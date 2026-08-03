@@ -147,25 +147,55 @@ impl Filter for ConvolutionFilter {
     }
 }
 
+/// Convolution 参数解析错误（v7.11，pipeline 4.19）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    /// 空参数（`Convolution:` 无值）。
+    Empty,
+    /// ≥3 tokens（`ir.wav -6 abc` 的 `abc` 不再静默忽略）。
+    TooManyTokens { count: usize },
+    /// 第 2 个 token 非数值（`ir.wav abc`）。
+    InvalidGain { token: String },
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "缺少参数（需要 IR 路径）"),
+            Self::TooManyTokens { count } => {
+                write!(f, "参数过多（{} 个 token，最多 2：路径 + 增益）", count)
+            }
+            Self::InvalidGain { token } => write!(f, "增益 '{}' 不是合法数值", token),
+        }
+    }
+}
+
 /// 解析 `Convolution:` 参数。
 ///
 /// 格式：`path [gain_dB]`
 ///
-/// 返回 `(ir_path, gain_db)`。
-pub fn parse_convolution_params(params: &str) -> Option<(String, f32)> {
+/// 严格化（v7.11，pipeline 4.19）：≥3 tokens / 第 2 个非数值 → `Err(ParseError)`，
+/// 不再静默忽略多余 token（「配置写错必有反馈」）。
+/// `ParseError` 由 config 层包装为 `ConfigError::SyntaxError`（文件 + 行号）。
+pub fn parse_convolution_params(params: &str) -> Result<(String, f32), ParseError> {
     let parts: Vec<&str> = params.split_whitespace().collect();
     if parts.is_empty() {
-        return None;
+        return Err(ParseError::Empty);
+    }
+    if parts.len() >= 3 {
+        return Err(ParseError::TooManyTokens { count: parts.len() });
     }
 
     let path = parts[0].to_owned();
-    let gain = if parts.len() >= 2 {
-        parts[1].parse::<f32>().unwrap_or(0.0)
+    let gain = if parts.len() == 2 {
+        parts[1]
+            .parse::<f32>()
+            .map_err(|_| ParseError::InvalidGain { token: parts[1].to_owned() })?
     } else {
         0.0
     };
 
-    Some((path, gain))
+    Ok((path, gain))
 }
 
 /// 从 WAV 文件加载 IR（PCM 16-bit / 32-bit float，单声道或立体声）。
@@ -363,7 +393,8 @@ mod tests {
 
     #[test]
     fn parse_empty() {
-        assert!(parse_convolution_params("").is_none());
+        // v7.11：空参数 → Err(ParseError::Empty)。
+        assert!(parse_convolution_params("").is_err());
     }
 
     // ── WAV 解析 ─────────────────────────────────────────────────────────────

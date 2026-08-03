@@ -276,7 +276,9 @@ pub(crate) fn parse_lines_impl(
             continue;
         }
 
-        let (cmd, value) = split_command_value(trimmed);
+        // v7.11：split_command_value 严格化（缺冒号/多余冒号 → SyntaxError，
+        // v7.9 裸命令可达性废弃——无冒号行拒绝解析）。
+        let (cmd, value) = split_command_value(trimmed, ctx)?;
         let cmd_lower = cmd.to_ascii_lowercase();
 
         // 条件分支始终处理。
@@ -354,7 +356,7 @@ pub(crate) fn parse_lines_impl(
                     r
                 }
                 _ => {
-                    // REW 动态命令名。
+                    // REW 动态命令名（v7.4：starts_with("filter ") 前缀）。
                     if cmd_lower.starts_with("filter ") {
                         let before = ctx.filters.len();
                         let r = rew::handle(value, ctx);
@@ -363,9 +365,9 @@ pub(crate) fn parse_lines_impl(
                         }
                         r
                     } else {
-                        // 其余经 registry：裸无冒号命令（value 为空）→ try_create(cmd)（v7.9）。
-                        let params = if value.is_empty() { cmd.trim() } else { value };
-                        let outcome = ctx.registry.try_create(params, ctx.dsp_ctx, &NullConfigLoader);
+                        // 其余经 registry。v7.11：裸命令已由 split_command_value 冒号检查拒绝
+                        // （value 恒为参数体），直接 try_create(value)。
+                        let outcome = ctx.registry.try_create(value, ctx.dsp_ctx, &NullConfigLoader);
                         match outcome.result {
                             OutcomeKind::FilterAdded(f) => {
                                 ctx.filters.push(f);
@@ -376,7 +378,13 @@ pub(crate) fn parse_lines_impl(
                                 ctx.abort_file = true;
                             }
                             OutcomeKind::Unmatched => {
-                                log::warn!("unknown command '{}'", cmd);
+                                // v7.11：未知命令 → SyntaxError 整体失败（不再 warn 跳过；
+                                // 「配置写错必有反馈」，intent.md 语法严格性）。
+                                return Err(ConfigError::SyntaxError {
+                                    file: ctx.current_file.display().to_string(),
+                                    line: ctx.line_number,
+                                    message: format!("未知命令 '{}'", cmd),
+                                });
                             }
                         }
                         Ok(())
@@ -408,11 +416,32 @@ pub(crate) fn parse_lines_impl(
     Ok(())
 }
 
-/// 分割 `Command: value`。
-pub fn split_command_value(line: &str) -> (&str, &str) {
-    match line.split_once(':') {
-        Some((c, v)) => (c.trim(), v.trim()),
-        None => (line.trim(), ""),
+/// 分割 `Command: value`（v7.11 语法严格化）。
+///
+/// - 恰好一个冒号：正常返回 `(命令关键字, 参数体)`
+/// - 零个冒号 → `Err(SyntaxError「缺少冒号：命令必须为 关键字: 参数 格式」)`
+///   （无冒号行拒绝解析——对齐 EAPO 严格关键字语法，intent.md「语法严格性」；
+///     v7.9 裸命令可达性修正废弃，v7.11 反转）
+/// - 多于一个冒号 → `Err(SyntaxError「多余冒号：一行仅允许一个冒号」)`
+///   （参数内再含冒号拒绝，确保 value 恒非空、单语义）
+pub fn split_command_value<'a>(
+    line: &'a str,
+    ctx: &ParseContext,
+) -> Result<(&'a str, &'a str), ConfigError> {
+    let trimmed = line.trim();
+    let mut colon_iter = trimmed.match_indices(':');
+    match (colon_iter.next(), colon_iter.next()) {
+        (Some((idx, _)), None) => Ok((trimmed[..idx].trim(), trimmed[idx + 1..].trim())),
+        (None, None) => Err(ConfigError::SyntaxError {
+            file: ctx.current_file.display().to_string(),
+            line: ctx.line_number,
+            message: "缺少冒号：命令必须为 关键字: 参数 格式".to_owned(),
+        }),
+        _ => Err(ConfigError::SyntaxError {
+            file: ctx.current_file.display().to_string(),
+            line: ctx.line_number,
+            message: "多余冒号：一行仅允许一个冒号".to_owned(),
+        }),
     }
 }
 
@@ -455,7 +484,28 @@ mod tests {
         ConfigParser::new(registry)
     }
 
-    /// 测试辅助：解析字符串 + 产出 spec。
+    /// 测试辅助：解析字符串 + 产出 spec（Result 版，允许断言错误）。
+    fn parse_str_spec_result(
+        content: &str,
+        ctx: &DspContext,
+    ) -> Result<(Vec<Box<dyn Filter>>, SpecChain), ConfigError> {
+        let mut registry = FilterRegistry::new();
+        crate::config::commands::register_all_commands(&mut registry);
+        let mut filters: Vec<Box<dyn Filter>> = Vec::new();
+        let mut specs: SpecChain = Vec::new();
+        parse_content_with_spec(
+            content,
+            &mut filters,
+            &registry,
+            ctx,
+            Path::new("<string>"),
+            0,
+            &mut specs,
+        )?;
+        Ok((filters, specs))
+    }
+
+    /// 测试辅助：解析字符串 + 产出 spec（成功路径）。
     fn parse_str_spec(content: &str, ctx: &DspContext) -> (Vec<Box<dyn Filter>>, SpecChain) {
         let mut registry = FilterRegistry::new();
         crate::config::commands::register_all_commands(&mut registry);
@@ -474,18 +524,56 @@ mod tests {
         (filters, specs)
     }
 
+    fn split_ctx() -> ParseContext<'static> {
+        // 仅需 current_file/line_number 供 SyntaxError 构造。
+        let filters: &'static mut Vec<Box<dyn Filter>> = Box::leak(Box::new(Vec::new()));
+        let specs: &'static mut Vec<String> = Box::leak(Box::new(Vec::new()));
+        let dsp: &'static DspContext = Box::leak(Box::new(test_ctx()));
+        let registry: &'static FilterRegistry = Box::leak(Box::new(FilterRegistry::new()));
+        ParseContext {
+            filters,
+            specs,
+            registry,
+            dsp_ctx: dsp,
+            stage: ParseStage::None,
+            is_capture: false,
+            current_file: Path::new("<test>").to_path_buf(),
+            line_number: 1,
+            abort_file: false,
+            cond_stack: Vec::new(),
+            variables: HashMap::new(),
+            include_depth: 0,
+            current_channels: vec!["L".into(), "R".into()],
+            all_channels: vec!["L".into(), "R".into()],
+            current_device: None,
+        }
+    }
+
     #[test]
     fn split_command_value_basic() {
+        let ctx = split_ctx();
         assert_eq!(
-            split_command_value("Preamp: -6.0 dB"),
+            split_command_value("Preamp: -6.0 dB", &ctx).unwrap(),
             ("Preamp", "-6.0 dB")
         );
-        assert_eq!(split_command_value("  Copy: L=R  "), ("Copy", "L=R"));
+        assert_eq!(split_command_value("  Copy: L=R  ", &ctx).unwrap(), ("Copy", "L=R"));
+        assert_eq!(split_command_value("  Preamp :  -6.0 ", &ctx).unwrap(), ("Preamp", "-6.0"));
     }
 
     #[test]
     fn split_command_value_no_colon() {
-        assert_eq!(split_command_value("PK Fc 1000 Hz"), ("PK Fc 1000 Hz", ""));
+        // v7.11：无冒号行 → SyntaxError「缺少冒号」。
+        let ctx = split_ctx();
+        let err = split_command_value("PK Fc 1000 Hz", &ctx).unwrap_err();
+        assert!(err.to_string().contains("缺少冒号"));
+    }
+
+    #[test]
+    fn split_command_value_multi_colon() {
+        // v7.11：多余冒号 → SyntaxError「多余冒号」。
+        let ctx = split_ctx();
+        let err = split_command_value("Copy: L=R : R", &ctx).unwrap_err();
+        assert!(err.to_string().contains("多余冒号"));
     }
 
     #[test]
@@ -623,15 +711,17 @@ Channel: *
     }
 
     #[test]
-    fn spec_with_unknown_command_warns_and_continues() {
-        // 携带错误 config：未知命令 → Unmatched → warn + 跳过（后续命令继续解析）。
-        // 裸无冒号命令（BogusCommand 无冒号行）→ try_create(cmd) 整行作参数（v7.9 可达性），
-        // 被 Convolution 工厂解析为 IR 路径（Convolution 语义：任意非空字符串 = 路径，
-        // 加载失败直通 Unloaded，不阻塞）→ 产出 1 spec；Delay 正常 1 spec。
-        let (_f, specs) = parse_str_spec("BogusCommand:\nDelay: 10 ms\n", &test_ctx());
-        // BogusCommand（裸行被 Convolution 接） + Delay = 2 spec
-        assert_eq!(specs.len(), 2);
-        assert!(specs[1].starts_with("delay\x1F10"));
+    fn spec_with_unknown_command_reports_error() {
+        // v7.11：未知命令 → Unmatched → SyntaxError「未知命令」整体失败（不再 warn 跳过）。
+        let err = parse_str_spec_result("BogusCommand: x\nDelay: 10 ms\n", &test_ctx()).unwrap_err();
+        assert!(matches!(err, ConfigError::SyntaxError { message, .. } if message.contains("未知命令")));
+    }
+
+    #[test]
+    fn spec_with_missing_colon_reports_error() {
+        // v7.11：无冒号行 → SyntaxError「缺少冒号」（裸命令拒绝，v7.9 可达性反转）。
+        let err = parse_str_spec_result("Preamp: -3.0 dB\nBogusNoColon\n", &test_ctx()).unwrap_err();
+        assert!(matches!(err, ConfigError::SyntaxError { message, .. } if message.contains("缺少冒号")));
     }
 
     #[test]
@@ -644,24 +734,18 @@ Channel: *
     }
 
     #[test]
-    fn spec_with_garbled_text_does_not_panic() {
-        // 乱码：非 UTF-8 字节经 lossy 降级后逐行解析，不 panic、不产出脏 spec。
-        // 乱码行被 split_command_value 处理为未知命令 → warn 跳过。
+    fn spec_with_garbled_text_reports_missing_colon() {
+        // 乱码：非 UTF-8 字节经 lossy 降级为 U+FFFD 行（无冒号）→ v7.11「缺少冒号」
+        // SyntaxError 整体失败（不 panic；「配置写错必有反馈」）。
         // 注意：Rust `\xFF` 是非法转义（`\x` 只支持 ASCII ≤0x7F），
         // 非 UTF-8 字节用 byte string + from_utf8_lossy 构造。
         let mut bytes = b"Preamp: -6.0 dB\n".to_vec();
-        // GBK 风格汉字乱码的 UTF-8 非法字节序列。
+        // GBK 风格汉字乱码的 UTF-8 非法字节序列（lossy → 无冒号的 U+FFFD 行）。
         bytes.extend_from_slice(&[0xBA, 0xBA, 0xD7, 0xD6, 0xFF, 0xFE, b'\n']);
         bytes.extend_from_slice(b"Delay: 5 ms\n");
         let content = String::from_utf8_lossy(&bytes).into_owned();
-        let (_f, specs) = parse_str_spec(&content, &test_ctx());
-        // 乱码行 lossy 后含 U+FFFD，无冒号 → 裸命令 try_create(cmd) → Convolution 接为
-        // IR 路径（宽容语义）→ 产出 1 spec。preamp + 乱码 + delay = 3 spec，不 panic。
-        assert_eq!(specs.len(), 3);
-        assert_eq!(specs[0], "preamp\x1F-6\x1FdB");
-        // 乱码 spec 含 U+FFFD（lossy 替换字符）——Convolution 路径语义直通。
-        assert!(specs[1].contains('\u{FFFD}'));
-        assert!(specs[2].starts_with("delay\x1F5"));
+        let err = parse_str_spec_result(&content, &test_ctx()).unwrap_err();
+        assert!(matches!(err, ConfigError::SyntaxError { message, .. } if message.contains("缺少冒号")));
     }
 
     #[test]

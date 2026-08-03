@@ -430,11 +430,15 @@ impl FilterFactory for ConvolutionFactory {
         _ctx: &DspContext,
         _loader: &dyn ConfigLoader,
     ) -> FilterCreateResult {
+        // v7.11（pipeline 4.19）：参数严格化——Empty/TooManyTokens/InvalidGain 均 NoMatch，
+        // 由 parser 层将「未知命令」包装为 SyntaxError（config 6.1 Unmatched → SyntaxError）。
         match parse_convolution_params(params) {
-            Some((path, gain_db)) => {
+            Ok((path, gain_db)) => {
                 FilterCreateResult::Filter(Box::new(ConvolutionFilter::new(&path, gain_db)))
             }
-            None => FilterCreateResult::NoMatch,
+            // v7.11：参数严格化（≥3 tokens / 第 2 个非数值）→ NoMatch，
+            // 由 parser 层将 Unmatched 包装为 SyntaxError（config 6.1 Unmatched → SyntaxError）。
+            Err(_) => FilterCreateResult::NoMatch,
         }
     }
 
