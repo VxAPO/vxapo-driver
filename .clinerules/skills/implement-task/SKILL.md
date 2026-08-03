@@ -51,8 +51,9 @@ description: Implement a task from roadmap.md. Use when picking up a Spec-Finali
 ### Step 5：报告（不直接改状态）
 
 **执行端无权将条目置为 `Done`、无权回退状态**——Done 需规范侧合规核对后标记（roadmap-rule）。
-
-实现完成后，在 roadmap.md 对应条目末尾追加**实现完成报告**：
+但**执行端必修**：向 roadmap.md 对应条目末尾追加**实现完成报告** + 勾选/标注自己名下**执行端待办**——
+roadmap 允许且应当反映执行端动作（见 `.clinerules/00-核心约束.md`「roadmap 反馈耦合澄清」）：
+**禁止内容仅限「反馈/修订正文」**（问题描述/反馈正文/修订记录），`实现完成报告`/待办标注/反馈引用一行均允许。
 
 ```
 ### 实现完成报告
@@ -62,15 +63,16 @@ description: Implement a task from roadmap.md. Use when picking up a Spec-Finali
 - 遗留问题：{无 或 描述}
 ```
 
-通知规范端 Agent 进行合规核对，由规范侧决定是否标记 `Done`。
-roadmap 中针对该条目的反馈只保留引用（`> 反馈记录：feedback.md #PX-X`），正文统一外置（v8.0）。
+勾选执行端待办（如 roadmap 待办项 `- [x]` 或标注「✅ 已闭环」），随后通知规范端 Agent 合规核对，
+由规范侧决定是否标记 `Done`。roadmap 中针对该条目的**反馈**只保留引用
+（`> 反馈记录：feedback.md #PX-X`），正文统一外置（v8.0）。
 
 ### Step 6：规范不可行时的反馈（v8.0：写入 feedback.md）
 
 实现中发现规范不可行或有遗漏：
 
 - **不得绕过规范自行实现**
-- 不动状态字段 / 不修改规范文档正文 / 不写 roadmap 反馈正文
+- 不动状态字段 / 不修改规范文档正文 / **不写 roadmap 反馈正文**（问题描述、反馈正文、修订记录一律不进 roadmap）
 - 按 `.clinerules/feedback-rule.md` 向规范仓库根目录 **`feedback.md`** 追加记录（逆序插入）：
 
 ```
