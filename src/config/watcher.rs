@@ -179,6 +179,11 @@ impl ConfigWatcher {
     }
 }
 
+// Safety: ConfigWatcher 持有的 HANDLE（FindFirstChangeNotificationW 返回的目录通知句柄）
+// 是句柄值（非拥有指针），跨线程传递合法——wait_and_handle 在任一线程调用均有效
+// （Windows API 句柄线程安全）。shutdown_event 由 APO 实例创建、跨线程只读/置位。
+unsafe impl Send for ConfigWatcher {}
+
 impl Drop for ConfigWatcher {
     fn drop(&mut self) {
         // 兜底：若调用方未显式 shutdown（异常路径），关闭通知句柄。

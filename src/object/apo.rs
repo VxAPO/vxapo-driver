@@ -1,13 +1,14 @@
 ﻿//! object/apo.rs — ApoObject 核心（v6.3 规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use windows::core::implement;
 use windows::core::{GUID, Result};
 
 use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
+use crate::config::watcher::ConfigWatcher;
 use crate::object::ref_count;
 use crate::object::vx_reg_props::{REG_PROPS_PRE_MIX, REG_PROPS_POST_MIX};
 use crate::pipeline::chain::Chain;
@@ -310,6 +311,98 @@ impl ApoObjectInner {
     }
 }
 
+/// watcher 运行时状态（v7.10，P0-4 外部驱动模型）。
+///
+/// `#[implement]` 生成的 `_Impl` 不暴露 `&mut Foo`（宏源码 gen.rs 明文禁止），
+/// COM 方法只有 `&self`——因此 watcher 的可变字段包 `Mutex` 让 `&self` 也可改
+/// （内部可变性，用户分析方案 A）。start_watcher/stop_watcher 均按 `&self` 实现，
+/// spawn 线程 clone `Arc` 移入（满足 'static）。
+#[derive(Default)]
+struct WatcherState {
+    /// watcher 线程句柄（start_watcher 创建 / stop_watcher join 后清空）。
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// watcher 退出事件（start_watcher 创建 / stop_watcher CloseHandle）。
+    shutdown_event: Option<windows::Win32::Foundation::HANDLE>,
+}
+
+/// 热重载实现（object 7.1.18，v7.9 六步）。
+///
+/// 模块级函数——供 watcher 线程独立调用（`#[implement]` 限制：线程无法持有 self，
+/// 因此 clone 的 `config_path`/`mutex` Arc 移入线程，本函数接收引用即复用主逻辑）。
+fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObjectInner>>) {
+    // 1. R2 阻塞式（短锁检查，不构建新链）。
+    {
+        let guard = inner.lock().unwrap();
+        if guard.transition.is_some() || guard.reloading {
+            // 过渡在途或加载中，本次变更丢弃（过渡完成后 APOProcess 会触发一次重载）。
+            return;
+        }
+    }
+
+    // 2. 128KB 文件大小闸门（控制线程 IO 安全上限，主文件提前短路）。
+    let config_path = config_path.lock().unwrap().clone();
+    if std::fs::metadata(&config_path)
+        .map(|m| m.len() > crate::config::parser::MAX_CONFIG_FILE_SIZE)
+        .unwrap_or(false)
+    {
+        log::warn!("hot_reload: config exceeded 128KB — keeping old chain");
+        return;
+    }
+
+    // 3. 锁外解析（不持有 mutex）。parse_file_with_spec 双返回。
+    let current_ctx = { inner.lock().unwrap().pipeline_context.clone() };
+    let dsp_ctx = build_dsp_context(&current_ctx, 32);
+    let mut registry = FilterRegistry::new();
+    register_all_commands(&mut registry);
+    let parser = ConfigParser::new(registry);
+    let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
+        Ok(r) => r,
+        Err(_) => {
+            // v7.9：解析失败 = 整体失败（语法错误 / Include 失败 / 任一文件超 128KB）
+            // → **保留旧链、不更新 active_spec**（v7.8 对齐 EAPO：log::warn + 返回）。
+            log::warn!("hot_reload: config parse failed — keeping old chain");
+            return;
+        }
+    };
+
+    // 4. spec 指纹短路（短锁内比较，避免与交换的 TOCTOU）。
+    {
+        let guard = inner.lock().unwrap();
+        let same = guard.active_spec.len() == new_spec.len()
+            && guard.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
+        if same {
+            log::debug!("hot_reload: config unchanged — skip");
+            return;
+        }
+    }
+
+    // 5. 锁内构建 + 交换。构建成功即更新 active_spec（与 current_chain 同步）。
+    let mut new_chain = Chain::new();
+    for f in filters {
+        if new_chain.add_filter(f).is_err() {
+            log::warn!("hot_reload: add_filter failed — keeping old chain");
+            return;
+        }
+    }
+
+    let mut guard = inner.lock().unwrap();
+    if guard.transition.is_some() {
+        // 竞态兜底：解析期间已有新过渡启动，退回阻塞排队。
+        guard.pending_reload = true;
+        return;
+    }
+    // 旧链进 outgoing；退役链由控制线程在此统一析构（R1）。
+    let old = std::mem::replace(&mut guard.current_chain, Box::new(new_chain));
+    guard.outgoing_chain = Some(old);
+    guard.pending_reload = false;
+    guard.reloading = false;
+    guard.active_spec = new_spec;
+    let length = default_smoothing_length(guard.pipeline_context.sample_rate);
+    let mut sm = SmoothingProvider::new(length);
+    sm.begin();
+    guard.transition = Some(sm);
+}
+
 // ═══ ApoObject ═══
 #[implement(
     IAudioProcessingObject,
@@ -320,12 +413,17 @@ impl ApoObjectInner {
 pub struct ApoObject {
     pub(crate) clsid: windows::core::GUID,
     pub(crate) state_cell: StateCell,
-    pub(crate) mutex: Mutex<ApoObjectInner>,
+    /// 内部状态（双链过渡）。Arc<Mutex>：spawn 线程可 clone（hot_reload 独立访问）。
+    pub(crate) mutex: Arc<Mutex<ApoObjectInner>>,
     pub(crate) latency_samples: AtomicU32,
     pub(crate) latency_frames_atomic: AtomicU32,
     pub(crate) process_stats: ProcessStatistics,
     /// 配置文件路径（Initialize 确定，per-device `Documents\VxAPO\{GUID}\config.txt`）。
-    pub(crate) config_path: Mutex<String>,
+    /// Arc<Mutex>：spawn 线程可 clone（hot_reload 独立访问）。
+    pub(crate) config_path: Arc<Mutex<String>>,
+    /// watcher 运行时状态（v7.10，P0-4 外部驱动模型）：Lock 末尾启动 / Unlock 停止。
+    /// Arc<Mutex>：&self 可写（#[implement] 无 &mut Foo）；spawn 可 clone 移入线程。
+    watcher_state: Arc<Mutex<WatcherState>>,
 }
 
 impl ApoObject {
@@ -334,97 +432,106 @@ impl ApoObject {
         Self {
             clsid,
             state_cell: StateCell::new(),
-            mutex: Mutex::new(ApoObjectInner::new()),
+            mutex: Arc::new(Mutex::new(ApoObjectInner::new())),
             latency_samples: AtomicU32::new(0),
             latency_frames_atomic: AtomicU32::new(0),
             process_stats: ProcessStatistics::new(),
-            config_path: Mutex::new(DEFAULT_CONFIG_PATH.to_owned()),
+            config_path: Arc::new(Mutex::new(DEFAULT_CONFIG_PATH.to_owned())),
+            watcher_state: Arc::new(Mutex::new(WatcherState::default())),
         }
     }
 
-    /// 配置热重载（watcher 回调，R2/v6.9 阻塞式 + v7.9 spec 指纹短路）。
-    ///
-    /// 流程（object 7.1.18）：
-    ///   1. R2 阻塞检查：过渡在途 / reloading → 丢弃本次变更（过渡完成后 APOProcess 触发）；
-    ///   2. 128KB 闸门：config 超过上限 → 保留旧链 + warn（提前短路）；
-    ///   3. 锁外解析：parse_file_with_spec → (过滤器列表, new_spec)；
-    ///      解析失败（语法/Include/超限）= 整体失败 → 保留旧链、不更新 active_spec（v7.8）；
-    ///   4. spec 指纹短路：len 相同 + 逐项 == active_spec → 配置实质未变 → 跳过（debug）；
-    ///   5. 锁内交换：构建成功即更新 active_spec，旧链进 outgoing 进入升余弦过渡；
-    ///   6. 竞态兜底：解析期间新过渡已启动 → 排队（pending_reload）。
+    /// 配置热重载（watcher 回调）。委托模块级 `hot_reload_impl`（共享 Arc 字段）。
     pub fn hot_reload(&self) {
-        // 1. R2 阻塞式（短锁检查，不构建新链）。
-        {
-            let inner = self.mutex.lock().unwrap();
-            if inner.transition.is_some() || inner.reloading {
-                // 过渡在途或加载中，本次变更丢弃（过渡完成后 APOProcess 会触发一次重载）。
-                return;
-            }
+        hot_reload_impl(&self.config_path, &self.mutex);
+    }
+
+    /// 启动配置监控线程（object 7.1.9，v7.10 外部驱动模型）。
+    ///
+    /// 流程：CreateEventW(shutdown_event) → ConfigWatcher::new(watch_dir, shutdown_event)
+    /// → spawn 线程循环 `wait_and_handle` → `hot_reload_impl`（DirectoryChanged → 重载）。
+    /// 失败降级（watcher 未启动，仅日志）——不阻塞锁定（配置热重载失效但音频链路正常）。
+    ///
+    /// `#[implement]` 只暴露 `&self`（gen.rs：不向安全代码暴露所有权实例）——因此用
+    /// `Arc<Mutex<WatcherState>>` 内部可变性（用户方案 A）；spawn 线程 clone `config_path`/
+    /// `mutex` 的 Arc 移入（'static），线程内调 `hot_reload_impl`（无需持有 self）。
+    pub(crate) fn start_watcher(&self) -> Result<()> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{CreateEventW, SetEvent};
+
+        // 幂等：已有 watcher 线程则不重复。
+        let mut st = self.watcher_state.lock().unwrap();
+        if st.thread.is_some() {
+            return Ok(());
         }
 
-        // 2. 128KB 文件大小闸门（控制线程 IO 安全上限，主文件提前短路）。
+        // 1. 创建退出事件（manual-reset，初始 non-signaled）。
+        // Safety: CreateEventW 无安全属性、无名字；返回句柄由 watcher_state 持有，stop_watcher 释放。
+        let shutdown_event = unsafe { CreateEventW(None, true, false, None)? };
+
+        // 2. 目录级监控器（不自启线程，v7.10）。watch_dir = config_path 父目录。
         let config_path = self.config_path.lock().unwrap().clone();
-        if std::fs::metadata(&config_path)
-            .map(|m| m.len() > crate::config::parser::MAX_CONFIG_FILE_SIZE)
-            .unwrap_or(false)
-        {
-            log::warn!("hot_reload: config exceeded 128KB — keeping old chain");
-            return;
+        let watch_dir = std::path::Path::new(&config_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::Path::new(&config_path).to_path_buf());
+        let mut watcher = ConfigWatcher::new(watch_dir, shutdown_event);
+        if watcher.notify_handle().is_invalid() {
+            // 目录不存在（FindFirstChangeNotificationW 失败）→ 释放事件，降级。
+            let _ = unsafe { SetEvent(shutdown_event) };
+            let _ = unsafe { CloseHandle(shutdown_event) };
+            log::warn!("start_watcher: watch dir unavailable — config hot-reload disabled");
+            return Ok(());
         }
 
-        // 3. 锁外解析（不持有 mutex）。parse_file_with_spec 双返回。
-        let current_ctx = { self.mutex.lock().unwrap().pipeline_context.clone() };
-        let dsp_ctx = build_dsp_context(&current_ctx, 32);
-        let mut registry = FilterRegistry::new();
-        register_all_commands(&mut registry);
-        let parser = ConfigParser::new(registry);
-        let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
-            Ok(r) => r,
-            Err(_) => {
-                // v7.9：解析失败 = 整体失败（语法错误 / Include 失败 / 任一文件超 128KB）
-                // → **保留旧链、不更新 active_spec**（v7.8 对齐 EAPO：log::warn + 返回）。
-                log::warn!("hot_reload: config parse failed — keeping old chain");
-                // 标记：reloading 由下一循环/本次返回时处理（此处直接复位）。
-                return;
+        // 3. spawn 线程：wait_and_handle → hot_reload_impl；shutdown 事件置位 → 退出。
+        let cfg = self.config_path.clone();
+        let inner = self.mutex.clone();
+        let handle = std::thread::spawn(move || loop {
+            if !watcher.wait_and_handle() {
+                break; // shutdown 或句柄失效。
             }
-        };
+            // 目录级变更 → 热重载（spec 短路 + 128KB 闸门内部处理）。
+            hot_reload_impl(&cfg, &inner);
+        });
 
-        // 4. spec 指纹短路（短锁内比较，避免与交换的 TOCTOU）。
-        {
-            let inner = self.mutex.lock().unwrap();
-            let same = inner.active_spec.len() == new_spec.len()
-                && inner.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
-            if same {
-                log::debug!("hot_reload: config unchanged — skip");
-                return;
-            }
+        // 4. 记录 watcher 运行时状态（&self 可写：Arc<Mutex> 内部可变性）。
+        //    watcher 已 move 进线程（循环消费）；线程退出时 watcher Drop 自动关闭
+        //    notify_handle（FindCloseChangeNotification）——stop 只需 SetEvent + join。
+        st.shutdown_event = Some(shutdown_event);
+        st.thread = Some(handle);
+        Ok(())
+    }
+
+    /// 停止配置监控线程（object 7.1.10，v7.10 外部驱动模型）。
+    ///
+    /// 1. SetEvent(shutdown_event) → wait_and_handle 返回 false → 线程循环退出
+    /// 2. join(watcher_thread) → 确保线程已退出（无泄漏）
+    /// 3. watcher.shutdown() → FindCloseChangeNotification + CloseHandle
+    /// 幂等：watcher 为 None（未启动/启动失败）时直接返回。
+    pub(crate) fn stop_watcher(&self) {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::SetEvent;
+
+        let mut st = self.watcher_state.lock().unwrap();
+
+        // 1. 置位退出事件（唤醒等待中的 wait_and_handle）。
+        if let Some(evt) = st.shutdown_event {
+            // Safety: 事件句柄由 start_watcher 创建且有效。
+            let _ = unsafe { SetEvent(evt) };
         }
 
-        // 5. 锁内构建 + 交换。构建成功即更新 active_spec（与 current_chain 同步）。
-        let mut new_chain = Chain::new();
-        for f in filters {
-            if new_chain.add_filter(f).is_err() {
-                log::warn!("hot_reload: add_filter failed — keeping old chain");
-                return;
-            }
+        // 2. join 线程（确保已退出）。watcher 在线程内（move 消费），线程退出时
+        //    watcher Drop 已关闭 notify_handle（FindCloseChangeNotification）。
+        if let Some(handle) = st.thread.take() {
+            let _ = handle.join();
         }
 
-        let mut inner = self.mutex.lock().unwrap();
-        if inner.transition.is_some() {
-            // 竞态兜底：解析期间已有新过渡启动，退回阻塞排队。
-            inner.pending_reload = true;
-            return;
+        // 3. 释放事件句柄。
+        if let Some(evt) = st.shutdown_event.take() {
+            // Safety: 事件句柄由 start_watcher 创建且有效（此处唯一持有者，关闭后不再使用）。
+            let _ = unsafe { CloseHandle(evt) };
         }
-        // 旧链进 outgoing；退役链由控制线程在此统一析构（R1）。
-        let old = std::mem::replace(&mut inner.current_chain, Box::new(new_chain));
-        inner.outgoing_chain = Some(old);
-        inner.pending_reload = false;
-        inner.reloading = false;
-        inner.active_spec = new_spec;
-        let length = default_smoothing_length(inner.pipeline_context.sample_rate);
-        let mut sm = SmoothingProvider::new(length);
-        sm.begin();
-        inner.transition = Some(sm);
     }
 }
 
@@ -722,7 +829,6 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
             allow_silent_buffer: true,
         };
         // pp_inputs / pp_outputs 是 APO_CONNECTION_PROPERTY**（指针数组）。
-        // APO 通常单连接（1:1），直接用首元素解引用构造 slice，零分配。
         let input_one = unsafe { &**pp_inputs };
         let inputs = std::slice::from_ref(input_one);
         let output_one = unsafe { &mut **pp_outputs };
@@ -861,6 +967,12 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         crate::install::audiodg::ensure_can_load()
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
 
+        // Step 8 (v7.10)：Lock 末尾启动 watcher（config_path 已确定 + active_spec 基线就绪）。
+        // 启动失败降级（仅日志），不阻塞锁定。
+        if let Err(e) = self.start_watcher() {
+            log::warn!("LockForProcess: watcher start failed: {e}");
+        }
+
         // 全部成功 → 解除守卫（不再回退状态）。
         _guard.disarm();
         Ok(())
@@ -870,6 +982,9 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         self.state_cell
             .transition(ApoState::Locked, ApoState::Initialized)
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+        // Stop watcher：SetEvent → join → close（v7.10 stop_watcher）。先释放锁（join 可能等待）。
+        drop(self.mutex.lock().unwrap());
+        self.stop_watcher();
         // R1：退役链 + 过渡状态由控制线程锁内统一析构。
         let mut inner = self.mutex.lock().unwrap();
         inner.retired_chain = None;
