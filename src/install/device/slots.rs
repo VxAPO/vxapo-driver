@@ -363,6 +363,110 @@ pub fn get_original_post_mix(slots: &[SlotValue; 5], mode: InstallMode) -> Strin
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// VxAPO 独立安装信息区（v8.4/v8.5，P0-6 子 APO GUID 来源）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// VxAPO 独立安装信息区键路径（install 5.3 v8.5，全量判定依据）。
+///
+/// **路径隔离（v8.4，用户指示）**：禁止读写 EAPO 的
+/// `HKLM\SOFTWARE\EqualizerAPO\Child APOs`（EAPO childApoPath，RegistryHelper.h 33）——
+/// VxAPO 用独立的 `HKLM\SOFTWARE\VxAPO` 根，避免污染 EAPO 安装信息区。
+pub const CHILD_APO_PATH_ROOT: &str = r"HKLM\SOFTWARE\VxAPO\Child APOs";
+
+/// 子 APO 类型（决定读取安装信息区中的哪个值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildApoKind {
+    /// 前任 PreMix APO（PreMixChild 值）。
+    PreMix,
+    /// 前任 PostMix APO（PostMixChild 值）。
+    PostMix,
+}
+
+impl ChildApoKind {
+    /// 安装信息区中的值名。
+    fn value_name(self) -> &'static str {
+        match self {
+            Self::PreMix => "PreMixChild",
+            Self::PostMix => "PostMixChild",
+        }
+    }
+}
+
+/// 判断某设备是否有 VxAPO 安装信息区（全量/非全量判定的唯一依据，intent 七节 v8.5）。
+///
+/// - 不存在 → 初始安装 / 完全卸载后安装 → `install_endpoint` 走**全量备份路径**；
+/// - 存在 → 重装 / 失守重装 → 走**非全量路径**（槽位覆盖或保留旧 childapo）。
+///
+/// 私有路径保证：只由 install_endpoint 写、uninstall_endpoint 删（卸载必删整个键）；
+/// 第三方 APO 软件不会写它（各软件只操作自己的私有路径）——存在性即充分判定。
+pub fn child_apo_key_exists(device_guid: &str) -> bool {
+    let key_path = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+    // CHILD_APO_PATH_ROOT 含 HKLM\ 前缀（split_key 拆分为 root + 子键）。
+    let (root, sub_key) = match split_path(&key_path) {
+        Some(v) => v,
+        None => return false,
+    };
+    RegKey::open(root, sub_key).is_ok()
+}
+
+/// 读取子 APO GUID（object 7.1.8 v8.4，P0-6 三处矛盾消解）。
+///
+/// 运行期 `Initialize` 用端点 GUID 反查安装信息区：
+/// `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`。
+/// 返回 `None` = 键或值不存在 / 值为空 / 格式非法（降级为无子 APO，Note 57）。
+///
+/// *注意*：与 FxProperties 槽位无关——这是 VxAPO 独立安装信息区
+/// （install 5.3 v8.4），非 `{d04e05a6-...},{index}` 槽位值。
+pub fn read_child_apo_guid(device_guid: &str, kind: ChildApoKind) -> Option<windows::core::GUID> {
+    let key_path = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+    let (root, sub_key) = split_path(&key_path)?;
+    let key = RegKey::open(root, sub_key).ok()?;
+    // 安装信息区存 GUID 字符串（带花括号的标准格式，guid_to_string 输出）。
+    let s = key.read_sz(kind.value_name())?;
+    parse_guid_string(&s)
+}
+
+/// 拆分 `HKLM\...` 完整路径为 (root HKEY, 子键路径)。
+///
+/// 支持 `HKLM\` 前缀（CHILD_APO_PATH_ROOT 带根）。其他根（HKCU/HKCR/HKU）
+/// 当前无使用点，返回 None（保守——不猜测不存在的调用场景）。
+fn split_path(path: &str) -> Option<(windows::Win32::System::Registry::HKEY, &str)> {
+    let (root_str, rest) = path.split_once('\\')?;
+    match root_str.to_ascii_uppercase().as_str() {
+        "HKLM" => Some((windows::Win32::System::Registry::HKEY_LOCAL_MACHINE, rest)),
+        _ => None,
+    }
+}
+
+/// 解析 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式 GUID 字符串（guid_to_string 输出）。
+fn parse_guid_string(s: &str) -> Option<windows::core::GUID> {
+    let s = s.trim();
+    if !s.starts_with('{') || !s.ends_with('}') {
+        return None;
+    }
+    let inner = &s[1..s.len() - 1];
+    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx = 8-4-4-4-12
+    let parts: Vec<&str> = inner.split('-').collect();
+    if parts.len() != 5 {
+        return None;
+    }
+    let data1 = u32::from_str_radix(parts[0], 16).ok()?;
+    let data2 = u16::from_str_radix(parts[1], 16).ok()?;
+    let data3 = u16::from_str_radix(parts[2], 16).ok()?;
+    if parts[3].len() != 4 || parts[4].len() != 12 {
+        return None;
+    }
+    let mut data4 = [0u8; 8];
+    for (i, c) in parts[3].chars().enumerate() {
+        data4[i] = u8::from_str_radix(&c.to_string(), 16).ok()?;
+    }
+    for (i, c) in parts[4].chars().enumerate() {
+        data4[i + 4] = u8::from_str_radix(&c.to_string(), 16).ok()?;
+    }
+    Some(windows::core::GUID { data1, data2, data3, data4 })
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 内部辅助
 // ══════════════════════════════════════════════════════════════════════════════
 

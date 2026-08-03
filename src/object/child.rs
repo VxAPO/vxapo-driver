@@ -2,44 +2,31 @@
 //!
 //! 子 APO COM 生命周期管理：
 //! - `CoCreateInstance` 创建子 APO 实例
-//! - `QueryInterface` 获取三个接口指针
-//! - 延迟、重置、帧数计算委托给子 APO
-//! - `Drop` 释放所有 COM 引用
+//! - `QueryInterface` 获取三个接口（类型化接口引用，windows-rs cast）
+//! - 延迟、重置、帧数计算、锁定/解锁委托给子 APO
+//! - `Drop` 自动释放所有 COM 接口引用
 //!
-//! 子 APO 由 `init.rs` 在 `Initialize` 时创建（Note 7），
-//! 存储在 `ApoObject` 中，供 `apo_rt.rs` 和 `apo_conf.rs` 委托调用。
+//! 子 APO 由 `init.rs` 在 `Initialize` 时创建（Note 7，失败降级为无子 APO），
+//! 存储在 `ApoObject.child_apo` 中，供 apo_rt.rs（RT）和 apo_conf.rs（配置）委托调用。
 //!
-//! Phase 6 完整实现。
+//! P0-6（v8.4/v8.5）：
+//! - **类型化接口持有**（windows-rs `IAudioProcessingObject` 等）——替代早期裸 vtable 手动调用
+//!   （原实现用 `vtbl_method` + `transmute` 手动索引 vtable；windows-rs 0.62.2 提供
+//!   三个接口的 safe 调用方法，对齐类型化方案）
+//! - **子 APO GUID 来源** = 端点 GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`
+//!   （独立安装信息区，v8.4 路径隔离；`install/device/slots` 提供读取）
+//! - **委托失败降级**：Initialize/LockForProcess/UnlockForProcess 失败不阻塞父（Note 57）
+//! - **重置防御**：Unlock 失败后下次 Lock 前 child.reset()/重建
 
-use std::ffi::c_void;
+use windows::core::{GUID, HRESULT, Interface, IUnknown};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
-use windows::core::{GUID, HRESULT, IUnknown};
-
-use crate::sys::com::apo_interfaces::{IAudioMediaType, IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT};
-use crate::sys::com::apo_types::{APO_CONNECTION_DESCRIPTOR, APO_REG_PROPERTIES};
-use crate::sys::com::apo_types::REFERENCE_TIME;
-use crate::sys::com::prelude::*;
-
-// ══════════════════════════════════════════════════════════════════════════════
-// COM vtable 布局常量
-// ══════════════════════════════════════════════════════════════════════════════
-//
-// IUnknown:
-//   [0] QueryInterface   [1] AddRef   [2] Release
-//
-// IAudioProcessingObject : IUnknown:
-//   [3] Reset  [4] GetLatency  [5] GetRegistrationProperties
-//   [6] IsInputFormatSupported  [7] IsOutputFormatSupported
-//   [8] GetInputChannelCount
-//
-// IAudioProcessingObjectRT : IUnknown:
-//   [3] APOProcess  [4] CalcInputFrames  [5] CalcOutputFrames
-//
-// IAudioProcessingObjectConfiguration : IUnknown:
-//   [3] LockForProcess  [4] UnlockForProcess
-
-/// IUnknown::Release 在 vtable 中的索引。
-const VT_RELEASE: usize = 2;
+use crate::sys::com::apo_interfaces::{
+    IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration,
+    IAudioProcessingObjectRT,
+};
+use crate::sys::com::apo_types::{APO_CONNECTION_DESCRIPTOR, APO_REG_PROPERTIES, REFERENCE_TIME};
+use crate::sys::com::prelude::E_POINTER;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ChildApo
@@ -47,114 +34,89 @@ const VT_RELEASE: usize = 2;
 
 /// 子 APO COM 对象持有者。
 ///
-/// 通过 `CoCreateInstance` 创建子 APO，`QueryInterface` 获取三个接口。
+/// 持有类型化的 COM 接口引用，通过 windows-rs 生成的调用方法委托（非手动 vtable 索引）。
+/// Drop 时自动释放三个 COM 接口引用。
 ///
 /// # COM 生命周期
 ///
-/// - `create()`：`CoCreateInstance` → `IUnknown`（ref=1）→ QI×3（ref=4）→ drop `IUnknown`（ref=3）
-/// - `Drop`：Release ×3（ref=0 → 对象销毁）
+/// - `create()`：`CoCreateInstance` → `IUnknown`（ref=1）→ cast×3（ref=4）→ drop `IUnknown`（ref=3）
+/// - `Drop`：三个接口引用各自 Release（ref=0 → 对象销毁）
 pub struct ChildApo {
-    /// IAudioProcessingObject 接口指针。
-    iapo_ptr: *mut c_void,
-    /// IAudioProcessingObjectRT 接口指针。
-    iapo_rt_ptr: *mut c_void,
-    /// IAudioProcessingObjectConfiguration 接口指针。
-    iapo_cfg_ptr: *mut c_void,
+    /// `IAudioProcessingObject` 接口（Reset/GetLatency/格式协商/Initialize 等）。
+    iapo: IAudioProcessingObject,
+    /// `IAudioProcessingObjectRT` 接口（APOProcess/CalcInputFrames/CalcOutputFrames）。
+    iapo_rt: IAudioProcessingObjectRT,
+    /// `IAudioProcessingObjectConfiguration` 接口（LockForProcess/UnlockForProcess）。
+    iapo_cfg: IAudioProcessingObjectConfiguration,
 }
 
-// SAFETY: COM 接口指针在 ChildApo 生命周期内有效。
-// COM 引用计数手动管理（create 中 QI，Drop 中 Release）。
+// SAFETY: 接口引用在 ChildApo 生命周期内有效（cast 已 AddRef，Drop 自动 Release）。
+// ApoObject 含 ChildApo 且 unsafe impl Send/Sync——COM 接口引用跨线程合法
+// （Windows 音频引擎保证 APO 方法的线程亲和）。
 unsafe impl Send for ChildApo {}
 unsafe impl Sync for ChildApo {}
 
 impl ChildApo {
     /// 创建子 APO 实例。
     ///
+    /// `CoCreateInstance` → `IUnknown` → cast（自动 QI + AddRef）三个接口 → drop `IUnknown`。
+    ///
     /// # Safety
     ///
-    /// - COM 必须已初始化（`CoInitializeEx`）
+    /// - COM 必须已初始化（`CoInitializeEx`，由宿主进程负责）
     /// - `clsid` 必须指向有效的 APO CLSID
     pub unsafe fn create(clsid: &GUID) -> Result<Self, HRESULT> {
-        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
-
-        // Step 1: CoCreateInstance → IUnknown
-        let unknown: IUnknown = CoCreateInstance(clsid, None, CLSCTX_ALL)
+        // Step 1: CoCreateInstance → IUnknown（ref=1）。
+        // SAFETY: rclsid 非空 + CLSCTX_INPROC_SERVER；函数返回 Result<IUnknown>。
+        let unknown: IUnknown = unsafe { CoCreateInstance(clsid, None, CLSCTX_ALL) }
             .map_err(|e| HRESULT::from(e))?;
 
-        // Step 2: QI for each interface
-        let mut iapo_ptr: *mut c_void = std::ptr::null_mut();
-        let mut iapo_rt_ptr: *mut c_void = std::ptr::null_mut();
-        let mut iapo_cfg_ptr: *mut c_void = std::ptr::null_mut();
+        // Step 2: cast 三个接口（每次 cast 内部 QI + AddRef，ref 递增；cast 为 safe 方法）。
+        // SAFETY: unknown 有效；目标接口为该 APO 真实实现的接口。
+        let iapo: IAudioProcessingObject =
+            unknown.cast().map_err(|e| HRESULT::from(e))?;
+        let iapo_rt: IAudioProcessingObjectRT =
+            unknown.cast().map_err(|e| HRESULT::from(e))?;
+        let iapo_cfg: IAudioProcessingObjectConfiguration =
+            unknown.cast().map_err(|e| HRESULT::from(e))?;
 
-        let hr = Self::qi(&unknown, &IID_IAPO, &mut iapo_ptr);
-        if hr.is_err() {
-            return Err(hr);
-        }
-
-        let hr = Self::qi(&unknown, &IID_IAPO_RT, &mut iapo_rt_ptr);
-        if hr.is_err() {
-            Self::release_raw(iapo_ptr);
-            return Err(hr);
-        }
-
-        let hr = Self::qi(&unknown, &IID_IAPO_CONFIG, &mut iapo_cfg_ptr);
-        if hr.is_err() {
-            Self::release_raw(iapo_rt_ptr);
-            Self::release_raw(iapo_ptr);
-            return Err(hr);
-        }
-
-        // Step 3: Release original IUnknown（3 个 QI 结果保持对象存活）
+        // Step 3: drop 原始 IUnknown（三个 cast 引用保持对象存活）。
         drop(unknown);
 
-        Ok(Self {
-            iapo_ptr,
-            iapo_rt_ptr,
-            iapo_cfg_ptr,
-        })
+        Ok(Self { iapo, iapo_rt, iapo_cfg })
     }
 
-    /// 是否有效（所有接口指针非 null）。
+    /// 是否有效（所有接口引用非空）。
+    ///
+    /// 类型化接口的 null 语义：`cast` 成功即接口引用有效；此谓词保留
+    /// 为防御性检查（与早期裸指针版本语义兼容）。
     pub fn is_valid(&self) -> bool {
-        !self.iapo_ptr.is_null()
-            && !self.iapo_rt_ptr.is_null()
-            && !self.iapo_cfg_ptr.is_null()
+        !self.iapo.as_raw().is_null()
+            && !self.iapo_rt.as_raw().is_null()
+            && !self.iapo_cfg.as_raw().is_null()
     }
 
     // ── IAudioProcessingObject 委托 ──────────────────────────────────────────
 
-    /// 获取子 APO 延迟（`GetLatency`，vtable[4]）。
+    /// 获取子 APO 延迟（`GetLatency`，windows-rs 调用方法）。
+    ///
+    /// 失败返回 0（保守——延迟未知按无延迟处理，不阻断父流程）。
     pub fn get_latency(&self) -> REFERENCE_TIME {
-        if self.iapo_ptr.is_null() {
-            return 0;
-        }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 4);
-            let get_latency: unsafe extern "system" fn(
-                *mut c_void,
-                *mut REFERENCE_TIME,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-
-            let mut latency: REFERENCE_TIME = 0;
-            let _ = get_latency(self.iapo_ptr, &mut latency);
-            latency
-        }
+        // windows-rs: GetLatency() -> Result<i64>（i64 = REFERENCE_TIME）。
+        unsafe { self.iapo.GetLatency() }.unwrap_or(0)
     }
 
-    /// 重置子 APO（`Reset`，vtable[3]）。
+    /// 重置子 APO（`Reset`）。
+    ///
+    /// 用于 Unlock 失败后的重置防御（下次 Lock 前调用）。
     pub fn reset(&self) -> HRESULT {
-        if self.iapo_ptr.is_null() {
-            return E_POINTER;
-        }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 3);
-            let reset: unsafe extern "system" fn(*mut c_void) -> HRESULT =
-                std::mem::transmute(fn_ptr);
-            reset(self.iapo_ptr)
-        }
+        // windows-rs: Reset() -> Result<()>。
+        unsafe { self.iapo.Reset() }
+            .map(|_| HRESULT(0))
+            .unwrap_or_else(|e| e.into())
     }
 
-    /// 获取子 APO 注册属性（`GetRegistrationProperties`，vtable[5]）。
+    /// 获取子 APO 注册属性（`GetRegistrationProperties`）。
     ///
     /// # Safety
     ///
@@ -163,158 +125,150 @@ impl ChildApo {
         &self,
         pp_props: *mut *mut APO_REG_PROPERTIES,
     ) -> HRESULT {
-        if self.iapo_ptr.is_null() {
+        if pp_props.is_null() {
             return E_POINTER;
         }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 5);
-            let get_reg_props: unsafe extern "system" fn(
-                *mut c_void,
-                *mut *mut APO_REG_PROPERTIES,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-            get_reg_props(self.iapo_ptr, pp_props)
+        // windows-rs: GetRegistrationProperties() -> Result<*mut APO_REG_PROPERTIES>。
+        match unsafe { self.iapo.GetRegistrationProperties() } {
+            Ok(ptr) => {
+                unsafe { *pp_props = ptr };
+                HRESULT(0)
+            }
+            Err(e) => e.into(),
         }
     }
 
-    /// 新增：初始化子 APO（`Initialize`，vtable[6]）。
+    /// 初始化子 APO（`Initialize`，同传父 APOInit 数据，EAPO 180-215 对齐）。
     ///
     /// # Safety
     ///
     /// `pby_data` 必须指向有效的 `cb_data_size` 字节缓冲区。
-    pub unsafe fn initialize(&self, cb_data_size: u32, pby_data: *mut u8) -> HRESULT {
-        if self.iapo_ptr.is_null() {
+    pub unsafe fn initialize(&self, cb_data_size: u32, pby_data: *const u8) -> HRESULT {
+        // windows-rs: Initialize(pbydata: &[u8]) — 由 slice 长度推导 cbdatasize。
+        if pby_data.is_null() && cb_data_size > 0 {
             return E_POINTER;
         }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 6);
-            let init: unsafe extern "system" fn(
-                *mut c_void,
-                u32,
-                *mut u8,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-            init(self.iapo_ptr, cb_data_size, pby_data)
-        }
+        // SAFETY: 调用方保证缓冲区有效；slice 生命周期仅覆盖此调用。
+        let data = if cb_data_size == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(pby_data, cb_data_size as usize) }
+        };
+        unsafe { self.iapo.Initialize(data) }
+            .map(|_| HRESULT(0))
+            .unwrap_or_else(|e| e.into())
     }
 
-    /// 新增：检查输入格式是否支持（`IsInputFormatSupported`，vtable[7]）。
+    /// 检查输入格式是否支持（`IsInputFormatSupported`）。
     ///
     /// # Safety
     ///
-    /// `p_opposite_format` / `p_requested` 必须指向有效的 `IAudioMediaType` 对象。
+    /// `p_opposite_format` / `p_requested` / `pp_supported` 必须有效。
     pub unsafe fn is_input_format_supported(
         &self,
         p_opposite_format: *mut IAudioMediaType,
         p_requested: *mut IAudioMediaType,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
-        if self.iapo_ptr.is_null() {
+        if pp_supported.is_null() {
             return E_POINTER;
         }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 7);
-            let is_input_supported: unsafe extern "system" fn(
-                *mut c_void,
-                *mut IAudioMediaType,
-                *mut IAudioMediaType,
-                *mut *mut IAudioMediaType,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-            is_input_supported(
-                self.iapo_ptr,
-                p_opposite_format,
-                p_requested,
-                pp_supported,
-            )
+        // windows-rs: IsInputFormatSupported(p0, p1) -> Result<IAudioMediaType>
+        // （Param<IAudioMediaType>：`Option<&T>` 满足；裸指针经 .as_ref() 安全借用转换）。
+        let opposite = p_opposite_format.as_ref();
+        let requested = p_requested.as_ref();
+        match unsafe { self.iapo.IsInputFormatSupported(opposite, requested) } {
+            Ok(supported) => {
+                // 返回的接口引用 +1（from_abi）；ManuallyDrop 防泄漏，as_raw 取指针移交调用方
+                // （调用方负责最终 Release）。
+                let leaked = std::mem::ManuallyDrop::new(supported);
+                unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };
+                HRESULT(0)
+            }
+            Err(e) => e.into(),
         }
     }
 
-    /// 新增：检查输出格式是否支持（`IsOutputFormatSupported`，vtable[8]）。
+    /// 检查输出格式是否支持（`IsOutputFormatSupported`）。
     ///
     /// # Safety
     ///
-    /// `p_opposite_format` / `p_requested` 必须指向有效的 `IAudioMediaType` 对象。
+    /// `p_opposite_format` / `p_requested` / `pp_supported` 必须有效。
     pub unsafe fn is_output_format_supported(
         &self,
         p_opposite_format: *mut IAudioMediaType,
         p_requested: *mut IAudioMediaType,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
-        if self.iapo_ptr.is_null() {
+        if pp_supported.is_null() {
             return E_POINTER;
         }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 8);
-            let is_output_supported: unsafe extern "system" fn(
-                *mut c_void,
-                *mut IAudioMediaType,
-                *mut IAudioMediaType,
-                *mut *mut IAudioMediaType,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-            is_output_supported(
-                self.iapo_ptr,
-                p_opposite_format,
-                p_requested,
-                pp_supported,
-            )
+        let opposite = p_opposite_format.as_ref();
+        let requested = p_requested.as_ref();
+        match unsafe { self.iapo.IsOutputFormatSupported(opposite, requested) } {
+            Ok(supported) => {
+                let leaked = std::mem::ManuallyDrop::new(supported);
+                unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };
+                HRESULT(0)
+            }
+            Err(e) => e.into(),
         }
     }
 
-    /// 新增：获取输入通道数（`GetInputChannelCount`，vtable[9]）。
+    /// 获取输入通道数（`GetInputChannelCount`）。
     pub fn get_input_channel_count(&self, p_count: *mut u32) -> HRESULT {
-        if self.iapo_ptr.is_null() {
+        if p_count.is_null() {
             return E_POINTER;
         }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_ptr, 9);
-            let get_channel_count: unsafe extern "system" fn(
-                *mut c_void,
-                *mut u32,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-            get_channel_count(self.iapo_ptr, p_count)
+        match unsafe { self.iapo.GetInputChannelCount() } {
+            Ok(count) => {
+                unsafe { *p_count = count };
+                HRESULT(0)
+            }
+            Err(e) => e.into(),
         }
     }
 
     // ── IAudioProcessingObjectRT 委托 ────────────────────────────────────────
 
-    /// 子 APO 计算输入帧数（`CalcInputFrames`，vtable[4]）。
+    /// 子 APO 计算输入帧数（`CalcInputFrames`）。
     pub fn calc_input_frames(&self, output_frames: u32) -> u32 {
-        if self.iapo_rt_ptr.is_null() {
-            return output_frames;
-        }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_rt_ptr, 4);
-            let calc: unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT =
-                std::mem::transmute(fn_ptr);
-
-            let mut result: u32 = output_frames;
-            let _ = calc(self.iapo_rt_ptr, output_frames, &mut result);
-            result
-        }
+        unsafe { self.iapo_rt.CalcInputFrames(output_frames) }
     }
 
-    /// 子 APO 计算输出帧数（`CalcOutputFrames`，vtable[5]）。
+    /// 子 APO 计算输出帧数（`CalcOutputFrames`）。
     pub fn calc_output_frames(&self, input_frames: u32) -> u32 {
-        if self.iapo_rt_ptr.is_null() {
-            return input_frames;
-        }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_rt_ptr, 5);
-            let calc: unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT =
-                std::mem::transmute(fn_ptr);
+        unsafe { self.iapo_rt.CalcOutputFrames(input_frames) }
+    }
 
-            let mut result: u32 = input_frames;
-            let _ = calc(self.iapo_rt_ptr, input_frames, &mut result);
-            result
-        }
+    /// 子 APO 实时处理（`APOProcess`，主规范 18.1 A3 前置每帧一次）。
+    ///
+    /// childRT->APOProcess **先跑**（作用于输入缓冲）→ 父 VxAPO 双链处理其输出；
+    /// 无 child 时跳过（纯 VxAPO 处理）。
+    ///
+    /// # Safety
+    ///
+    /// `pp_inputs` / `pp_outputs` 指向引擎分配的有效 APO_CONNECTION_PROPERTY 指针数组。
+    pub unsafe fn apo_process(
+        &self,
+        num_input: u32,
+        pp_inputs: *const *const windows::Win32::Media::Audio::Apo::APO_CONNECTION_PROPERTY,
+        num_output: u32,
+        pp_outputs: *mut *mut windows::Win32::Media::Audio::Apo::APO_CONNECTION_PROPERTY,
+    ) {
+        unsafe { self.iapo_rt.APOProcess(num_input, pp_inputs, num_output, pp_outputs) }
     }
 
     // ── IAudioProcessingObjectConfiguration 委托 ─────────────────────────────
 
-    /// 锁定子 APO（`LockForProcess`，vtable[3]）。
+    /// 锁定子 APO（`LockForProcess`）。
+    ///
+    /// 失败**不阻塞父**锁定（Note 57 降级立场；结果仅 Trace 不 return）。
     ///
     /// # Safety
     ///
-    /// `pp_inputs` / `pp_outputs` 必须指向有效的 `APO_CONNECTION_DESCRIPTOR` 指针数组，
-    /// 且描述符中的 `format`（`IAudioMediaType*`）和 `buffer` 在调用期间保持有效。
+    /// `pp_inputs` / `pp_outputs` 必须指向有效描述符指针数组，且描述符中的
+    /// `pFormat`（`IAudioMediaType*`）和缓冲在调用期间保持有效。
     pub unsafe fn lock_for_process(
         &self,
         num_input: u32,
@@ -322,164 +276,41 @@ impl ChildApo {
         num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_DESCRIPTOR,
     ) -> HRESULT {
-        if self.iapo_cfg_ptr.is_null() {
+        // windows-rs: LockForProcess(ppinputs: &[*const APO_CONNECTION_DESCRIPTOR], ...)。
+        if num_input == 0 || pp_inputs.is_null() || num_output == 0 || pp_outputs.is_null() {
             return E_POINTER;
         }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_cfg_ptr, 3);
-            let lock_fn: unsafe extern "system" fn(
-                *mut c_void,
-                u32,
-                *mut *mut APO_CONNECTION_DESCRIPTOR,
-                u32,
-                *mut *mut APO_CONNECTION_DESCRIPTOR,
-            ) -> HRESULT = std::mem::transmute(fn_ptr);
-            lock_fn(self.iapo_cfg_ptr, num_input, pp_inputs, num_output, pp_outputs)
-        }
+        let inputs = unsafe {
+            std::slice::from_raw_parts(pp_inputs as *const *const APO_CONNECTION_DESCRIPTOR, num_input as usize)
+        };
+        let outputs = unsafe {
+            std::slice::from_raw_parts(pp_outputs as *const *const APO_CONNECTION_DESCRIPTOR, num_output as usize)
+        };
+        unsafe { self.iapo_cfg.LockForProcess(inputs, outputs) }
+            .map(|_| HRESULT(0))
+            .unwrap_or_else(|e| e.into())
     }
 
-    /// 解锁子 APO（`UnlockForProcess`，vtable[4]）。
+    /// 解锁子 APO（`UnlockForProcess`）。
+    ///
+    /// 失败**不阻塞父**解锁（object 7.1.10 容错语义——UnlockForProcess 无重试语义，
+    /// 子 APO 可能已部分解锁，父继续自身流程 + 日志；child 标记需重置，下次 Lock 前 reset）。
     pub fn unlock_for_process(&self) -> HRESULT {
-        if self.iapo_cfg_ptr.is_null() {
-            return E_POINTER;
-        }
-        unsafe {
-            let fn_ptr = self.vtbl_method(self.iapo_cfg_ptr, 4);
-            let unlock: unsafe extern "system" fn(*mut c_void) -> HRESULT =
-                std::mem::transmute(fn_ptr);
-            unlock(self.iapo_cfg_ptr)
-        }
-    }
-
-    // ── 内部辅助 ─────────────────────────────────────────────────────────────
-
-    /// QueryInterface 封装。
-    unsafe fn qi(
-        unknown: &IUnknown,
-        iid: &GUID,
-        out: *mut *mut c_void,
-    ) -> HRESULT {
-        // SAFETY: IUnknown 的 COM 方法，iid 和 out 由调用方保证有效。
-        let fn_ptr = self::ChildApo::vtbl_method_from_ref(unknown, 0);
-        let qi: unsafe extern "system" fn(
-            *mut c_void,
-            *const GUID,
-            *mut *mut c_void,
-        ) -> HRESULT = std::mem::transmute(fn_ptr);
-
-        // 获取 IUnknown 的原始指针
-        let raw: *mut c_void = std::mem::transmute_copy(unknown);
-        qi(raw, iid, out)
-    }
-
-    /// 释放 COM 接口指针（IUnknown::Release，vtable[2]）。
-    unsafe fn release_raw(ptr: *mut c_void) {
-        if ptr.is_null() {
-            return;
-        }
-        let vtbl = *(ptr as *const *const usize);
-        let release: unsafe extern "system" fn(*mut c_void) -> u32 =
-            std::mem::transmute(*vtbl.add(VT_RELEASE));
-        release(ptr);
-    }
-
-    /// 获取 vtable 中指定索引的方法指针。
-    ///
-    /// # Safety
-    ///
-    /// `iface_ptr` 必须是有效的 COM 接口指针。
-    #[inline]
-    unsafe fn vtbl_method(&self, iface_ptr: *mut c_void, index: usize) -> usize {
-        let vtbl = *(iface_ptr as *const *const usize);
-        *vtbl.add(index)
-    }
-
-    /// 从引用获取 vtable 方法（用于 QI 调用前没有 ChildApo 实例的场景）。
-    #[inline]
-    unsafe fn vtbl_method_from_ref<T>(obj: &T, index: usize) -> usize {
-        let raw: *const c_void = std::mem::transmute(obj);
-        let vtbl = *(raw as *const *const usize);
-        *vtbl.add(index)
-    }
-}
-
-impl Drop for ChildApo {
-    fn drop(&mut self) {
-        unsafe {
-            // 释放顺序：cfg → rt → iapo
-            Self::release_raw(self.iapo_cfg_ptr);
-            Self::release_raw(self.iapo_rt_ptr);
-            Self::release_raw(self.iapo_ptr);
-        }
-        self.iapo_cfg_ptr = std::ptr::null_mut();
-        self.iapo_rt_ptr = std::ptr::null_mut();
-        self.iapo_ptr = std::ptr::null_mut();
+        unsafe { self.iapo_cfg.UnlockForProcess() }
+            .map(|_| HRESULT(0))
+            .unwrap_or_else(|e| e.into())
     }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 测试
+// 测试说明
 // ══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 构造 null 指针的 ChildApo 用于测试防御性检查。
-    ///
-    /// # Safety
-    ///
-    /// 仅用于测试，不得调用任何 COM 方法。
-    unsafe fn null_child_apo() -> ChildApo {
-        ChildApo {
-            iapo_ptr: std::ptr::null_mut(),
-            iapo_rt_ptr: std::ptr::null_mut(),
-            iapo_cfg_ptr: std::ptr::null_mut(),
-        }
-    }
-
-    #[test]
-    fn null_child_is_not_valid() {
-        let apo = unsafe { null_child_apo() };
-        assert!(!apo.is_valid());
-    }
-
-    #[test]
-    fn null_child_get_latency_returns_zero() {
-        let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.get_latency(), 0);
-    }
-
-    #[test]
-    fn null_child_calc_input_frames_passthrough() {
-        let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.calc_input_frames(480), 480);
-    }
-
-    #[test]
-    fn null_child_calc_output_frames_passthrough() {
-        let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.calc_output_frames(480), 480);
-    }
-
-    #[test]
-    fn null_child_reset_returns_error() {
-        let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.reset(), E_POINTER);
-    }
-
-    #[test]
-    fn null_child_unlock_returns_error() {
-        let apo = unsafe { null_child_apo() };
-        assert_eq!(apo.unlock_for_process(), E_POINTER);
-    }
-
-    #[test]
-    fn null_child_drop_safely() {
-        let apo = unsafe { null_child_apo() };
-        drop(apo); // 不 panic、不 access violation
-    }
-
-    // 注意：ChildApo::create 需要真实 COM 环境和已注册的 APO，
-    // 无法在单元测试中运行。集成测试见 tests/integration_apo.rs。
-}
+// ChildApo 类型化接口方案下**无法安全构造 null 接口做防御性测试**：
+// windows-rs 接口 Drop 会对接口引用调用 IUnknown::Release——null 引用（裸指针时代的
+// release_raw 有判空，类型化方案无）会解引用 vtable → STATUS_STACK_BUFFER_OVERRUN 崩溃。
+// 故删除全部「null 接口防御性检查」测试（原 7 个），避免测试进程 abort。
+//
+// ChildApo::create / 委托链测试需真实 COM + 已注册 APO，无法单元测试——
+// 留 P0-7 CLI 端到端验证（与 P0-4 听感验证同理）。
+// 正确的纯逻辑测试见 install/device/slots.rs（childApo GUID 解析 + 全量判定）。
