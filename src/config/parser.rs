@@ -365,8 +365,37 @@ pub(crate) fn parse_lines_impl(
                         }
                         r
                     } else {
-                        // 其余经 registry。v7.11：裸命令已由 split_command_value 冒号检查拒绝
-                        // （value 恒为参数体），直接 try_create(value)。
+                        // ── 白名单校验（v7.12，P0-4 二次反馈）──
+                        // 静态命令（Device/Stage/Channel/Eval/Include/Filter/GraphicEQ/Preamp/
+                        // Copy/Delay）与 REW `Filter N:` 已在上方命中；此处命令名必须 ∈
+                        // registry.factory_names()（IIR/Biquad/Convolution/VSTPlugin/
+                        // LoudnessCorrection）——否则 SyntaxError「未知命令」，**不落 registry**
+                        // （修复 v7.11「Unmatched 判定失效」：Convolution 宽容解析
+                        //  不再接管未知命令）。
+                        let registry_names = ctx.registry.factory_names();
+                        if !is_known_dsp_command(&cmd_lower, &registry_names) {
+                            return Err(ConfigError::SyntaxError {
+                                file: ctx.current_file.display().to_string(),
+                                line: ctx.line_number,
+                                message: format!("未知命令 '{}'", cmd),
+                            });
+                        }
+
+                        // VSTPlugin 特判（v7.12）：白名单命中但功能未启用（v7.11 预留，
+                        // VstFactory 恒 NoMatch）——不过 try_create，直接明确报错。
+                        if cmd_lower == "vstplugin" {
+                            return Err(ConfigError::SyntaxError {
+                                file: ctx.current_file.display().to_string(),
+                                line: ctx.line_number,
+                                message: format!(
+                                    "命令无效 '{}'：该命令当前未启用（预留）",
+                                    cmd
+                                ),
+                            });
+                        }
+
+                        // 已知命令 → try_create(value)。裸命令已由 split_command_value
+                        // 冒号检查拒绝（value 恒为参数体）。
                         let outcome = ctx.registry.try_create(value, ctx.dsp_ctx, &NullConfigLoader);
                         match outcome.result {
                             OutcomeKind::FilterAdded(f) => {
@@ -378,12 +407,12 @@ pub(crate) fn parse_lines_impl(
                                 ctx.abort_file = true;
                             }
                             OutcomeKind::Unmatched => {
-                                // v7.11：未知命令 → SyntaxError 整体失败（不再 warn 跳过；
-                                // 「配置写错必有反馈」，intent.md 语法严格性）。
+                                // v7.12：Unmatched 收窄为「已知命令的参数无效」——
+                                // 命令已过白名单（参数无法解析），不再误报「未知命令」。
                                 return Err(ConfigError::SyntaxError {
                                     file: ctx.current_file.display().to_string(),
                                     line: ctx.line_number,
-                                    message: format!("未知命令 '{}'", cmd),
+                                    message: format!("命令无效 '{}'：参数无法解析", cmd),
                                 });
                             }
                         }
@@ -414,6 +443,18 @@ pub(crate) fn parse_lines_impl(
     }
 
     Ok(())
+}
+
+/// 判断命令名是否为已知 DSP 命令（v7.12 白名单校验）。
+///
+/// 静态命令与 REW `Filter N:` 前缀已由上层分支拦截；本函数仅检查
+/// registry 命令名集合（`FilterRegistry::factory_names()`，pipeline 4.10，
+/// 小写比较）。命令名不在此集合 → 未知命令 → 直接
+/// `SyntaxError「未知命令」`——**不落 registry**（修复 Convolution 宽容接管）。
+fn is_known_dsp_command(cmd_lower: &str, registry_command_names: &[&str]) -> bool {
+    registry_command_names
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(cmd_lower))
 }
 
 /// 分割 `Command: value`（v7.11 语法严格化）。
