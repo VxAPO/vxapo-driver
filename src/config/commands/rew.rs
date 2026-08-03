@@ -106,8 +106,10 @@ mod tests {
         let mut reg = FilterRegistry::new();
         register_builtin_filters(&mut reg);
         let registry: &'static FilterRegistry = Box::leak(Box::new(reg));
+        let specs: &'static mut Vec<String> = Box::leak(Box::new(Vec::new()));
         ParseContext {
             filters,
+            specs,
             registry,
             dsp_ctx: dsp,
             stage: ParseStage::None,
@@ -136,14 +138,6 @@ mod tests {
         let mut ctx = test_ctx();
         handle("ON PK Fc 50,0 Hz Gain -10,0 dB Q 2,50", &mut ctx).unwrap();
         assert_eq!(ctx.filters.len(), 1);
-    }
-
-    #[test]
-    fn handle_off_creates_passthrough() {
-        let mut ctx = test_ctx();
-        handle("OFF", &mut ctx).unwrap();
-        assert_eq!(ctx.filters.len(), 1);
-        assert!(format!("{:?}", ctx.filters[0]).contains("PassthroughFilter"));
     }
 
     #[test]

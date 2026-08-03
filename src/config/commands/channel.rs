@@ -118,8 +118,10 @@ mod tests {
             rt_marker: std::marker::PhantomData,
         }));
         let registry: &'static FilterRegistry = Box::leak(Box::new(FilterRegistry::new()));
+        let specs: &'static mut Vec<String> = Box::leak(Box::new(Vec::new()));
         ParseContext {
             filters,
+            specs,
             registry,
             dsp_ctx: dsp,
             stage: ParseStage::None,

@@ -285,6 +285,12 @@ pub struct ApoObjectInner {
     pub pending_reload: bool,
     /// 阻塞式重载标志（R2/v6.9）：同一过渡周期内至多触发一次重载。
     pub reloading: bool,
+    /// 生效配置指纹（v7.9，P0-4 配置变更检测）——当前生效链的 filter_spec 有序序列。
+    /// 类型：`Vec<config::parser::FilterSpec>`（FilterSpec = String）。
+    /// - LockForProcess：建立基线（本次解析产出）
+    /// - hot_reload：与新解析 spec 比对；相同短路跳过，不同建新链 + 更新
+    /// - UnlockForProcess/Reset：清空（重新 Lock 重新建立）
+    pub active_spec: Vec<String>,
 }
 impl ApoObjectInner {
     pub fn new() -> Self {
@@ -299,6 +305,7 @@ impl ApoObjectInner {
             temp_buffer_new: Vec::new(),
             pending_reload: false,
             reloading: false,
+            active_spec: Vec::new(),
         }
     }
 }
@@ -335,43 +342,77 @@ impl ApoObject {
         }
     }
 
-    /// 配置热重载（watcher 触发，R2/v6.9 阻塞式）：
-    /// 短锁检查 transition 在途 / reloading → 直接返回（不构建新链）；
-    /// 否则锁外解析新链，锁内放入 outgoing 进入过渡。
+    /// 配置热重载（watcher 回调，R2/v6.9 阻塞式 + v7.9 spec 指纹短路）。
+    ///
+    /// 流程（object 7.1.18）：
+    ///   1. R2 阻塞检查：过渡在途 / reloading → 丢弃本次变更（过渡完成后 APOProcess 触发）；
+    ///   2. 128KB 闸门：config 超过上限 → 保留旧链 + warn（提前短路）；
+    ///   3. 锁外解析：parse_file_with_spec → (过滤器列表, new_spec)；
+    ///      解析失败（语法/Include/超限）= 整体失败 → 保留旧链、不更新 active_spec（v7.8）；
+    ///   4. spec 指纹短路：len 相同 + 逐项 == active_spec → 配置实质未变 → 跳过（debug）；
+    ///   5. 锁内交换：构建成功即更新 active_spec，旧链进 outgoing 进入升余弦过渡；
+    ///   6. 竞态兜底：解析期间新过渡已启动 → 排队（pending_reload）。
     pub fn hot_reload(&self) {
+        // 1. R2 阻塞式（短锁检查，不构建新链）。
         {
-            let mut inner = self.mutex.lock().unwrap();
+            let inner = self.mutex.lock().unwrap();
             if inner.transition.is_some() || inner.reloading {
-                // 阻塞式：过渡在途或加载中，本次变更丢弃（过渡完成后 APOProcess 会触发一次重载）。
+                // 过渡在途或加载中，本次变更丢弃（过渡完成后 APOProcess 会触发一次重载）。
                 return;
             }
-            // 标记加载中，防覆盖。
-            inner.reloading = true;
         }
 
-        // 锁外构建新 Chain（避免长时间持锁）。
-        let new_chain = {
-            let inner = self.mutex.lock().unwrap();
-            let ctx = inner.pipeline_context.clone();
-            drop(inner);
-            let dsp_ctx = build_dsp_context(&ctx, 32);
-            let mut registry = FilterRegistry::new();
-            register_all_commands(&mut registry);
-            let parser = ConfigParser::new(registry);
-            let config_path = self.config_path.lock().unwrap().clone();
-            let filters = parser.parse_file(&config_path, &dsp_ctx).unwrap_or_default();
-            let mut chain = Chain::new();
-            for f in filters {
-                let _ = chain.add_filter(f);
+        // 2. 128KB 文件大小闸门（控制线程 IO 安全上限，主文件提前短路）。
+        let config_path = self.config_path.lock().unwrap().clone();
+        if std::fs::metadata(&config_path)
+            .map(|m| m.len() > crate::config::parser::MAX_CONFIG_FILE_SIZE)
+            .unwrap_or(false)
+        {
+            log::warn!("hot_reload: config exceeded 128KB — keeping old chain");
+            return;
+        }
+
+        // 3. 锁外解析（不持有 mutex）。parse_file_with_spec 双返回。
+        let current_ctx = { self.mutex.lock().unwrap().pipeline_context.clone() };
+        let dsp_ctx = build_dsp_context(&current_ctx, 32);
+        let mut registry = FilterRegistry::new();
+        register_all_commands(&mut registry);
+        let parser = ConfigParser::new(registry);
+        let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
+            Ok(r) => r,
+            Err(_) => {
+                // v7.9：解析失败 = 整体失败（语法错误 / Include 失败 / 任一文件超 128KB）
+                // → **保留旧链、不更新 active_spec**（v7.8 对齐 EAPO：log::warn + 返回）。
+                log::warn!("hot_reload: config parse failed — keeping old chain");
+                // 标记：reloading 由下一循环/本次返回时处理（此处直接复位）。
+                return;
             }
-            chain
         };
 
-        // 锁内切换：竞态兜底——解析期间新过渡已启动 → 排队。
+        // 4. spec 指纹短路（短锁内比较，避免与交换的 TOCTOU）。
+        {
+            let inner = self.mutex.lock().unwrap();
+            let same = inner.active_spec.len() == new_spec.len()
+                && inner.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
+            if same {
+                log::debug!("hot_reload: config unchanged — skip");
+                return;
+            }
+        }
+
+        // 5. 锁内构建 + 交换。构建成功即更新 active_spec（与 current_chain 同步）。
+        let mut new_chain = Chain::new();
+        for f in filters {
+            if new_chain.add_filter(f).is_err() {
+                log::warn!("hot_reload: add_filter failed — keeping old chain");
+                return;
+            }
+        }
+
         let mut inner = self.mutex.lock().unwrap();
         if inner.transition.is_some() {
+            // 竞态兜底：解析期间已有新过渡启动，退回阻塞排队。
             inner.pending_reload = true;
-            inner.reloading = false;
             return;
         }
         // 旧链进 outgoing；退役链由控制线程在此统一析构（R1）。
@@ -379,6 +420,7 @@ impl ApoObject {
         inner.outgoing_chain = Some(old);
         inner.pending_reload = false;
         inner.reloading = false;
+        inner.active_spec = new_spec;
         let length = default_smoothing_length(inner.pipeline_context.sample_rate);
         let mut sm = SmoothingProvider::new(length);
         sm.begin();
@@ -404,6 +446,8 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         inner.temp_buffer_new.clear();
         inner.pending_reload = false;
         inner.reloading = false;
+        // v7.9：清空配置指纹基线（重新 Lock 重新建立）。
+        inner.active_spec.clear();
         self.latency_samples.store(0, Ordering::SeqCst);
         self.latency_frames_atomic.store(0, Ordering::SeqCst);
         Ok(())
@@ -763,11 +807,13 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
 
         // Step 3: 构建 FilterRegistry + ConfigParser，解析配置文件
         //         （路径来自 Initialize 确定的 per-device config_path）。
+        // v7.9：parse_file_with_spec → (滤波器列表, spec chain) 双返回。
+        // active_spec 即本次解析产出的配置指纹（LockForProcess 建立基线）。
         let mut registry = FilterRegistry::new();
         register_all_commands(&mut registry);
         let parser = ConfigParser::new(registry);
         let config_path = self.config_path.lock().unwrap().clone();
-        let filters = parser.parse_file(&config_path, &dsp_ctx)
+        let (filters, spec_chain) = parser.parse_file_with_spec(&config_path, &dsp_ctx)
             .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
 
         // Step 4: 组装 Chain。
@@ -778,9 +824,16 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         }
         let total_latency = chain.total_latency();
 
-        // Step 5: 预分配临时缓冲区（deinterleave 空间，channels 个 Vec）。
-        let mut temp_buffers: Vec<Vec<f32>> = Vec::with_capacity(format.channels as usize);
-        for _ in 0..format.channels {
+        // Step 5: 预分配过渡缓冲区（v7.8 修订，杜绝 RT 线程过渡首次 resize 扩容——
+        //          EAPO 对齐：按 max_frame_count × max_ch 预分配充足容量）。
+        let max_ch = pipeline_context.input_channels.max(pipeline_context.output_channels) as usize;
+        let max_samples = pipeline_context.max_frame_count * max_ch;
+        let temp_buffer_old = vec![0.0f32; max_samples];
+        let temp_buffer_new = vec![0.0f32; max_samples];
+
+        // deinterleave 空间（channels 个 Vec）。
+        let mut temp_buffers: Vec<Vec<f32>> = Vec::with_capacity(max_ch);
+        for _ in 0..max_ch {
             temp_buffers.push(Vec::with_capacity(pipeline_context.max_frame_count));
         }
 
@@ -793,10 +846,13 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
             inner.transition = None;
             inner.pipeline_context = pipeline_context;
             inner.temp_buffers = temp_buffers;
-            inner.temp_buffer_old = Vec::new();
-            inner.temp_buffer_new = Vec::new();
+            inner.temp_buffer_old = temp_buffer_old;
+            inner.temp_buffer_new = temp_buffer_new;
             inner.pending_reload = false;
             inner.reloading = false;
+            // v7.9：active_spec 建立基线（当前生效链的配置指纹）。
+            // 此后 hot_reload 与此基线比较决定是否真正切换。
+            inner.active_spec = spec_chain;
         }
         self.latency_samples.store(total_latency, Ordering::SeqCst);
         self.latency_frames_atomic.store(total_latency, Ordering::SeqCst);
@@ -821,6 +877,8 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         inner.transition = None;
         inner.pending_reload = false;
         inner.reloading = false;
+        // v7.9：释放配置指纹基线（重新 Lock 时重建）。
+        inner.active_spec.clear();
         Ok(())
     }
 }

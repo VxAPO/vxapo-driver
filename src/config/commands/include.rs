@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::error::ConfigError;
-use crate::config::parser::{parse_lines_impl, read_config_file, ParseContext};
+use crate::config::parser::{parse_lines_impl, read_config_file, ParseContext, MAX_CONFIG_FILE_SIZE};
 
 /// 最大 Include 递归深度。
 pub const MAX_INCLUDE_DEPTH: usize = 16;
@@ -46,13 +46,28 @@ pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
     // 相对路径基于当前文件目录
     let path = resolve_relative(&ctx.current_file, &path_str);
 
-    // Step 3-4: 读取文件内容（存在性检查由 read_config_file 隐式完成）
+    // Step 3-3.5: 128KB 逐文件闸门（v7.9 P0-4）——子文件超限 → 整体解析失败
+    //（include 失败 = 整体失败，杜绝"残缺 spec 污染基线"）。
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > MAX_CONFIG_FILE_SIZE)
+        .unwrap_or(false)
+    {
+        return Err(ConfigError::IoError {
+            path: path.display().to_string(),
+            message: format!("config exceeds {} bytes", MAX_CONFIG_FILE_SIZE),
+        });
+    }
+
+    // Step 4: 读取文件内容（存在性检查由 read_config_file 隐式完成）
     let content = read_config_file(&path)?;
 
-    // Step 5: 递归解析（子上下文覆盖 filters/dsp_ctx 等借用字段，
+    // Step 5: 递归解析（子上下文覆盖 filters/specs/dsp_ctx 等借用字段，
     // 其余可变状态独立；current_file 为所有权 PathBuf，无 Box::leak）。
+    // specs 共享同一 chain——子文件命令的 filter_spec 内联到主 spec chain
+    //（v7.9：Include 自身不产出，子文件命令各自产出并内联）。
     let mut sub_ctx = ParseContext {
         filters: ctx.filters,
+        specs: ctx.specs,
         registry: ctx.registry,
         dsp_ctx: ctx.dsp_ctx,
         stage: ctx.stage,

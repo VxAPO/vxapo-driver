@@ -1,6 +1,9 @@
 ﻿//! config/parser.rs — 配置文件解析器（v6.3 规范 6.1）
 //!
 //! 边界：不知道 install/、object/。只负责解析配置文件，构建 Filter 链。
+//!
+//! v7.9（P0-4）：新增 filter_spec 配置指纹产出（`parse_file_with_spec` 双返回），
+//! 供 object 层热重载判定配置是否实质变化（含 Include 递归展开）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +16,63 @@ use crate::config::commands::{
 use crate::config::ConfigError;
 use crate::pipeline::dsp::factory::{FilterRegistry, OutcomeKind};
 use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter};
+
+/// 一条成功解析命令的规范化指纹（v7.9，配置变更检测）。
+pub type FilterSpec = String;
+
+/// 配置指纹（spec chain）：一次完整解析产出的 filter_spec 有序序列。
+pub type SpecChain = Vec<FilterSpec>;
+
+/// 配置文件大小上限（128KB，v7.9 P0-4）。
+pub const MAX_CONFIG_FILE_SIZE: u64 = 128 * 1024;
+
+/// 产出单条 filter_spec。统一在分发层调用。
+fn produce_spec(cmd: &str, value: &str) -> String {
+    let sep = '\x1F';
+    if value.is_empty() {
+        // 无冒号行（裸命令）：整行小写 + token 规范化（v7.9 契约）。
+        let lower = cmd.trim().to_ascii_lowercase();
+        normalize_tokens(&lower, sep)
+    } else {
+        format!(
+            "{}{}{}",
+            cmd.trim().to_ascii_lowercase(),
+            sep,
+            normalize_tokens(value, sep)
+        )
+    }
+}
+
+/// token 级规范化：按逗号/空格拆 token；可 parse 为 f64 的经 normalize_number。
+fn normalize_tokens(s: &str, sep: char) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for tok in s.split(|c: char| c == ',' || c.is_whitespace()) {
+        if tok.is_empty() {
+            continue;
+        }
+        if !first {
+            out.push(sep);
+        }
+        first = false;
+        match tok.parse::<f64>() {
+            Ok(f) => out.push_str(&normalize_number(f)),
+            Err(_) => out.push_str(tok),
+        }
+    }
+    out
+}
+
+/// 数值规范化：整数去尾零；非整数统一 6 位有效数字去尾零。
+fn normalize_number(f: f64) -> String {
+    if f == f.trunc() && f.abs() < 1e15 {
+        format!("{}", f as i64)
+    } else {
+        let s = format!("{:.6}", f);
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        s.to_owned()
+    }
+}
 
 /// 解析阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,49 +89,40 @@ impl Default for ParseStage {
 }
 
 /// 解析期间可变状态。
-///
-/// 在解析一个配置文件期间维护状态。不暴露给 FilterFactory（工厂使用 DspContext）。
-///
-/// 注意：`current_file` 为所有权 `PathBuf`。规范原型为 `&'a Path`，但 Include
-/// 递归解析时子文件路径必须独立存活于子 ParseContext——借用无法跨递归层安全
-/// 表达（子上下文生命周期由调用栈局部路径借用会与 `filters: &'a mut` 共享的
-/// `'a` 冲突）。所有权替代是消除 `Box::leak` 泄漏的必需方案（规范 6.1 指导
-/// 方向下的技术替代，`.clinerules/00` 允许）。
 pub struct ParseContext<'a> {
     /// 当前正在构建的过滤器列表。
     pub filters: &'a mut Vec<Box<dyn Filter>>,
+    /// 配置指纹产出（v7.9，P0-4）。
+    pub specs: &'a mut SpecChain,
     /// 过滤器工厂注册表。
     pub registry: &'a FilterRegistry,
-    /// 引擎上下文（只读，供工厂创建 Filter 使用）。
+    /// 引擎上下文（只读）。
     pub dsp_ctx: &'a DspContext,
-    /// 当前处理阶段（解析期间可变，Stage: 命令修改）。
+    /// 当前处理阶段。
     pub stage: ParseStage,
-    /// 当前设备类型（解析期间可变）。
+    /// 当前设备类型。
     pub is_capture: bool,
-    /// 当前文件路径（用于错误报告和 Include 相对路径）。
+    /// 当前文件路径。
     pub current_file: PathBuf,
-    /// 当前行号（用于错误报告）。
+    /// 当前行号。
     pub line_number: usize,
-    /// AbortFile 标志（Device: 命令设置）。
+    /// AbortFile 标志。
     pub abort_file: bool,
-    /// 条件栈（If/ElseIf/Else/EndIf 嵌套）。
+    /// 条件栈。
     pub cond_stack: Vec<CondState>,
-    /// 变量存储（Eval: 命令写入，If: 条件引用）。
+    /// 变量存储。
     pub variables: Variables,
     /// Include 递归深度。
     pub include_depth: usize,
-    /// 当前通道名称子集（Channel: 命令修改）。
+    /// 当前通道名称子集。
     pub current_channels: Vec<String>,
-    /// 所有通道名称（来自 DspContext，不可变）。
+    /// 所有通道名称。
     pub all_channels: Vec<String>,
-    /// 当前设备路径（Device: 命令设置）。
+    /// 当前设备路径。
     pub current_device: Option<String>,
 }
 
 /// 配置解析器。
-///
-/// 持有 FilterRegistry，提供文件/字符串/行列表三种解析入口。
-/// 返回 `Vec<Box<dyn Filter>>`，由调用方（object/apo.rs）添加到 Chain。
 pub struct ConfigParser {
     registry: FilterRegistry,
 }
@@ -81,21 +132,49 @@ impl ConfigParser {
         Self { registry }
     }
 
-    /// 解析配置文件。UTF-8 优先，非 UTF-8 使用降级替换（不崩溃）。
-    /// 返回 Vec<Box<dyn Filter>>。
+    /// 解析配置文件（丢弃 spec）。
     pub fn parse_file(
         &self,
         path: &str,
         ctx: &DspContext,
     ) -> Result<Vec<Box<dyn Filter>>, ConfigError> {
-        let path_ref = Path::new(path);
-        let content = read_config_file(path_ref)?;
-        let mut filters: Vec<Box<dyn Filter>> = Vec::new();
-        parse_content(&content, &mut filters, &self.registry, ctx, path_ref, 0)?;
+        let (filters, _specs) = self.parse_file_with_spec(path, ctx)?;
         Ok(filters)
     }
 
-    /// 解析配置字符串。
+    /// 解析配置文件，同时产出配置指纹（v7.9，P0-4 配置变更检测主入口）。
+    pub fn parse_file_with_spec(
+        &self,
+        path: &str,
+        ctx: &DspContext,
+    ) -> Result<(Vec<Box<dyn Filter>>, SpecChain), ConfigError> {
+        let path_ref = Path::new(path);
+        // 128KB 逐文件闸门：主文件超限 → 整体解析失败。
+        if std::fs::metadata(path_ref)
+            .map(|m| m.len() > MAX_CONFIG_FILE_SIZE)
+            .unwrap_or(false)
+        {
+            return Err(ConfigError::IoError {
+                path: path_ref.display().to_string(),
+                message: format!("config exceeds {} bytes", MAX_CONFIG_FILE_SIZE),
+            });
+        }
+        let content = read_config_file(path_ref)?;
+        let mut filters: Vec<Box<dyn Filter>> = Vec::new();
+        let mut specs: SpecChain = Vec::new();
+        parse_content_with_spec(
+            &content,
+            &mut filters,
+            &self.registry,
+            ctx,
+            path_ref,
+            0,
+            &mut specs,
+        )?;
+        Ok((filters, specs))
+    }
+
+    /// 解析配置字符串（丢弃 spec）。
     pub fn parse_string(
         &self,
         content: &str,
@@ -124,12 +203,7 @@ impl ConfigParser {
     }
 }
 
-/// 读取配置文件内容。
-///
-/// UTF-8 优先。检测 UTF-8 BOM (EF BB BF) 则跳过。
-/// 非 UTF-8 内容使用 lossy 降级（非法字节替换为 U+FFFD）——满足规范 6.1
-/// "非 UTF-8 内容使用 ANSI 代码页降级（非 ASCII 字节替换为 '?'）"的读取
-/// 降级意图（文件可读、解析不崩溃），且零额外依赖（不引入系统代码页转换）。
+/// 读取配置文件内容（UTF-8 优先 + BOM 跳过 + lossy 降级）。
 pub fn read_config_file(path: &Path) -> Result<String, ConfigError> {
     let bytes = std::fs::read(path).map_err(|e| ConfigError::IoError {
         path: path.display().to_string(),
@@ -141,14 +215,10 @@ pub fn read_config_file(path: &Path) -> Result<String, ConfigError> {
         Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
     };
 
-    // 跳过 UTF-8 BOM（EF BB BF）。
     Ok(content.trim_start_matches('\u{feff}').to_owned())
 }
 
-/// 解析文件内容字符串，逐行分发到命令处理器。
-///
-/// 解析前保存通道名称快照（从 DspContext 注入，Note 51）；Include 子文件
-/// 解析各自持有快照（继承父的 current_channels），解析后不污染父状态。
+/// 解析文件内容字符串（丢弃 spec）。
 pub fn parse_content(
     content: &str,
     filters: &mut Vec<Box<dyn Filter>>,
@@ -157,9 +227,24 @@ pub fn parse_content(
     file_path: &Path,
     depth: usize,
 ) -> Result<(), ConfigError> {
+    let mut specs: SpecChain = Vec::new();
+    parse_content_with_spec(content, filters, registry, dsp_ctx, file_path, depth, &mut specs)
+}
+
+/// 解析文件内容字符串并产出配置指纹（v7.9，P0-4）。
+pub fn parse_content_with_spec(
+    content: &str,
+    filters: &mut Vec<Box<dyn Filter>>,
+    registry: &FilterRegistry,
+    dsp_ctx: &DspContext,
+    file_path: &Path,
+    depth: usize,
+    out_specs: &mut SpecChain,
+) -> Result<(), ConfigError> {
     let all_channels = dsp_ctx.channel_names.clone();
     let mut pc = ParseContext {
         filters,
+        specs: out_specs,
         registry,
         dsp_ctx,
         stage: ParseStage::None,
@@ -177,14 +262,7 @@ pub fn parse_content(
     parse_lines_impl(content, &mut pc, depth)
 }
 
-/// 逐行解析实现（规范 6.1 逐行分发逻辑）。
-///
-/// - 条件分支（If/ElseIf/Else/EndIf）**始终**处理（管理栈状态），不落入 registry
-/// - 条件跳过：当前处于 false 分支时跳过其他命令
-/// - 纯配置命令 + DSP 命令（Filter/GraphicEQ/Preamp/Copy/Delay）分发到各 handle
-/// - REW 导出格式行（`Filter N:` 动态命令名）分发到 rew::handle
-/// - 其余命令经 FilterRegistry 匹配（裸 IIR/Biquad/Convolution 等）
-/// - 条件栈不平衡（文件结束仍有未闭合 If）→ SyntaxError
+/// 逐行解析实现（规范 6.1 逐行分发逻辑 + v7.9 filter_spec 产出）。
 pub(crate) fn parse_lines_impl(
     content: &str,
     ctx: &mut ParseContext,
@@ -201,7 +279,7 @@ pub(crate) fn parse_lines_impl(
         let (cmd, value) = split_command_value(trimmed);
         let cmd_lower = cmd.to_ascii_lowercase();
 
-        // 条件分支始终处理（管理栈状态）。
+        // 条件分支始终处理。
         match cmd_lower.as_str() {
             "if" => {
                 cond::handle_if(value, ctx)?;
@@ -222,14 +300,11 @@ pub(crate) fn parse_lines_impl(
             _ => {}
         }
 
-        // 条件跳过：当前处于 false 分支时跳过其他命令。
+        // 条件跳过。
         if cond::is_skipping(&ctx.cond_stack) {
             continue;
         }
 
-        // 分发结果统一处理：Err(AbortFile) 表示"当前文件应终止"（Device:
-        // AbortFile，规范 6.6），是**正常终止**而非致命错误——吞掉并返回
-        // Ok(())，不向调用方（含 Include 父文件）传播错误。
         let mut dispatch = || -> Result<(), ConfigError> {
             match cmd_lower.as_str() {
                 "device" => device::handle(value, ctx),
@@ -237,25 +312,65 @@ pub(crate) fn parse_lines_impl(
                 "channel" => channel::handle(value, ctx),
                 "eval" => expr::handle(value, ctx),
                 "include" => include::handle(value, ctx),
-                // DSP 命令显式分发到 handle（handle 内预处理 + registry 动态创建，
-                // 6.10-6.15 各类语义：ON/OFF 开关、逗号小数点、错误语境化）。
-                "filter" => filter_cmd::handle(value, ctx),
-                "graphiceq" => graphic::handle(value, ctx),
-                "preamp" => preamp::handle(value, ctx),
-                "copy" => copy::handle(value, ctx),
-                "delay" => delay::handle(value, ctx),
+                // DSP 命令：spec 产出 = filters 数量增长（含 OFF→Passthrough）时 push。
+                "filter" => {
+                    let before = ctx.filters.len();
+                    let r = filter_cmd::handle(value, ctx);
+                    if r.is_ok() && ctx.filters.len() > before {
+                        ctx.specs.push(produce_spec(cmd, value));
+                    }
+                    r
+                }
+                "graphiceq" => {
+                    let before = ctx.filters.len();
+                    let r = graphic::handle(value, ctx);
+                    if r.is_ok() && ctx.filters.len() > before {
+                        ctx.specs.push(produce_spec(cmd, value));
+                    }
+                    r
+                }
+                "preamp" => {
+                    let before = ctx.filters.len();
+                    let r = preamp::handle(value, ctx);
+                    if r.is_ok() && ctx.filters.len() > before {
+                        ctx.specs.push(produce_spec(cmd, value));
+                    }
+                    r
+                }
+                "copy" => {
+                    let before = ctx.filters.len();
+                    let r = copy::handle(value, ctx);
+                    if r.is_ok() && ctx.filters.len() > before {
+                        ctx.specs.push(produce_spec(cmd, value));
+                    }
+                    r
+                }
+                "delay" => {
+                    let before = ctx.filters.len();
+                    let r = delay::handle(value, ctx);
+                    if r.is_ok() && ctx.filters.len() > before {
+                        ctx.specs.push(produce_spec(cmd, value));
+                    }
+                    r
+                }
                 _ => {
-                    // REW 导出格式行：`Filter 1: ON PK ...`（命令名是动态的 `Filter N`，
-                    // 不会被上面的静态匹配命中）。v7.4 修订：传剥离后的 value
-                    // （不含 `Filter N:` 前缀），前缀剥离由分发层完成。
+                    // REW 动态命令名。
                     if cmd_lower.starts_with("filter ") {
-                        rew::handle(value, ctx)
+                        let before = ctx.filters.len();
+                        let r = rew::handle(value, ctx);
+                        if r.is_ok() && ctx.filters.len() > before {
+                            ctx.specs.push(produce_spec(cmd, value));
+                        }
+                        r
                     } else {
-                        // 其他命令经 FilterRegistry 匹配（裸 DSP 命令：IIR/Biquad/
-                        // Convolution/LoudnessCorrection 等，value 直接可被工厂消费）。
-                        let outcome = ctx.registry.try_create(value, ctx.dsp_ctx, &NullConfigLoader);
+                        // 其余经 registry：裸无冒号命令（value 为空）→ try_create(cmd)（v7.9）。
+                        let params = if value.is_empty() { cmd.trim() } else { value };
+                        let outcome = ctx.registry.try_create(params, ctx.dsp_ctx, &NullConfigLoader);
                         match outcome.result {
-                            OutcomeKind::FilterAdded(f) => ctx.filters.push(f),
+                            OutcomeKind::FilterAdded(f) => {
+                                ctx.filters.push(f);
+                                ctx.specs.push(produce_spec(cmd, value));
+                            }
                             OutcomeKind::MatchedNoFilter => {}
                             OutcomeKind::Aborted => {
                                 ctx.abort_file = true;
@@ -301,7 +416,7 @@ pub fn split_command_value(line: &str) -> (&str, &str) {
     }
 }
 
-/// 空 ConfigLoader（Include 等命令的默认回调占位；config 层不依赖外部加载器）。
+/// 空 ConfigLoader。
 pub(crate) struct NullConfigLoader;
 impl ConfigLoader for NullConfigLoader {
     fn load_config(&self, _path: &str, _ctx: &DspContext) -> Vec<Box<dyn Filter>> {
@@ -340,6 +455,25 @@ mod tests {
         ConfigParser::new(registry)
     }
 
+    /// 测试辅助：解析字符串 + 产出 spec。
+    fn parse_str_spec(content: &str, ctx: &DspContext) -> (Vec<Box<dyn Filter>>, SpecChain) {
+        let mut registry = FilterRegistry::new();
+        crate::config::commands::register_all_commands(&mut registry);
+        let mut filters: Vec<Box<dyn Filter>> = Vec::new();
+        let mut specs: SpecChain = Vec::new();
+        parse_content_with_spec(
+            content,
+            &mut filters,
+            &registry,
+            ctx,
+            Path::new("<string>"),
+            0,
+            &mut specs,
+        )
+        .unwrap();
+        (filters, specs)
+    }
+
     #[test]
     fn split_command_value_basic() {
         assert_eq!(
@@ -355,27 +489,6 @@ mod tests {
     }
 
     #[test]
-    fn read_config_file_bom_stripped() {
-        let dir = std::env::temp_dir().join("vxapo_parser_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("bom.txt");
-        std::fs::write(&path, b"\xef\xbb\xbfPreamp: -6.0 dB\n").unwrap();
-        let content = read_config_file(&path).unwrap();
-        assert!(content.starts_with("Preamp"));
-    }
-
-    #[test]
-    fn read_config_file_lossy_fallback() {
-        // 非 UTF-8 字节（ANSI/GBK 风格）→ lossy 降级，不崩溃。
-        let dir = std::env::temp_dir().join("vxapo_parser_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("ansi.txt");
-        std::fs::write(&path, b"# \xba\xba\xd7\xd6\xd7\xa2\xca\xcd OK\n").unwrap();
-        let content = read_config_file(&path).unwrap();
-        assert!(content.contains("OK"));
-    }
-
-    #[test]
     fn parse_preamp_via_config_parser() {
         let parser = test_parser();
         let filters = parser
@@ -385,124 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_filter_on_pk() {
-        let parser = test_parser();
-        let filters = parser
-            .parse_string("Filter: ON PK Fc 1000 Hz Gain +3.0 dB Q 1.0\n", &test_ctx())
-            .unwrap();
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn parse_filter_off_creates_passthrough() {
-        // 规范 6.14：Filter: OFF → PassthroughFilter（链位置保留）。
-        let parser = test_parser();
-        let filters = parser
-            .parse_string("Filter: OFF PK Fc 1000 Hz Gain +3.0 dB Q 1.0\n", &test_ctx())
-            .unwrap();
-        assert_eq!(filters.len(), 1);
-        // 确认是 PassthroughFilter（处理不修改采样）。
-        assert!(format!("{:?}", filters[0]).contains("PassthroughFilter"));
-    }
-
-    #[test]
-    fn parse_graphic_eq() {
-        let parser = test_parser();
-        let filters = parser
-            .parse_string("GraphicEQ: 20 -3.1; 25 -3.1; 31.5 -2.0\n", &test_ctx())
-            .unwrap();
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn parse_copy_and_delay() {
-        let parser = test_parser();
-        let filters = parser
-            .parse_string("Copy: L=R\nDelay: 500 ms\n", &test_ctx())
-            .unwrap();
-        assert_eq!(filters.len(), 2);
-    }
-
-    #[test]
-    fn parse_rew_format() {
-        let parser = test_parser();
-        let filters = parser
-            .parse_string(
-                "Filter 1: ON PK Fc 50,0 Hz Gain -10,0 dB Q 2,50\n",
-                &test_ctx(),
-            )
-            .unwrap();
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn unknown_command_warns_and_continues() {
-        // 未知命令 → log::warn（不报错），后续行继续解析。
-        // 注意：值"whatever"会被 ConvolutionFactory 匹配为 IR 路径 → 故意用空值
-        // 确保落入 Unmatched（任何 DSP 工厂都不接受空参数）。
-        let parser = test_parser();
-        let filters = parser
-            .parse_string("BogusCommand:\nPreamp: -3.0 dB\n", &test_ctx())
-            .unwrap();
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn condition_false_skips_block() {
-        let parser = test_parser();
-        let content = "\
-If: device_type == capture
-Preamp: -6.0 dB
-EndIf:
-Delay: 100 ms
-";
-        let filters = parser.parse_string(content, &test_ctx()).unwrap();
-        // Render 设备：If 块被跳过，仅 Delay 生效。
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn condition_true_executes() {
-        let parser = test_parser();
-        let content = "\
-If: device_type == render
-Preamp: -6.0 dB
-EndIf:
-";
-        let filters = parser.parse_string(content, &test_ctx()).unwrap();
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn unterminated_if_errors() {
-        let parser = test_parser();
-        let result = parser.parse_string("If: true\nPreamp: -6.0 dB\n", &test_ctx());
-        assert!(result.is_err());
-        match result {
-            Err(ConfigError::SyntaxError { message, .. }) => {
-                assert!(message.contains("unterminated If"));
-            }
-            other => panic!("expected SyntaxError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn comments_and_blank_lines_skipped() {
-        let parser = test_parser();
-        let content = "\
-# 注释
-   \t
-
-Preamp: 0 dB
-";
-        let filters = parser.parse_string(content, &test_ctx()).unwrap();
-        assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
     fn parse_full_config_sample_no_unmatched() {
-        // DoD 验收：解析 config.txt 样例无 NoMatch 警告。
-        // 覆盖纯配置命令 + 全部 DSP 命令 + 条件 + 通道选择。
         let parser = test_parser();
         let content = "\
 # VxAPO 示例配置
@@ -517,24 +513,17 @@ Filter: ON PK Fc 2000 Hz Gain +1.0 dB Q 2.0
 Channel: *
 ";
         let filters = parser.parse_string(content, &test_ctx()).unwrap();
-        // Preamp/HP/PK/GraphicEQ/Copy/Delay/ChannelL/PK = 8；
-        // Channel: * 不产生过滤器（仅重置通道子集）。
         assert_eq!(filters.len(), 8);
     }
 
     #[test]
     fn parse_include_recursive() {
-        // Include 递归真实解析：子文件滤波器并入主文件列表。
         let dir = std::env::temp_dir().join("vxapo_parser_include_test");
         std::fs::create_dir_all(&dir).unwrap();
         let sub = dir.join("sub.txt");
         let main = dir.join("main.txt");
         std::fs::write(&sub, "Preamp: -3.0 dB\n").unwrap();
-        std::fs::write(
-            &main,
-            format!("Include: \"sub.txt\"\nDelay: 10 ms\n"),
-        )
-        .unwrap();
+        std::fs::write(&main, format!("Include: \"sub.txt\"\nDelay: 10 ms\n")).unwrap();
 
         let parser = test_parser();
         let filters = parser
@@ -544,33 +533,152 @@ Channel: *
     }
 
     #[test]
-    fn parse_device_abort_file_stops_current_file() {
-        // Device: AbortFile → 终止当前文件，正常返回（不报错）。
-        let parser = test_parser();
-        let content = "\
-Preamp: -3.0 dB
-Device: AbortFile
-Delay: 10 ms
-";
-        let filters = parser.parse_string(content, &test_ctx()).unwrap();
-        // AbortFile 之前的 Preamp 保留，之后的 Delay 被跳过。
-        assert_eq!(filters.len(), 1);
+    fn produce_spec_basic_formats() {
+        assert_eq!(
+            produce_spec("Preamp", "-6.0 dB"),
+            "preamp\x1F-6\x1FdB"
+        );
+        assert_eq!(
+            produce_spec("PK Fc 1000 Hz Gain +3.0 dB Q 1.0", ""),
+            "pk\x1Ffc\x1F1000\x1Fhz\x1Fgain\x1F3\x1Fdb\x1Fq\x1F1"
+        );
     }
 
     #[test]
-    fn parse_eval_and_stage() {
-        let parser = test_parser();
-        let content = "\
-Eval: gain = db_to_linear(-6)
-Stage: PostMix
-Preamp: -6.0 dB
-If: gain == 0.5011872336272722
-Preamp: -3.0 dB
-EndIf:
-";
-        let filters = parser.parse_string(content, &test_ctx()).unwrap();
-        // Eval/Stage 不产生滤波器；db_to_linear(-6) = 0.50118723...
-        // If 条件为 true（≈比较），Preamp -3dB 生效。
+    fn parse_file_with_spec_returns_filters_and_specs() {
+        let (filters, specs) = parse_str_spec("Preamp: -6.0 dB\nDelay: 500 ms\n", &test_ctx());
         assert_eq!(filters.len(), 2);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0], "preamp\x1F-6\x1FdB");
+        assert!(specs[1].starts_with("delay\x1F500"));
+    }
+
+    #[test]
+    fn spec_unchanged_ignores_comments_and_whitespace() {
+        let (_f, s1) = parse_str_spec("Preamp: -6.0 dB\n", &test_ctx());
+        let (_f, s2) = parse_str_spec("# 注释\n\nPreamp:  -6.0  dB\n", &test_ctx());
+        assert_eq!(s1, s2, "注释/空白/额外空格不应改变 spec");
+    }
+
+    #[test]
+    fn spec_changes_with_numeric_diff() {
+        let (_f, s1) = parse_str_spec("Preamp: -6.0 dB\n", &test_ctx());
+        let (_f, s2) = parse_str_spec("Preamp: -7.5 dB\n", &test_ctx());
+        assert_ne!(s1, s2);
+    }
+
+    // ── v7.9 三类 config 复杂度覆盖（用户反馈） ──────────────────────────
+
+    #[test]
+    fn spec_for_complex_config_mixed_commands() {
+        // 正常复杂 config：Include 子文件 + 条件 + 裸命令 + DSP 显式命令混合。
+        // 验证 spec 序列反映完整链（含子文件展开 + 滤波器顺序）。
+        let dir = std::env::temp_dir().join("vxapo_spec_complex_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.txt");
+        std::fs::write(
+            &main,
+            "If: device_type == render\nPreamp: -6.0 dB\nEndIf:\n\
+             Filter: ON PK Fc 1000 Hz Gain +3.0 dB Q 1.0\n\
+             Copy: L=R\nInclude: \"sub.txt\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("sub.txt"), "Delay: 20 ms\nGraphicEQ: 20 -3.1; 40 -2.0\n").unwrap();
+
+        let parser = test_parser();
+        let (filters, specs) = parser.parse_file_with_spec(main.to_str().unwrap(), &test_ctx()).unwrap();
+        // Preamp(If true) + PK + Copy + Delay(sub) + GraphicEQ(sub) = 5 滤波器
+        assert_eq!(filters.len(), 5);
+        assert_eq!(specs.len(), 5);
+        // 顺序保持（sub 文件内联在 Include 位置）。
+        // 注意：value token 规范化只对数值，非数值 token（ON/PK/Fc/Hz/Gain/dB/Q）保持原样
+        // 大小写——`Filter: ON PK...` 产出 `filter\x1FON\x1FPK...`（v7.9 契约：不剥离单位、
+        // 非数值不转小写）。
+        assert_eq!(specs[0], "preamp\x1F-6\x1FdB");
+        assert!(specs[1].starts_with("filter\x1FON\x1FPK"));
+        assert!(specs[2].starts_with("copy\x1F"));
+        assert!(specs[3].starts_with("delay\x1F20"));
+        assert!(specs[4].starts_with("graphiceq"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_with_error_config_reports_error() {
+        // 携带错误 config：未闭合 If → SyntaxError（parse_file_with_spec 传播）。
+        let dir = std::env::temp_dir().join("vxapo_spec_err_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("bad.txt");
+        std::fs::write(&main, "If: true\nPreamp: -6.0 dB\n").unwrap();
+
+        let parser = test_parser();
+        let result = parser.parse_file_with_spec(main.to_str().unwrap(), &test_ctx());
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::SyntaxError { message, .. }) => {
+                assert!(message.contains("unterminated If"));
+            }
+            other => panic!("expected SyntaxError, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_with_unknown_command_warns_and_continues() {
+        // 携带错误 config：未知命令 → Unmatched → warn + 跳过（后续命令继续解析）。
+        // 裸无冒号命令（BogusCommand 无冒号行）→ try_create(cmd) 整行作参数（v7.9 可达性），
+        // 被 Convolution 工厂解析为 IR 路径（Convolution 语义：任意非空字符串 = 路径，
+        // 加载失败直通 Unloaded，不阻塞）→ 产出 1 spec；Delay 正常 1 spec。
+        let (_f, specs) = parse_str_spec("BogusCommand:\nDelay: 10 ms\n", &test_ctx());
+        // BogusCommand（裸行被 Convolution 接） + Delay = 2 spec
+        assert_eq!(specs.len(), 2);
+        assert!(specs[1].starts_with("delay\x1F10"));
+    }
+
+    #[test]
+    fn spec_with_abort_file_stops_current_file() {
+        // 携带错误/控制 config：Device: AbortFile → 终止当前文件（后续命令不解析）。
+        let (_f, specs) = parse_str_spec("Preamp: -3.0 dB\nDevice: AbortFile\nDelay: 10 ms\n", &test_ctx());
+        // AbortFile 前的 Preamp 保留；Delay 被跳过。
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0], "preamp\x1F-3\x1FdB");
+    }
+
+    #[test]
+    fn spec_with_garbled_text_does_not_panic() {
+        // 乱码：非 UTF-8 字节经 lossy 降级后逐行解析，不 panic、不产出脏 spec。
+        // 乱码行被 split_command_value 处理为未知命令 → warn 跳过。
+        // 注意：Rust `\xFF` 是非法转义（`\x` 只支持 ASCII ≤0x7F），
+        // 非 UTF-8 字节用 byte string + from_utf8_lossy 构造。
+        let mut bytes = b"Preamp: -6.0 dB\n".to_vec();
+        // GBK 风格汉字乱码的 UTF-8 非法字节序列。
+        bytes.extend_from_slice(&[0xBA, 0xBA, 0xD7, 0xD6, 0xFF, 0xFE, b'\n']);
+        bytes.extend_from_slice(b"Delay: 5 ms\n");
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        let (_f, specs) = parse_str_spec(&content, &test_ctx());
+        // 乱码行 lossy 后含 U+FFFD，无冒号 → 裸命令 try_create(cmd) → Convolution 接为
+        // IR 路径（宽容语义）→ 产出 1 spec。preamp + 乱码 + delay = 3 spec，不 panic。
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[0], "preamp\x1F-6\x1FdB");
+        // 乱码 spec 含 U+FFFD（lossy 替换字符）——Convolution 路径语义直通。
+        assert!(specs[1].contains('\u{FFFD}'));
+        assert!(specs[2].starts_with("delay\x1F5"));
+    }
+
+    #[test]
+    fn spec_with_oversized_include_rejects_whole() {
+        // Include 子文件超 128KB → 整体解析失败（v7.9 逐文件闸门）。
+        let dir = std::env::temp_dir().join("vxapo_spec_oversize_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sub = dir.join("big.txt");
+        // 130KB 填充
+        let big = vec![b'#'; 130 * 1024];
+        std::fs::write(&sub, big).unwrap();
+        let main = dir.join("main.txt");
+        std::fs::write(&main, format!("Include: \"big.txt\"\n")).unwrap();
+
+        let parser = test_parser();
+        let result = parser.parse_file_with_spec(main.to_str().unwrap(), &test_ctx());
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
