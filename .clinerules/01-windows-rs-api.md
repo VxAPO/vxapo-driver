@@ -68,6 +68,27 @@ text
 - `PROPVARIANT`（需 Win32_System_Com_StructuredStorage + Win32_System_Variant）：`{ Anonymous: PROPVARIANT_0 }`（union）→ `Anonymous.Anonymous.vt`（VARENUM）/ `Anonymous.Anonymous.Anonymous.puuid: *mut GUID`
 - `VT_CLSID: VARENUM = VARENUM(72)`（windows::Win32::System::Variant）
 
+## P0-4 实测追加（windows-rs 0.62.2 源码级确认，P0-4 commit 77bc68e）
+### 目录变更监控（config 6.2，Win32_Storage_FileSystem）
+- `FindFirstChangeNotificationW(lppath: &HSTRING, bwatch_subtree: bool, filter: FILE_NOTIFY_CHANGE) -> Result<HANDLE>`（P0 泛型：PathBuf 转 HSTRING 借用）
+- `FindNextChangeNotification(h: HANDLE) -> Result<()>`（重置通知，下一次等待用）
+- `FindCloseChangeNotification(h: HANDLE) -> Result<()>`（关闭通知句柄）
+- `FILE_NOTIFY_CHANGE(pub u32)` + 常量 `FILE_NOTIFY_CHANGE_FILE_NAME=1` / `FILE_NOTIFY_CHANGE_LAST_WRITE=16`（FileSystem/mod.rs:4383/4420/4422）
+- **目录级语义**：FindFirstChangeNotificationW 只告知"目录下有变更"，**不提供具体文件名**（文件名信息只有 ReadDirectoryChangesW 扩展才有）——故 spec 指纹比对在 hot_reload 内做
+
+### 事件/线程（config 6.2 + object 7.1.9/7.1.10，Win32_System_Threading + Foundation）
+- `CreateEventW(attrs: Option<*const SECURITY_ATTRIBUTES>, manual_reset: bool, initial_state: bool, name: Option<&HSTRING>) -> Result<HANDLE>`（Threading/mod.rs:251；无名字传 None）
+- `SetEvent(evt: HANDLE) -> Result<()>`（置位唤醒等待）
+- `CloseHandle(h: HANDLE) -> Result<()>`（Foundation/mod.rs:2）
+- `WaitForMultipleObjects(handles: &[HANDLE], wait_all: bool, ms: u32) -> WAIT_EVENT`（Threading/mod.rs:1919；**注意**：返回 `WAIT_EVENT(pub u32)` 透明结构，比较用 `.0`：`wait.0 == WAIT_OBJECT_0.0`）
+- `WAIT_OBJECT_0=0` / `WAIT_TIMEOUT=258` / `WAIT_FAILED=0xFFFFFFFF`（Foundation/mod.rs:10484-10487）
+- **HANDLE 是 `pub struct HANDLE(pub *mut c_void)`**（Foundation/mod.rs:5291）——非 `Send`（含 *mut），`std::thread::spawn` 需 `unsafe impl Send`（句柄值跨线程合法）
+
+### `#[implement]` 宏约束（windows-implement 0.60.2，非 windows API）
+- 生成的 `Foo_Impl` 按值嵌入 `Foo`（`this: Foo`）+ vtable 区 + WeakRefCount；**只暴露 `&Foo`（Deref），不向安全代码暴露所有权实例**（gen.rs 明文）
+- 故 `&mut self` 不可得——**可变状态必须包 `Arc<Mutex<_>>` 内部可变性**（`&self` 通过锁写字段）
+- spawn 线程无法持有 self——需模块级函数（接收 `Arc<Mutex>` 引用）供线程调用
+
 ## 错误映射
 - `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND` 已在 `windows::Win32::Foundation` 导出：
   `pub const ERROR_FILE_NOT_FOUND: WIN32_ERROR = WIN32_ERROR(2u32)`（Foundation/mod.rs:2355）、
