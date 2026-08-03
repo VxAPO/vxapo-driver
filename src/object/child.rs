@@ -9,12 +9,16 @@
 //! 子 APO 由 `init.rs` 在 `Initialize` 时创建（Note 7，失败降级为无子 APO），
 //! 存储在 `ApoObject.child_apo` 中，供 apo_rt.rs（RT）和 apo_conf.rs（配置）委托调用。
 //!
-//! P0-6（v8.4/v8.5）：
+//! P0-6（v8.4/v8.5/v8.6）：
 //! - **类型化接口持有**（windows-rs `IAudioProcessingObject` 等）——替代早期裸 vtable 手动调用
 //!   （原实现用 `vtbl_method` + `transmute` 手动索引 vtable；windows-rs 0.62.2 提供
 //!   三个接口的 safe 调用方法，对齐类型化方案）
 //! - **子 APO GUID 来源** = 端点 GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`
 //!   （独立安装信息区，v8.4 路径隔离；`install/device/slots` 提供读取）
+//! - **格式协商参数（v8.6 执行端建议采纳）**：`is_input/output_format_supported` 输入参数
+//!   `Option<&IAudioMediaType>`（p_opposite 可 None=无对端；p_requested 由父转发非空）——
+//!   可空借用语义用安全引用表达，与 windows-rs `#[interface]` 可空接口参数风格一致；
+//!   输出 `pp_supported: *mut *mut` 为 COM 输出必须保留裸指针（方法仍 unsafe）
 //! - **委托失败降级**：Initialize/LockForProcess/UnlockForProcess 失败不阻塞父（Note 57）
 //! - **重置防御**：Unlock 失败后下次 Lock 前 child.reset()/重建
 
@@ -159,25 +163,27 @@ impl ChildApo {
             .unwrap_or_else(|e| e.into())
     }
 
-    /// 检查输入格式是否支持（`IsInputFormatSupported`）。
+    /// 检查输入格式是否支持（`IsInputFormatSupported`，v8.6 参数采纳）。
+    ///
+    /// - `p_opposite`：对端格式，可能为 None（无对端）
+    /// - `p_requested`：请求格式，由父接口转发（非空）
+    /// - `pp_supported`：COM 输出——调用方分配、子 APO 写入支持格式接口指针（调用方负责 Release）
     ///
     /// # Safety
     ///
-    /// `p_opposite_format` / `p_requested` / `pp_supported` 必须有效。
+    /// `pp_supported` 必须有效（COM 输出指针）。
     pub unsafe fn is_input_format_supported(
         &self,
-        p_opposite_format: *mut IAudioMediaType,
-        p_requested: *mut IAudioMediaType,
+        p_opposite: Option<&IAudioMediaType>,
+        p_requested: Option<&IAudioMediaType>,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
         if pp_supported.is_null() {
             return E_POINTER;
         }
         // windows-rs: IsInputFormatSupported(p0, p1) -> Result<IAudioMediaType>
-        // （Param<IAudioMediaType>：`Option<&T>` 满足；裸指针经 .as_ref() 安全借用转换）。
-        let opposite = p_opposite_format.as_ref();
-        let requested = p_requested.as_ref();
-        match unsafe { self.iapo.IsInputFormatSupported(opposite, requested) } {
+        // （Param<IAudioMediaType> 由 Option<&T> 满足——可空借用语义）。
+        match unsafe { self.iapo.IsInputFormatSupported(p_opposite, p_requested) } {
             Ok(supported) => {
                 // 返回的接口引用 +1（from_abi）；ManuallyDrop 防泄漏，as_raw 取指针移交调用方
                 // （调用方负责最终 Release）。
@@ -189,23 +195,23 @@ impl ChildApo {
         }
     }
 
-    /// 检查输出格式是否支持（`IsOutputFormatSupported`）。
+    /// 检查输出格式是否支持（`IsOutputFormatSupported`，v8.6 参数采纳）。
+    ///
+    /// 同 `is_input_format_supported` 语义。
     ///
     /// # Safety
     ///
-    /// `p_opposite_format` / `p_requested` / `pp_supported` 必须有效。
+    /// `pp_supported` 必须有效（COM 输出指针）。
     pub unsafe fn is_output_format_supported(
         &self,
-        p_opposite_format: *mut IAudioMediaType,
-        p_requested: *mut IAudioMediaType,
+        p_opposite: Option<&IAudioMediaType>,
+        p_requested: Option<&IAudioMediaType>,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
         if pp_supported.is_null() {
             return E_POINTER;
         }
-        let opposite = p_opposite_format.as_ref();
-        let requested = p_requested.as_ref();
-        match unsafe { self.iapo.IsOutputFormatSupported(opposite, requested) } {
+        match unsafe { self.iapo.IsOutputFormatSupported(p_opposite, p_requested) } {
             Ok(supported) => {
                 let leaked = std::mem::ManuallyDrop::new(supported);
                 unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };

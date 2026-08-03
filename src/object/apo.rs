@@ -25,9 +25,11 @@ use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration, IAudioProcessingObjectRT,
     IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl, IAudioProcessingObjectConfiguration_Impl,
 };
+use crate::object::child::ChildApo;
 use crate::sys::com::apo_types::{
     APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID,
 };
+use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
 use crate::sys::com::prelude::guid_to_string;
 use crate::sys::known_folder::documents_folder;
 use windows::Win32::Media::Audio::Apo::{APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES};
@@ -424,6 +426,11 @@ pub struct ApoObject {
     /// watcher 运行时状态（v7.10，P0-4 外部驱动模型）：Lock 末尾启动 / Unlock 停止。
     /// Arc<Mutex>：&self 可写（#[implement] 无 &mut Foo）；spawn 可 clone 移入线程。
     watcher_state: Arc<Mutex<WatcherState>>,
+    /// 子 APO（P0-6，object 7.1.3）：Initialize 创建，失败降级 None。
+    /// Arc<Mutex>：&self 可写 + 控制线程（Initialize/Lock/Unlock）持有；
+    /// RT 路径 APOProcess 锁 inner 前短锁读取（引擎保证不重叠，无实际阻塞）。
+    /// 语义等价规范 7.1.3 的字段（P0-4 Arc Mutex WatcherState 先例）。
+    pub(crate) child_apo: Arc<Mutex<Option<ChildApo>>>,
 }
 
 impl ApoObject {
@@ -438,6 +445,7 @@ impl ApoObject {
             process_stats: ProcessStatistics::new(),
             config_path: Arc::new(Mutex::new(DEFAULT_CONFIG_PATH.to_owned())),
             watcher_state: Arc::new(Mutex::new(WatcherState::default())),
+            child_apo: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -583,11 +591,21 @@ impl ApoObject {
     /// + R2 触发重载 + 正常模式 `process_audio`。
     fn apo_process_inner(
         &self,
-        _num_input: u32,
+        num_input: u32,
         pp_inputs: *const *const APO_CONNECTION_PROPERTY,
-        _num_output: u32,
+        num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
+        // P0-6（v8.1 D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
+        // 双链共享同一份 child 输出作输入；child 不在 current/outgoing 任一链内。
+        // 锁 inner **前**调（避免持 inner 锁调 child——child 是独立 COM 对象，无循环依赖）。
+        if let Some(child) = self.child_apo.lock().unwrap().as_ref() {
+            // SAFETY: 引擎保证 pp_inputs/pp_outputs 有效（APOProcess 契约）。
+            unsafe { child.apo_process(num_input, pp_inputs, num_output, pp_outputs) };
+            // 委托帧数计算（RT 无锁，object 7.1.11：每帧委托）。
+            let _ = child.calc_input_frames(0);
+        }
+
         let mut inner = self.mutex.lock().unwrap();
         let pending = inner.pending_reload;
 
@@ -796,12 +814,12 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn GetLatency(&self) -> Result<i64> {
-        let sample_rate = self.mutex.lock().unwrap().pipeline_context.sample_rate;
-        let latency_samples = self.latency_samples.load(Ordering::Acquire) as i64;
-        if sample_rate == 0 {
-            return Ok(0);
+        // P0-6（v8.3 S4）：有 child → 委托 child；无 child → 返回 0
+        // （align EAPO `*pTime=0` 后仅 child 委托改写——EAPO 不维护自身延迟值）。
+        if let Some(child) = self.child_apo.lock().unwrap().as_ref() {
+            return Ok(child.get_latency());
         }
-        Ok(latency_samples * 10_000_000 / sample_rate as i64)
+        Ok(0)
     }
 
     fn GetRegistrationProperties(&self) -> Result<*mut APO_REG_PROPERTIES> {
@@ -835,8 +853,33 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
             .transition(ApoState::Created, ApoState::Initialized)
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
 
-        // 3. 解析 APOInitSystemEffects → per-device 配置路径（object 7.1.8）。
+        // 3. 解析 APOInitSystemEffects → 端点 GUID + 子 APO（object 7.1.8 v8.4）。
         //    Safety: pby_data 已验证非空 + 尺寸足够；APOInitSystemEffects 为 repr(C) 结构。
+        let endpoint_guid = if valid_init_data {
+            let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
+            extract_endpoint_guid(init)
+        } else {
+            None
+        };
+
+        // 4. 子 APO 创建（P0-6 v8.4：vendor 安装信息区读取，失败降级为无子 APO，Note 57）。
+        //    - GUID 来源：端点 GUID + 安装信息区 PreMixChild/PostMixChild 值
+        //    - 空/特殊 GUID、create 失败 → None（不阻塞 Initialize）
+        let child = match endpoint_guid {
+            Some(eg) => {
+                let eg_str = guid_to_string(&eg);
+                let premix = read_child_apo_guid(&eg_str, ChildApoKind::PreMix);
+                let postmix = read_child_apo_guid(&eg_str, ChildApoKind::PostMix);
+                premix.or(postmix).and_then(|c| {
+                    // SAFETY: COM 已初始化（宿主进程 audiodg）；c 为有效 APO CLSID。
+                    unsafe { ChildApo::create(&c) }.ok()
+                })
+            }
+            None => None,
+        };
+        *self.child_apo.lock().unwrap() = child;
+
+        // 5. per-device 配置路径（object 7.1.8）。
         let path = if valid_init_data {
             let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
             resolve_config_path(Some(init))
@@ -944,8 +987,8 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         &self,
         num_input: u32,
         pp_inputs: *const *const APO_CONNECTION_DESCRIPTOR,
-        _num_output: u32,
-        _pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
+        num_output: u32,
+        pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
     ) -> Result<()> {
         // Step 0: 状态机 Initialized → Locked，失败自动回退。
         self.state_cell
@@ -1044,6 +1087,21 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         self.latency_samples.store(total_latency, Ordering::SeqCst);
         self.latency_frames_atomic.store(total_latency, Ordering::SeqCst);
 
+        // Step 6b（P0-6，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父，Note 57）。
+        // 对齐 EAPO 341-347：childCfg->LockForProcess 结果仅 Trace 不 return。
+        if let Some(child) = self.child_apo.lock().unwrap().as_ref() {
+            // SAFETY: 父描述符指针从引擎传入（只读语义）；child API 用可变指针仅因
+            // windows-rs 绑定如此（描述符数组在调用期间有效且不被 child 修改）。
+            unsafe {
+                let _ = child.lock_for_process(
+                    num_input,
+                    pp_inputs as *mut *mut APO_CONNECTION_DESCRIPTOR,
+                    num_output,
+                    pp_outputs as *mut *mut APO_CONNECTION_DESCRIPTOR,
+                );
+            }
+        }
+
         // Step 7: 确保第三方 APO 可加载（DisableProtectedAudioDG）。
         crate::install::audiodg::ensure_can_load()
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
@@ -1064,6 +1122,15 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
             .transition(ApoState::Locked, ApoState::Initialized)
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
         // Stop watcher：SetEvent → join → close（v7.10 stop_watcher）。先释放锁（join 可能等待）。
+        // P0-6（object 7.1.10）：子 APO UnlockForProcess 委托——失败不阻塞父解锁
+        // （UnlockForProcess 无重试语义，子可能已部分解锁，父继续自身流程 + 日志）。
+        if let Some(child) = self.child_apo.lock().unwrap().as_ref() {
+            let hr = child.unlock_for_process();
+            if hr.0 != 0 {
+                log::warn!("child APO UnlockForProcess failed");
+            }
+        }
+
         drop(self.mutex.lock().unwrap());
         self.stop_watcher();
         // R1：退役链 + 过渡状态由控制线程锁内统一析构。
