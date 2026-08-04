@@ -204,11 +204,21 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
         None => return SELFREG_E_CLASS,
     };
 
+    register_apo_with_path(&dll_path)
+}
+
+/// 以显式 DLL 路径注册 APO COM 类（CLI 宿主进程调用）。
+///
+/// 新开发者拿到 CLI + driver 二进制后直接 `install`，其机器上**没有注册表绑定**
+/// （未跑过 regsvr32）——CLI 必须在写槽位前自动注册，否则 verify（CoCreateInstance）
+/// 报 0x80040154。本函数接收显式路径（DLL 定位由调用方决定，exe 同级约定），
+/// 不依赖 `MODULE_HANDLE`（该静态仅 DLL 被加载进进程时有值；CLI 静态链接 rlib 无 DLL DllMain）。
+pub fn register_apo_with_path(dll_path: &str) -> HRESULT {
     // 注册顺序（Note 29）：PostMix → PreMix
     let entries = vx_reg_props::registration_order();
 
     for (i, entry) in entries.iter().enumerate() {
-        if let Err(_hr) = register_com_class(entry, &dll_path) {
+        if let Err(_hr) = register_com_class(entry, dll_path) {
             // 注册失败，按逆序回滚已注册的条目
             for j in (0..i).rev() {
                 let _ = unregister_com_class(&entries[j]);
