@@ -331,9 +331,30 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         }
     }
 
-    // ── 删除 VxAPO 独立安装信息区（含 PreMixChild/PostMixChild，v8.4）────
-
+    // ── 恢复被覆盖的第三方 APO（快照恢复的核心）──────────────────────────
+    // 2026-08-04 实证：install 覆盖槽位后只删不恢复 → 快照恢复变 NoValue。
+    // install 时把「覆盖前槽位名 + 原值」备份到信息区（EAPO 等第三方）。
+    // 此处读回写槽位，把设备恢复成安装前状态；无备份则槽位已删（VxAPO）。
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+    if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
+        if let Ok(info) = RegKey::open(root, sub_key) {
+            // PreMix：读备份槽位名 + 原值 → 写回 FxProperties。
+            if let Some(slot_name) = info.read_sz(BACKUP_PREMIX_SLOT) {
+                if let Some(val) = info.read_sz(BACKUP_PREMIX_SLOT_VALUE) {
+                    let _ = fx_key.write_sz(&slot_name, &val);
+                }
+            }
+            // PostMix：同理。
+            if let Some(slot_name) = info.read_sz(BACKUP_POSTMIX_SLOT) {
+                if let Some(val) = info.read_sz(BACKUP_POSTMIX_SLOT_VALUE) {
+                    let _ = fx_key.write_sz(&slot_name, &val);
+                }
+            }
+        }
+    }
+
+    // ── 删除 VxAPO 独立安装信息区（含所有备份，v8.4）────────────────────
+
     if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
         let _ = crate::sys::registry::delete_tree(root, sub_key);
     }
@@ -448,11 +469,22 @@ fn read_original_apo_guids(
     (premix, postmix)
 }
 
+/// 独立安装信息区中的「被覆盖槽位」备份值名。
+///
+/// install 覆盖 PreMix/PostMix 槽位前，把「原槽位值 + 原槽位名」备份到信息区
+/// （EAPO 源码 DeviceAPOInfo.cpp C 节同款 per-device 备份行为）。uninstall 时
+/// 按此恢复被覆盖的第三方 APO（EAPO 等），否则快照恢复后槽位变 NoValue。
+const BACKUP_PREMIX_SLOT: &str = "PreMixSlot";
+const BACKUP_POSTMIX_SLOT: &str = "PostMixSlot";
+const BACKUP_PREMIX_SLOT_VALUE: &str = "PreMixSlotValue";
+const BACKUP_POSTMIX_SLOT_VALUE: &str = "PostMixSlotValue";
+
 /// 写入子 APO 配置（Step 1，v8.4 独立安装信息区）。
 ///
 /// - 保留的原始 APO GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\
 ///   {PreMixChild|PostMixChild}`（与运行期 `object/child.rs` /
 ///   `slots::read_child_apo_guid` 读取路径一致）。
+/// - 被覆盖前的槽位名 → `{PreMixSlot|PostMixSlot}`（uninstall 恢复槽位值用）。
 /// - allowSilentBuffer / autoAdjust / version → FxProperties 值
 ///   （`info.rs::read_install_version` 依 version 判定安装状态）。
 fn write_child_apo_config(
@@ -474,6 +506,20 @@ fn write_child_apo_config(
     }
     if let Some(g) = original_postmix {
         info.write_sz(ChildApoKind::PostMix.value_name(), &guid_to_string(&g))?;
+    }
+
+    // 被覆盖槽位名备份（无论是否有 child，都要记：uninstall 需要知道删哪个槽位、
+    // 恢复时写回哪个槽位；写 VxAPO 前槽位还是原 APO，此刻读即原值）。
+    info.write_sz(BACKUP_PREMIX_SLOT, &config.install_mode.premix_slot().value_name())?;
+    info.write_sz(BACKUP_POSTMIX_SLOT, &config.install_mode.postmix_slot().value_name())?;
+
+    // 被覆盖槽位原值备份（**无条件**——uninstall 恢复槽位必须用它把 EAPO 等
+    // 第三方 APO 写回；child GUID 只在保留时写，原值备份始终写）。
+    if let SlotValue::Guid(g) = read_slot_value(fx_key, config.install_mode.premix_slot()) {
+        info.write_sz(BACKUP_PREMIX_SLOT_VALUE, &guid_to_string(&g))?;
+    }
+    if let SlotValue::Guid(g) = read_slot_value(fx_key, config.install_mode.postmix_slot()) {
+        info.write_sz(BACKUP_POSTMIX_SLOT_VALUE, &guid_to_string(&g))?;
     }
 
     // 控制开关 → FxProperties（注意：本键由调用方以 KEY_SET_VALUE 打开，
