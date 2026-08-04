@@ -401,12 +401,54 @@ fn record_slot_backups(
 }
 
 /// 安全读取槽位值（读取失败返回 NoValue）。
+///
+/// 兼容 REG_SZ（EAPO 等第三方写 GUID 字符串）与 REG_BINARY（16 字节 LE）——与
+/// `slots::read_slot_value` 同一判定语义，供卸载/回滚读取现有槽位。
 fn read_slot_safe(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
-    match fx_key.read_binary_value(&slot.value_name()) {
-        Ok(raw) if raw.len() >= 16 => match guid_from_bytes(&raw) {
-            Some(g) => SlotValue::Guid(g),
-            None => SlotValue::NoValue,
-        },
+    match fx_key.read_value(&slot.value_name()) {
+        Ok(crate::sys::registry::RegValue::Sz(s)) => {
+            let s = s.trim();
+            // 复用 slots 的表达式太长，就地解析 `{...}` 格式（与 guid_to_string 输出一致）。
+            if s.starts_with('{') && s.ends_with('}') {
+                let inner = &s[1..s.len() - 1];
+                let parts: Vec<&str> = inner.split('-').collect();
+                if parts.len() == 5 {
+                    let data1 = u32::from_str_radix(parts[0], 16).ok();
+                    let data2 = u16::from_str_radix(parts[1], 16).ok();
+                    let data3 = u16::from_str_radix(parts[2], 16).ok();
+                    if let (Some(d1), Some(d2), Some(d3)) = (data1, data2, data3) {
+                        if parts[3].len() == 4 && parts[4].len() == 12 {
+                            let mut data4 = [0u8; 8];
+                            let mut ok = true;
+                            for (i, c) in parts[3].chars().enumerate() {
+                                match u8::from_str_radix(&c.to_string(), 16) {
+                                    Ok(b) => data4[i] = b,
+                                    Err(_) => { ok = false; break; }
+                                }
+                            }
+                            if ok {
+                                for (i, c) in parts[4].chars().enumerate() {
+                                    match u8::from_str_radix(&c.to_string(), 16) {
+                                        Ok(b) => data4[i + 4] = b,
+                                        Err(_) => { ok = false; break; }
+                                    }
+                                }
+                            }
+                            if ok {
+                                return SlotValue::Guid(windows::core::GUID { data1: d1, data2: d2, data3: d3, data4 });
+                            }
+                        }
+                    }
+                }
+            }
+            SlotValue::NoValue
+        }
+        Ok(crate::sys::registry::RegValue::Binary(raw)) if raw.len() >= 16 => {
+            match guid_from_bytes(&raw) {
+                Some(g) => SlotValue::Guid(g),
+                None => SlotValue::NoValue,
+            }
+        }
         _ => SlotValue::NoValue,
     }
 }

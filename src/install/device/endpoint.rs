@@ -68,23 +68,38 @@ pub struct EndpointInfo {
 pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
     // ── 设备 ID ───────────────────────────────────────────────────────────
 
-    let device_id = match endpoint_key.read_value("Device") {
-        Ok(RegValue::Sz(s)) => s,
-        Ok(_) => {
-            // 类型不符，非致命。
-            return Ok(None);
-        }
-        Err(_) => {
-            // 值不存在，非致命。
-            return Ok(None);
-        }
+    // MMDevices 端点键：业务数据（设备 ID/友好名/端点 GUID）在 Properties 子键
+    // （PKEY_* 值名），顶层仅 DeviceState。旧实现读顶层 "Device"/"FriendlyName"
+    // 失败即返回 None，导致所有端点被丢弃——修正为读 Properties + 字段缺失不丢端点。
+    let properties = match endpoint_key.open_sub_key("Properties") {
+        Ok(k) => Some(k),
+        Err(_) => None,
     };
 
-    // ── 友好名称 ──────────────────────────────────────────────────────────
+    // ── 设备 ID ───────────────────────────────────────────────────────────
+    // PKEY_DeviceInstanceId 值名：{b3f8fa53-0004-438e-9003-51a46e139bfc},2（REG_SZ，Windows 11 实证）。
 
-    let friendly_name = match endpoint_key.read_value("FriendlyName") {
-        Ok(RegValue::Sz(s)) => s,
-        _ => String::new(),
+    let device_id = properties
+        .as_ref()
+        .and_then(|p| p.read_sz("{b3f8fa53-0004-438e-9003-51a46e139bfc},2"))
+        .unwrap_or_default();
+
+    // ── 友好名称 ──────────────────────────────────────────────────────────
+    // 与旧 CLI 一致的组合显示：接口友好名（PKEY_DeviceInterface_FriendlyName={a45c254e...},2，
+    // 实际是「扬声器/耳机」类型名）+ 设备产品名（PKEY_Device_ProductName={b3f8fa53...},6，
+    // 实际是「EDIFIER M16+」具体型号）。两者相同只取其一；不同组合「接口名 (产品名)」，
+    // 让用户能看到具体设备而非只有类型。
+    let interface_name = properties
+        .as_ref()
+        .and_then(|p| p.read_sz("{a45c254e-df1c-4efd-8020-67d146a850e0},2"));
+    let product_name = properties
+        .as_ref()
+        .and_then(|p| p.read_sz("{b3f8fa53-0004-438e-9003-51a46e139bfc},6"));
+    let friendly_name = match (&interface_name, &product_name) {
+        (Some(a), Some(b)) if a != b => format!("{a} ({b})"),
+        (Some(a), _) => a.clone(),
+        (None, Some(b)) => b.clone(),
+        (None, None) => String::new(),
     };
 
     // ── 状态 ──────────────────────────────────────────────────────────────
@@ -140,7 +155,11 @@ fn detect_flow(_endpoint_key: &RegKey) -> Flow {
 /// 如果不存在，返回空字符串（info.rs 层可从设备 ID 推导）。
 fn extract_endpoint_guid(endpoint_key: &RegKey) -> String {
     if let Ok(props_key) = endpoint_key.open_sub_key("Properties") {
-        // 尝试直接读取（部分系统以 REG_SZ 形式存储）。
+        // Windows 实际值名（与端点子键名一致的 GUID，Windows 11 实证）。
+        if let Ok(RegValue::Sz(s)) = props_key.read_value("{9D631510-92A8-4a79-A79E-A83812C9C119},2") {
+            return s;
+        }
+        // 兼容部分系统以文本名存储。
         if let Ok(RegValue::Sz(s)) = props_key.read_value("PKEY_AudioEndpoint_GUID") {
             return s;
         }

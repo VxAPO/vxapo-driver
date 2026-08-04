@@ -91,12 +91,28 @@ impl ApoSlot {
         self as u8
     }
 
-    /// 槽位的注册表值名称。
-    ///
-    /// 格式：`{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},{index}`
-    pub fn value_name(self) -> String {
-        format!("{{{}}},{}", APO_FX_PROPERTY_GUID, self.index())
+/// Windows 真实注册表槽位属性 ID（PID）。
+///
+/// **实证（2026-08-04 reg query）**：FxProperties 下 `{d04e05a6-...}` 各槽位
+/// 的 PID 为 **0/3/5/6/7**（非连续 0-4）：
+/// - LFX=0 / GFX=3 / SFX=5 / MFX=6 / EFX=7
+/// - 值与旧 CLI `src/reg.rs` 常量一致（VAL_SFX=5 / VAL_MFX=6 / VAL_EFX=7）
+pub fn registry_pid(self) -> u8 {
+    match self {
+        ApoSlot::Lfx => 0,
+        ApoSlot::Gfx => 3,
+        ApoSlot::Sfx => 5,
+        ApoSlot::Mfx => 6,
+        ApoSlot::Efx => 7,
     }
+}
+
+/// 槽位的注册表值名称。
+///
+/// 格式：`{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},{registry_pid}`
+pub fn value_name(self) -> String {
+    format!("{{{}}},{}", APO_FX_PROPERTY_GUID, self.registry_pid())
+}
 
     /// 是否为 PreMix 类槽位。
     pub fn is_premix(self) -> bool {
@@ -230,23 +246,35 @@ fn guid_from_bytes(bytes: &[u8]) -> Option<windows::core::GUID> {
 pub fn read_slot_value(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
     let value_name = slot.value_name();
 
-    match fx_key.read_binary_value(&value_name) {
-        Ok(raw) if raw.len() >= 16 => {
-            // 二进制值的前 16 字节是 GUID（little-endian）。
-            match guid_from_bytes(&raw) {
-                Some(guid) => SlotValue::Guid(guid),
-                None => SlotValue::NoValue,
+    // Windows 槽位值同时存在 REG_SZ（EAPO 等第三方写 GUID 字符串，实证）与
+    // REG_BINARY（16 字节 LE，部分实现/VxAPO 旧写）两种格式——按真实类型自动识别。
+    // 全零 GUID（{00000000-...}）是 Windows 的「无 APO」占位，归一为 NoValue——
+    // 否则 detect_install_mode 会把全零槽位误判为已占用。
+    match fx_key.read_value(&value_name) {
+        Ok(crate::sys::registry::RegValue::Sz(s)) => {
+            // REG_SZ：`{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式。
+            match parse_guid_string(s.trim()) {
+                Some(guid) if !is_zero_guid(&guid) => SlotValue::Guid(guid),
+                _ => SlotValue::NoValue,
             }
         }
-        Ok(_) => {
-            // 值存在但长度不足 → 空值。
-            SlotValue::NoValue
+        Ok(crate::sys::registry::RegValue::Binary(raw)) if raw.len() >= 16 => {
+            // 二进制值的前 16 字节是 GUID（little-endian）。
+            match guid_from_bytes(&raw) {
+                Some(guid) if !is_zero_guid(&guid) => SlotValue::Guid(guid),
+                _ => SlotValue::NoValue,
+            }
         }
-        Err(_) => {
-            // 值不存在。
+        _ => {
+            // 值不存在、类型不符或长度不足 → NoValue。
             SlotValue::NoValue
         }
     }
+}
+
+/// GUID 是否为全零（Windows「无 APO」占位）。
+fn is_zero_guid(g: &windows::core::GUID) -> bool {
+    g == &windows::core::GUID::zeroed()
 }
 
 /// 从端点根键读取所有 5 个槽位的值。
@@ -438,6 +466,16 @@ fn split_path(path: &str) -> Option<(windows::Win32::System::Registry::HKEY, &st
     }
 }
 
+/// 单个 ASCII hex 字符 → 数值（0-15）。
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// 解析 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式 GUID 字符串（guid_to_string 输出）。
 fn parse_guid_string(s: &str) -> Option<windows::core::GUID> {
     let s = s.trim();
@@ -456,12 +494,15 @@ fn parse_guid_string(s: &str) -> Option<windows::core::GUID> {
     if parts[3].len() != 4 || parts[4].len() != 12 {
         return None;
     }
+    // data4 共 16 个 hex 字符 = 8 字节：parts[3](4 字符) + parts[4](12 字符)。
+    // 每 2 个 hex 字符 = 1 字节；旧实现按每字符 1 字节写 data4[i+4] 越界
+    // （data4 仅 [u8; 8]）——EAPO REG_SZ 真实 GUID 解析触发后 panic，已修正。
+    let hex4 = format!("{}{}", parts[3], parts[4]);
     let mut data4 = [0u8; 8];
-    for (i, c) in parts[3].chars().enumerate() {
-        data4[i] = u8::from_str_radix(&c.to_string(), 16).ok()?;
-    }
-    for (i, c) in parts[4].chars().enumerate() {
-        data4[i + 4] = u8::from_str_radix(&c.to_string(), 16).ok()?;
+    for i in 0..8 {
+        let hi = hex4.as_bytes()[i * 2];
+        let lo = hex4.as_bytes()[i * 2 + 1];
+        data4[i] = (hex_val(hi)? << 4) | hex_val(lo)?;
     }
     Some(windows::core::GUID { data1, data2, data3, data4 })
 }
@@ -531,8 +572,18 @@ mod tests {
             let name = slot.value_name();
             assert!(name.starts_with('{'), "value_name should start with '{{': {}", name);
             assert!(name.contains(APO_FX_PROPERTY_GUID));
-            assert!(name.ends_with(&format!(",{}", slot.index())));
+            assert!(name.ends_with(&format!(",{}", slot.registry_pid())));
         }
+    }
+
+    #[test]
+    fn slot_registry_pids_match_windows() {
+        // Windows 真实 PID：0/3/5/6/7（2026-08-04 reg query 实证）。
+        assert_eq!(ApoSlot::Lfx.registry_pid(), 0);
+        assert_eq!(ApoSlot::Gfx.registry_pid(), 3);
+        assert_eq!(ApoSlot::Sfx.registry_pid(), 5);
+        assert_eq!(ApoSlot::Mfx.registry_pid(), 6);
+        assert_eq!(ApoSlot::Efx.registry_pid(), 7);
     }
 
     #[test]

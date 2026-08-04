@@ -175,7 +175,20 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
                 Ok(k) => k,
                 Err(_) => continue,
             };
-            if let Some(info) = query_device_info(&endpoint_key)? {
+            if let Some(mut info) = query_device_info(&endpoint_key)? {
+                // 只枚举活跃端点（DEVICE_STATE_ACTIVE=1）：禁用/未插入/拔出端点不参与安装选择。
+                if let Some(ep) = info.endpoint.as_ref() {
+                    if ep.state != EndpointState::Active {
+                        continue;
+                    }
+                }
+                // 端点 GUID：优先 Properties 子键值；为空时回填 MMDevices 子键名
+                // （子键名即端点 GUID，reg 实测与 PKEY_AudioEndpoint_GUID 值一致）。
+                if let Some(ep) = info.endpoint.as_mut() {
+                    if ep.endpoint_guid.is_empty() {
+                        ep.endpoint_guid = guid.clone();
+                    }
+                }
                 result.push(info);
             }
         }
@@ -203,22 +216,37 @@ fn is_vxapo_slot(slots: &[SlotValue; 5], slot: ApoSlot) -> bool {
 
 /// 检测当前安装模式。
 ///
-/// 逻辑（规范 5.4）：
-/// 1. SFX 有 GUID + MFX 有 GUID → SfxMfx
-/// 2. SFX 有 GUID + MFX 无 GUID → SfxEfx
-/// 3. LFX 有 GUID + SFX 无 GUID → LfxGfx
-/// 4. 都没有 → SfxEfx（默认）
+/// 只认 **VxAPO 的 CLSID**：PreMix=CLSID_VXAPO_PRE_MIX 且 PostMix=CLSID_VXAPO_POST_MIX
+/// 才算该模式已安装。EAPO/系统 APO 占槽不算 VxAPO 安装（2026-08-04 实证：EDIFIER 的
+/// SFX 被 EAPO PreMix 占、EFX 被 EAPO PostMix 占、MFX 被系统占——旧实现按「任意 GUID 占槽」
+/// 误判 SfxMfx；改为 VxAPO CLSID 判定后落默认 SfxEfx，正确表示「未安装 VxAPO」）。
 fn detect_install_mode(slots: &[SlotValue; 5]) -> InstallMode {
-    let sfx_has_guid = slots[ApoSlot::Sfx.index() as usize].is_guid();
-    let lfx_has_guid = slots[ApoSlot::Lfx.index() as usize].is_guid();
-    let mfx_has_guid = slots[ApoSlot::Mfx.index() as usize].is_guid();
+    let lfx = slots[ApoSlot::Lfx.index() as usize];
+    let gfx = slots[ApoSlot::Gfx.index() as usize];
+    let sfx = slots[ApoSlot::Sfx.index() as usize];
+    let mfx = slots[ApoSlot::Mfx.index() as usize];
+    let efx = slots[ApoSlot::Efx.index() as usize];
 
-    match (lfx_has_guid, sfx_has_guid, mfx_has_guid) {
-        (_, true, true) => InstallMode::SfxMfx,
-        (_, true, false) => InstallMode::SfxEfx,
-        (true, false, _) => InstallMode::LfxGfx,
-        _ => InstallMode::default_mode(),
+    if is_vxapo_pre(&lfx) && is_vxapo_post(&gfx) {
+        return InstallMode::LfxGfx;
     }
+    if is_vxapo_pre(&sfx) && is_vxapo_post(&mfx) {
+        return InstallMode::SfxMfx;
+    }
+    if is_vxapo_pre(&sfx) && is_vxapo_post(&efx) {
+        return InstallMode::SfxEfx;
+    }
+    InstallMode::default_mode()
+}
+
+/// 槽位是否为 VxAPO PreMix CLSID。
+fn is_vxapo_pre(slot: &SlotValue) -> bool {
+    matches!(slot, SlotValue::Guid(g) if *g == CLSID_VXAPO_PRE_MIX)
+}
+
+/// 槽位是否为 VxAPO PostMix CLSID。
+fn is_vxapo_post(slot: &SlotValue) -> bool {
+    matches!(slot, SlotValue::Guid(g) if *g == CLSID_VXAPO_POST_MIX)
 }
 
 /// 从端点键读取音频格式。
@@ -299,10 +327,20 @@ mod tests {
     }
 
     #[test]
-    fn detect_mode_lfxgfx_when_lfx_has_guid() {
+    fn detect_mode_lfxgfx_when_lfx_gfx_pair() {
+        // 需 LFX=VXAPO_PRE **且** GFX=VXAPO_POST 才判定 LfxGfx（v8.8：EAPO 等非 VxAPO 占槽不算）。
         let mut slots = empty_slots();
         slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(vxapo_pre_guid());
+        slots[ApoSlot::Gfx.index() as usize] = SlotValue::Guid(vxapo_post_guid());
         assert_eq!(detect_install_mode(&slots), InstallMode::LfxGfx);
+    }
+
+    #[test]
+    fn detect_mode_lfx_half_pair_falls_default() {
+        // LFX 有 VxAPO 但 GFX 无 → 不成对 → 默认 SfxEfx（而非误判 LfxGfx）。
+        let mut slots = empty_slots();
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(vxapo_pre_guid());
+        assert_eq!(detect_install_mode(&slots), InstallMode::SfxEfx);
     }
 
     #[test]
