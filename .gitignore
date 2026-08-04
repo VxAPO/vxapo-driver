@@ -1,21 +1,26 @@
-# Rust
+# Rust target
 /target
-**/*.rs.bk
-Cargo.lock
 
-# Windows build artifacts
-*.dll
-*.lib
-*.pdb
-*.exp
+# VxAPO 调试辅助文件（2026-08-04 提交 fb4bb82 误入库的临时脚本/日志/ProcMon 产物）
+# 均属排查 P0-7 audiodg 不加载时使用的验证工具，不属源码，一律忽略
+*.ps1
+*.bat
+audiodg_check_out.txt
+audiodg_check_err.txt
+audioengine_keys_out.txt
+activate_all_out.txt
+default_endpoint_out.txt
+dumpbin_deps.ps1
+edifier_out.txt
+events_out.txt
+final_out.txt
+now_modules_out.txt
+procmon_*.pml
+procmon_*.csv
+procmon_out.txt
+procmon_cap_out.txt
+procmon_test_out.txt
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# APO runtime artifacts
-*.reg
-*.rollback_backup.reg
-*.backup.reg
+# 系统生成
+.DS_Store
+Thumbs.db

@@ -1,3 +1,0 @@
-﻿
-=== restart audio service (new audiodg re-reads AudioEngine keys) ===
-NO_AUDIODG_AFTER_RESTART

@@ -1,9 +1,0 @@
-﻿
-=== start: 21:13:36 ===
-starting Procmon...
-Procmon started pid=
-restarting audiosrv (while Procmon running)...
-playing: C:\WINDOWS\Media\tada.wav
-sound stopped
-pml exists: False  csv exists: False
-=== end: 21:14:28 ===
