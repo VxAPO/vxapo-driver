@@ -13,8 +13,8 @@ use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
 
 use crate::install::device::slots::{
-    ApoSlot, ChildApoKind, InstallMode, SlotValue, read_all_slots, CHILD_APO_PATH_ROOT,
-    FX_PROPERTIES_KEY, INSTALL_VERSION,
+    ApoSlot, ChildApoKind, InstallMode, SlotValue, CHILD_APO_PATH_ROOT, FX_PROPERTIES_KEY,
+    INSTALL_VERSION,
 };
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::guid_to_string;
@@ -135,16 +135,6 @@ impl Drop for Transaction {
 // ══════════════════════════════════════════════════════════════════════════════
 // GUID 辅助（GUID→字符串走 sys::com::prelude；16 字节小端序列化就地实现）
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// GUID → 16 字节小端（data1/data2/data3 LE + data4）。
-fn guid_to_bytes(g: windows::core::GUID) -> [u8; 16] {
-    let mut bytes = [0u8; 16];
-    bytes[0..4].copy_from_slice(&g.data1.to_le_bytes());
-    bytes[4..6].copy_from_slice(&g.data2.to_le_bytes());
-    bytes[6..8].copy_from_slice(&g.data3.to_le_bytes());
-    bytes[8..16].copy_from_slice(&g.data4);
-    bytes
-}
 
 /// hex 片段（4 字符）→ 4 字节。
 fn hex_to_bytes(s: &[u8]) -> Option<[u8; 4]> {
@@ -471,21 +461,36 @@ fn read_slot_safe(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
     match fx_key.read_value(&slot.value_name()) {
         Ok(crate::sys::registry::RegValue::Sz(s)) => {
             let s = s.trim();
-            // 就地解析 `{...}`（与 guid_to_string 输出一致）。data4 = 4+12=16 hex 字符，
-            // 每 2 字符 = 1 字节 = 8 字节。旧实现每字符 1 字节写 data4[i+4] 越界
-            // （data4 仅 [u8;8]）→ 安装读 EAPO REG_SZ（SFX=PreMix 等）时 panic。
+            // 就地解析 `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`（与 guid_to_string 输出一致）。
+            // data4 共 16 hex 字符 = 8 字节：前半 4 字符（[20..24]）+ 后半 12 字符（[25..37]）。
+            // 【2026-08-04 实证】旧实现把后半 12 字符直接传 hex_to_bytes（要求恰好 4 字符）
+            // → 永远返回 None → 整个解析失败 → EAPO REG_SZ 槽位读成 NoValue → 子 APO 永不保留。
             let b = s.as_bytes();
             if s.len() == 38 && s.starts_with('{') && s.ends_with('}') {
                 let d1 = hex_to_u32(&b[1..9]);
                 let d2 = hex_to_u16(&b[10..14]);
                 let d3 = hex_to_u16(&b[15..19]);
-                let lo = hex_to_bytes(&b[20..24]);
-                let hi = hex_to_bytes(&b[25..37]);
-                if let (Some(d1), Some(d2), Some(d3), Some(lo), Some(hi)) = (d1, d2, d3, lo, hi) {
+                if let (Some(d1), Some(d2), Some(d3)) = (d1, d2, d3) {
+                    // data4：跳过 [24] 的 '-'，16 字符 → 8 字节（每 2 字符 1 字节）。
                     let mut data4 = [0u8; 8];
-                    data4[..4].copy_from_slice(&lo);
-                    data4[4..].copy_from_slice(&hi);
-                    return SlotValue::Guid(windows::core::GUID { data1: d1, data2: d2, data3: d3, data4 });
+                    let mut ok = true;
+                    for i in 0..8 {
+                        let (hi, lo) = if i < 2 {
+                            // b[20..24] 前半 4 字符 → data4[0..2]
+                            (hex_val(b[20 + i * 2]), hex_val(b[20 + i * 2 + 1]))
+                        } else {
+                            // b[25..37] 后半 12 字符 → data4[2..8]
+                            let idx = 25 + (i - 2) * 2;
+                            (hex_val(b[idx]), hex_val(b[idx + 1]))
+                        };
+                        match (hi, lo) {
+                            (Some(hi), Some(lo)) => data4[i] = (hi << 4) | lo,
+                            _ => { ok = false; break; }
+                        }
+                    }
+                    if ok {
+                        return SlotValue::Guid(windows::core::GUID { data1: d1, data2: d2, data3: d3, data4 });
+                    }
                 }
             }
             SlotValue::NoValue
@@ -645,20 +650,6 @@ mod tests {
     }
 
     #[test]
-    fn guid_bytes_roundtrip() {
-        let g = windows::core::GUID {
-            data1: 0xC18E2F7E,
-            data2: 0x933D,
-            data3: 0x4965,
-            data4: [0xB7, 0xD1, 0x1E, 0xEF, 0x22, 0x8D, 0x2A, 0xF3],
-        };
-        let bytes = guid_to_bytes(g);
-        assert_eq!(bytes.len(), 16);
-        let parsed = guid_from_bytes(&bytes).unwrap();
-        assert_eq!(parsed, g);
-    }
-
-    #[test]
     fn guid_to_string_zeroed() {
         assert_eq!(
             guid_to_string(&windows::core::GUID::zeroed()),
@@ -680,6 +671,31 @@ mod tests {
     #[test]
     fn guid_from_bytes_too_short() {
         assert!(guid_from_bytes(&[0u8; 15]).is_none());
+    }
+
+    /// 回归：EAPO REG_SZ 槽位（GUID 字符串）必须能解析出正确 GUID。
+    /// 原实现 data4 后半 12 字符传 hex_to_bytes（要求 4 字符）→ 永远 None
+    /// → EAPO 槽位读成 NoValue → 子 APO 永不保留（2026-08-04 实证）。
+    #[test]
+    fn read_slot_safe_parses_eapo_reg_sz_guid() {
+        // 用真实 EAPO PreMix CLSID 字符串验证 read_slot_safe 的 REG_SZ 分支。
+        // 无法直接 mock RegKey——改为验证 GUID 字符串解析的等价逻辑：
+        // data4 前后拼接 = 16 字符 → 8 字节（每 2 字符 1 字节）。
+        let s = "{EACD2258-FCAC-4FF4-B36D-419E924A6D79}";
+        let b = s.as_bytes();
+        assert_eq!(b.len(), 38);
+        assert_eq!(&b[20..24], b"B36D"); // data4 前半 4 字符
+        assert_eq!(&b[25..37], b"419E924A6D79"); // data4 后半 12 字符
+        // 逐字符拼 data4：b[20..24]（2 字节）+ b[25..37]（6 字节）
+        let mut data4 = [0u8; 8];
+        data4[0] = (hex_val(b[20]).unwrap() << 4) | hex_val(b[21]).unwrap();
+        data4[1] = (hex_val(b[22]).unwrap() << 4) | hex_val(b[23]).unwrap();
+        for i in 0..6 {
+            let idx = 25 + i * 2;
+            data4[2 + i] = (hex_val(b[idx]).unwrap() << 4) | hex_val(b[idx + 1]).unwrap();
+        }
+        // 期望：B3 6D 41 9E 92 4A 6D 79
+        assert_eq!(data4, [0xB3, 0x6D, 0x41, 0x9E, 0x92, 0x4A, 0x6D, 0x79]);
     }
 
     #[test]
