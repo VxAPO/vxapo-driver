@@ -1,0 +1,4 @@
+﻿
+starting Procmon from elevated shell...
+args: 
+PROCMON_START_FAILED_NULL

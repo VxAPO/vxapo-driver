@@ -1,0 +1,6 @@
+﻿
+audiodg PID: 24256
+total modules: 28
+NO_VXAPO_NO_EAPO_IN_MODULES
+modules: AUDIODG.EXE, ntdll.dll, KERNEL32.DLL, KERNELBASE.dll, msvcp_win.dll, ucrtbase.dll, shcore.dll, combase.dll, RPCRT4.dll, MMDevAPI.DLL, cfgmgr32.dll, kernel.appcore.dll, msvcrt.dll, bcryptPrimitives.dll, sechost.dll, user32.dll, win32u.dll, GDI32.dll, gdi32full.dll, clbcatq.dll, DEVOBJ.dll, AudioSes.dll, audioeng.dll, OLEAUT32.dll, PROPSYS.dll, audiokse.dll, wintypes.dll, Windows.Media.Devices.dll
+DONE

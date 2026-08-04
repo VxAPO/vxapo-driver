@@ -36,6 +36,12 @@ pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObject_Impl;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT_Impl;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration_Impl;
 
+// IAudioSystemEffects（marker 接口，EAPO 对齐）：`_Impl` 空体（windows-rs 0.62.2
+// Apo/mod.rs:1109 `pub trait IAudioSystemEffects_Impl: IUnknownImpl {}`）——
+// 独立父槽位（SFX/MFX/EFX）时引擎 QI 此接口确认「系统效果」，缺失则拒载。
+pub use windows::Win32::Media::Audio::Apo::IAudioSystemEffects;
+pub use windows::Win32::Media::Audio::Apo::IAudioSystemEffects_Impl;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // IID 导出常量（7 个）
 // ══════════════════════════════════════════════════════════════════════════════
@@ -57,8 +63,9 @@ pub const IID_IAUDIO_MEDIA_TYPE: windows::core::GUID = IAudioMediaType::IID;
 // ── 3 个系统接口 IID（从 windows-rs 直接引用）────────────────────────────────
 
 // 这 3 个接口由 Windows 实现（非 APO 实现），APO 侧仅需 IID 用于 QueryInterface 查询。
+// IAudioSystemEffects 已在上面 pub use（APO 侧需实现该 marker 接口），此处不再重复引入。
 use windows::Win32::Media::Audio::Apo::{
-    IAudioProcessingObjectNotifications, IAudioSystemEffects, IAudioSystemEffects2,
+    IAudioProcessingObjectNotifications, IAudioSystemEffects2,
 };
 
 /// `IAudioSystemEffects` IID。

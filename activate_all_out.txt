@@ -1,0 +1,14 @@
+﻿
+=== activate all render endpoints ===
+activated endpoints: 0
+--- sample 1 @ 2s PID=24256 total=28 ---
+NO_VXAPO_NO_EAPO_IN_MODULES
+--- sample 2 @ 4s PID=24256 total=28 ---
+NO_VXAPO_NO_EAPO_IN_MODULES
+--- sample 3 @ 6s PID=24256 total=28 ---
+NO_VXAPO_NO_EAPO_IN_MODULES
+--- sample 4 @ 8s PID=24256 total=28 ---
+NO_VXAPO_NO_EAPO_IN_MODULES
+--- sample 5 @ 10s PID=24256 total=28 ---
+NO_VXAPO_NO_EAPO_IN_MODULES
+DONE

@@ -89,7 +89,7 @@ pub static REG_PROPS_PRE_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
     u32MinOutputConnections: 1,
     u32MaxOutputConnections: 1,
     u32MaxInstances: 1,
-    u32NumAPOInterfaces: 3,
+    u32NumAPOInterfaces: 1,
     iidAPOInterfaceList: [IID_IAPO],
 };
 
@@ -105,7 +105,7 @@ pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
     u32MinOutputConnections: 1,
     u32MaxOutputConnections: 1,
     u32MaxInstances: 1,
-    u32NumAPOInterfaces: 3,
+    u32NumAPOInterfaces: 1,
     iidAPOInterfaceList: [IID_IAPO],
 };
 
@@ -115,6 +115,11 @@ pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
 
 const _: () = {
     assert!(APO_FLAGS.0 == 0x0000_000D);
+    // EAPO 对照：CRegAPOProperties<1> = u32NumAPOInterfaces=1（audiodg 校验
+    // 接口数与 iidAPOInterfaceList 长度必须一致——曾写 3 导致独立父槽位被拒）。
+    assert!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces == 1);
+    assert!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces as usize == REG_PROPS_PRE_MIX.iidAPOInterfaceList.len());
+    assert!(REG_PROPS_POST_MIX.u32NumAPOInterfaces as usize == REG_PROPS_POST_MIX.iidAPOInterfaceList.len());
     assert!(REG_PROPS_PRE_MIX.szFriendlyName[0] != 0);
     assert!(REG_PROPS_PRE_MIX.Flags.0 == REG_PROPS_POST_MIX.Flags.0);
     assert!(
@@ -258,8 +263,12 @@ mod tests {
     }
 
     #[test]
-    fn u32_num_apointerfaces_is_3() {
-        assert_eq!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces, 3);
+    fn u32_num_apointerfaces_matches_interface_list() {
+        assert_eq!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces, 1);
+        assert_eq!(
+            REG_PROPS_PRE_MIX.u32NumAPOInterfaces as usize,
+            REG_PROPS_PRE_MIX.iidAPOInterfaceList.len()
+        );
     }
 
     #[test]
@@ -293,6 +302,11 @@ impl ClsidEntry {
     }
     pub fn clsid_key_path(&self) -> String { format!("CLSID\\{}", self.clsid_str) }
     pub fn inproc_server_path(&self) -> String { format!("CLSID\\{}\\InprocServer32", self.clsid_str) }
+    /// AudioEngine APO 注册键（P0-7 根因修复）：引擎读槽位 CLSID 后查此键取 APO 属性，
+    /// 缺失则静默拒载（ProcMon 实证：VxAPO 曾 NAME NOT FOUND，EAPO SUCCESS）。
+    pub fn audio_engine_path(&self) -> String {
+        format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
+    }
     pub fn registration_entries(&self, dll_path: &str) -> Vec<(&str, String, String)> {
         vec![
             ("Default", String::new(), dll_path.to_owned()),

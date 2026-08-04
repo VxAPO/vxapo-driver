@@ -24,6 +24,7 @@ use crate::sys::audio_defs::get_channel_names;
 use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration, IAudioProcessingObjectRT,
     IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl, IAudioProcessingObjectConfiguration_Impl,
+    IAudioSystemEffects, IAudioSystemEffects_Impl,
 };
 use crate::object::child::ChildApo;
 use crate::sys::com::apo_types::{
@@ -408,7 +409,8 @@ fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObject
 #[implement(
     IAudioProcessingObject,
     IAudioProcessingObjectRT,
-    IAudioProcessingObjectConfiguration
+    IAudioProcessingObjectConfiguration,
+    IAudioSystemEffects
 )]
 #[allow(dead_code)]
 pub struct ApoObject {
@@ -979,6 +981,9 @@ impl IAudioProcessingObjectRT_Impl for ApoObject_Impl {
         .unwrap_or_else(|_| 0)
     }
 }
+
+// ═══ IAudioSystemEffects 实现（EAPO 对齐，marker 接口） ═══
+impl IAudioSystemEffects_Impl for ApoObject_Impl {}
 
 // ═══ IAudioProcessingObjectConfiguration 实现 ═══
 impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {

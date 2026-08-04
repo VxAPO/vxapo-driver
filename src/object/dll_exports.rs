@@ -309,6 +309,25 @@ fn register_com_class(
     // 写 ThreadingModel = "Both"（Note 5）
     key.write_sz("ThreadingModel", "Both").map_err(|e| e.code())?;
 
+    // ---- AudioEngine APO 注册键（P0-7 根因修复）----
+    // Windows 引擎读端点槽位 CLSID 后，从
+    // `HKCR\AudioEngine\AudioProcessingObjects\{CLSID}` 取 APO 属性（Flags/接口数等）。
+    // 缺失该键 → 引擎静默跳过（DLL 不加载、无事件日志）——ProcMon 实证：
+    // VxAPO 曾 NAME NOT FOUND（拒载），EAPO 同键 SUCCESS（能加载）。
+    // 结构对齐 EAPO 注册树（EqualizerAPO.cpp CRegAPOProperties，reg query 实证）。
+    let ae_path = entry.audio_engine_path();
+    let ae_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &ae_path)
+        .map_err(|e| e.code())?;
+    ae_key.write_sz("FriendlyName", &entry.friendly_name).map_err(|e| e.code())?;
+    ae_key.write_sz("Copyright", "VxAPO Project").map_err(|e| e.code())?;
+    ae_key.write_dword("Flags", 0x0000_000D).map_err(|e| e.code())?;
+    ae_key.write_dword("NumAPOInterfaces", 1).map_err(|e| e.code())?;
+    // APOInterface0 = IAudioProcessingObject::IID（windows-rs IID_IAPO 的同值字符串）。
+    ae_key.write_sz("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}")
+        .map_err(|e| e.code())?;
+    ae_key.write_dword("MaxInstances", 0xFFFF_FFFFu32).map_err(|e| e.code())?;
+    drop(ae_key);
+
     Ok(())
 }
 
@@ -318,6 +337,9 @@ fn register_com_class(
 fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT> {
     // 删除 InprocServer32 子键（幂等）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())
+        .map_err(|e| e.code())?;
+    // 删除 AudioEngine APO 注册键（P0-7 根因修复，与注册对称；键不存在视为成功）
+    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.audio_engine_path())
         .map_err(|e| e.code())?;
     // 删除 CLSID 父键（幂等）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.clsid_key_path())
