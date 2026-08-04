@@ -412,7 +412,7 @@ pub enum ChildApoKind {
 
 impl ChildApoKind {
     /// 安装信息区中的值名。
-    fn value_name(self) -> &'static str {
+    pub(crate) fn value_name(self) -> &'static str {
         match self {
             Self::PreMix => "PreMixChild",
             Self::PostMix => "PostMixChild",

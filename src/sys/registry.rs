@@ -11,6 +11,10 @@ use windows::Win32::System::Registry::{
 
 const SAM_READ: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0002_0019); // KEY_READ = STANDARD_RIGHTS_READ | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY
 const SAM_ALL: REG_SAM_FLAGS = REG_SAM_FLAGS(0x000F_003F); // KEY_ALL_ACCESS
+// KEY_SET_VALUE | KEY_QUERY_VALUE（写值/删值，不含 KEY_CREATE_SUB_KEY）。
+// MMDevices 端点 FxProperties 键 ACL 只给 Administrators SetValue,ReadKey——
+// 请求 KEY_ALL_ACCESS（含 CreateSubKey 位）会超权限被 RegCreateKeyExW 拒绝（0x80070005）。
+const SAM_SET_VALUE: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0000_0002 | 0x0000_0001);
 
 fn win32_ok(err: WIN32_ERROR) -> Result<()> {
     if err.0 == 0 {
@@ -60,6 +64,11 @@ impl RegKey {
     }
 
     /// 创建或打开子键（KEY_ALL_ACCESS）。
+    ///
+    /// **MMDevices 注意**：Windows 对 `MMDevices\...\Properties` 键的 ACL 仅授予
+    /// Administrators `SetValue,ReadKey`（无 CreateSubKey）——此场景请求 KEY_ALL_ACCESS
+    /// 会因含 KEY_CREATE_SUB_KEY 位而拒绝访问（0x80070005）。已存在的键请用
+    /// [`Self::open_for_write`]（仅 KEY_SET_VALUE|KEY_QUERY_VALUE），新建键才用 create。
     pub fn create(root: HKEY, sub_key: &str) -> Result<Self> {
         let sub_key = HSTRING::from(sub_key);
         let mut handle = HKEY::default();
@@ -77,6 +86,18 @@ impl RegKey {
                 None,
             )
         };
+        win32_ok(err)?;
+        Ok(Self { handle })
+    }
+
+    /// 以 KEY_SET_VALUE|KEY_QUERY_VALUE 打开已存在子键（写值/删值用）。
+    ///
+    /// MMDevices 端点键 ACL 只给 Administrators SetValue/ReadKey——请求含 CreateSubKey
+    /// 的 KEY_ALL_ACCESS 会被拒。只请求写值所需的最小权限即可成功。
+    pub fn open_for_write(root: HKEY, sub_key: &str) -> Result<Self> {
+        let sub_key = HSTRING::from(sub_key);
+        let mut handle = HKEY::default();
+        let err = unsafe { RegOpenKeyExW(root, &sub_key, None, SAM_SET_VALUE, &mut handle) };
         win32_ok(err)?;
         Ok(Self { handle })
     }

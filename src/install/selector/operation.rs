@@ -13,7 +13,8 @@ use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
 
 use crate::install::device::slots::{
-    ApoSlot, InstallMode, SlotValue, read_all_slots, FX_PROPERTIES_KEY, INSTALL_VERSION,
+    ApoSlot, ChildApoKind, InstallMode, SlotValue, read_all_slots, CHILD_APO_PATH_ROOT,
+    FX_PROPERTIES_KEY, INSTALL_VERSION,
 };
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::guid_to_string;
@@ -233,7 +234,7 @@ pub fn install_endpoint(
     let endpoint_path = find_endpoint_path(device_guid)?;
     let fx_path = format!("{}\\{}", endpoint_path, FX_PROPERTIES_KEY);
 
-    // ── Step 2: 确保 FxProperties 存在 ───────────────────────────────────
+    // ── Step 2: 确保 FxProperties 存在（已存在用 open_for_write 最小写权限）──
 
     let (fx_key, fx_is_new) = ensure_fx_properties(&fx_path, &mut tx)?;
 
@@ -261,14 +262,13 @@ pub fn install_endpoint(
     let (original_premix, original_postmix) =
         read_original_apo_guids(&fx_key, config);
 
-    // ── Step 1: 创建 Child APOs 键 ───────────────────────────────────────
+    // ── Step 1: 写入子 APO 配置（独立安装信息区，v8.4 路径隔离）──────────
+    // `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`。
+    // 与运行期 `object/child.rs` / `install/device/slots::read_child_apo_guid`
+    // 读取路径一致（旧实现写 `FxProperties\childGuid` + 建 `ChildApoKeys`
+    // 子键——运行期无人读，且 FxProperties ACL 不给管理员 CreateSubKey）。
 
-    let child_path = format!("{}\\ChildApoKeys", fx_path);
-    let _child_key = ensure_sub_key(&child_path, &mut tx)?;
-
-    // ── Step 4: 写入子 APO 配置 ──────────────────────────────────────────
-
-    write_child_apo_config(&fx_key, config, original_premix, original_postmix)?;
+    write_child_apo_config(device_guid, &fx_key, config, original_premix, original_postmix)?;
 
     // ── Step 5: 按模式写入 APO GUID ──────────────────────────────────────
 
@@ -295,6 +295,24 @@ pub fn install_endpoint(
     // ── E3.4 安装自检（verify=true）：CoCreateInstance 验证 DLL 可实例化 ──
     // 失败**不自动回滚**（注册表已写入且 DLL 可能瞬时不可用；报告并让调用方决策）。
     if verify {
+        // CoCreateInstance 前需初始化 COM（0x800401F0 CO_E_NOTINITIALIZED 实证：
+        // 2026-08-04 管理员 CLI 直接调 install 未初始化 COM 即触发）。
+        // SAFETY: CoInitializeEx 无 preconditions；进程级调用。
+        // S_OK(0)=本次初始化成功；S_FALSE(1)=已由宿主初始化（合法）。
+        // 其他值=COM 初始化失败，verify 不可靠 → 报错。
+        let co_init = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            )
+        };
+        let co_init_hr = co_init.0;
+        if co_init_hr != 0 && co_init_hr != 1 {
+            return Err(VxApoError::internal(&format!(
+                "安装自检失败：CoInitializeEx err={}",
+                co_init_hr
+            )));
+        }
         for clsid in [CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX] {
             // 实例化验证：CoCreateInstance 成功即 DLL 可加载（不深究接口）。
             // SAFETY: windows-rs 3 参泛型（rclsid, punkouter, dwclscontext）返回 IUnknown。
@@ -333,8 +351,9 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     let endpoint_path = find_endpoint_path(device_guid)?;
     let fx_path = format!("{}\\{}", endpoint_path, FX_PROPERTIES_KEY);
 
-    // 用 SAM_ALL（create）打开：删除值需要写权限，SAM_READ 的 open 会 0x80070005。
-    let fx_key = match RegKey::create(HKEY_LOCAL_MACHINE, &fx_path) {
+    // open_for_write（KEY_SET_VALUE）：删除值需写权限；SAM_ALL 超权限（含
+    // CreateSubKey 位）在 MMDevices 端点键上会被拒（0x80070005）。
+    let fx_key = match RegKey::open_for_write(HKEY_LOCAL_MACHINE, &fx_path) {
         Ok(k) => k,
         Err(_) => {
             // FxProperties 不存在 → 无安装，直接返回成功。
@@ -342,24 +361,28 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         }
     };
 
-    // ── 读取当前槽位 ──────────────────────────────────────────────────────
-
-    let slots = read_all_slots(&fx_key);
-
     // ── 删除 VxAPO CLSID ──────────────────────────────────────────────────
+    // 注意：**不能**用 read_all_slots(&fx_key)——它期望端点根键（内部再 open
+    // FxProperties 子键）；此处 fx_key 已是 FxProperties 键，会拿不到槽位
+    // （2026-08-04 实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
+    // read_slot_safe 直接在 fx_key 上读槽位值。
 
     for slot in ApoSlot::ALL {
-        match &slots[slot.index() as usize] {
-            SlotValue::Guid(g) => {
-                if *g == CLSID_VXAPO_PRE_MIX || *g == CLSID_VXAPO_POST_MIX {
-                    let _ = fx_key.delete_value(&slot.value_name());
-                }
+        if let SlotValue::Guid(g) = read_slot_safe(&fx_key, slot) {
+            if g == CLSID_VXAPO_PRE_MIX || g == CLSID_VXAPO_POST_MIX {
+                let _ = fx_key.delete_value(&slot.value_name());
             }
-            _ => {}
         }
     }
 
-    // ── 删除子 APO 配置 ──────────────────────────────────────────────────
+    // ── 删除 VxAPO 独立安装信息区（含 PreMixChild/PostMixChild，v8.4）────
+
+    let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+    if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
+        let _ = crate::sys::registry::delete_tree(root, sub_key);
+    }
+
+    // ── 删除子 APO 配置（旧遗留值，best-effort） ─────────────────────────
 
     for name in &["childGuid", "allowSilentBuffer", "autoAdjust", "version"] {
         let _ = fx_key.delete_value(name);
@@ -400,14 +423,15 @@ fn find_endpoint_path(device_guid: &str) -> Result<String> {
 /// 全部拒绝访问（0x80070005），即使进程是管理员。已存在时必须重新以 SAM_ALL 打开
 /// （`RegKey::create`），is_new 判定仍是读 `version` 值。
 fn ensure_fx_properties(fx_path: &str, tx: &mut Transaction) -> Result<(RegKey, bool)> {
-    // 已存在：读 version 判定 is_new，然后以可写句柄（SAM_ALL）打开。
+    // 已存在：读 version 判定 is_new，然后以 KEY_SET_VALUE 最小写权限打开。
+    // （Windows 对 MMDevices 端点键只授予管理员 SetValue,ReadKey——请求
+    //   KEY_ALL_ACCESS（含 CreateSubKey 位）会被拒绝 0x80070005。）
     if RegKey::open(HKEY_LOCAL_MACHINE, fx_path).is_ok() {
         let is_new = match RegKey::open(HKEY_LOCAL_MACHINE, fx_path) {
             Ok(k) => !k.value_exists("version").unwrap_or(false),
             Err(_) => true,
         };
-        // create = SAM_ALL（等价 create-or-open 并保证可写）。
-        let key = RegKey::create(HKEY_LOCAL_MACHINE, fx_path)?;
+        let key = RegKey::open_for_write(HKEY_LOCAL_MACHINE, fx_path)?;
         if is_new {
             tx.record(RollbackAction::DeleteKey(fx_path.to_string()));
         }
@@ -418,13 +442,6 @@ fn ensure_fx_properties(fx_path: &str, tx: &mut Transaction) -> Result<(RegKey, 
     let key = RegKey::create(HKEY_LOCAL_MACHINE, fx_path)?;
     tx.record(RollbackAction::DeleteKey(fx_path.to_string()));
     Ok((key, true))
-}
-
-/// 确保子键存在（创建或打开）。
-fn ensure_sub_key(path: &str, tx: &mut Transaction) -> Result<RegKey> {
-    let key = RegKey::create(HKEY_LOCAL_MACHINE, path)?;
-    tx.record(RollbackAction::DeleteKey(path.to_string()));
-    Ok(key)
 }
 
 /// 记录槽位值到事务（用于安装失败回滚）。
@@ -484,46 +501,81 @@ fn read_slot_safe(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
 }
 
 /// 读取原始 APO GUID（用于子 APO 保留）。
+///
+/// **self-preserve 过滤（2026-08-04 实证）**：重装时槽位可能已是 VxAPO 自己的
+/// CLSID——必须视为「无原始 APO」，否则会把 VxAPO 自身保留为子 APO
+/// （快照 diff 实测 childPreMix=41C34613 自占）。
 fn read_original_apo_guids(
     fx_key: &RegKey,
     config: &InstallConfig,
 ) -> (Option<windows::core::GUID>, Option<windows::core::GUID>) {
     let premix = if config.use_original_apo_premix {
-        read_slot_safe(fx_key, config.install_mode.premix_slot()).as_guid()
+        let g = read_slot_safe(fx_key, config.install_mode.premix_slot()).as_guid();
+        match g {
+            Some(g) if g != CLSID_VXAPO_PRE_MIX && g != CLSID_VXAPO_POST_MIX => Some(g),
+            _ => None,
+        }
     } else {
         None
     };
     let postmix = if config.use_original_apo_postmix {
-        read_slot_safe(fx_key, config.install_mode.postmix_slot()).as_guid()
+        let g = read_slot_safe(fx_key, config.install_mode.postmix_slot()).as_guid();
+        match g {
+            Some(g) if g != CLSID_VXAPO_PRE_MIX && g != CLSID_VXAPO_POST_MIX => Some(g),
+            _ => None,
+        }
     } else {
         None
     };
     (premix, postmix)
 }
 
-/// 写入子 APO 配置（Step 4）。
+/// 写入子 APO 配置（Step 1，v8.4 独立安装信息区）。
+///
+/// - 保留的原始 APO GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\
+///   {PreMixChild|PostMixChild}`（与运行期 `object/child.rs` /
+///   `slots::read_child_apo_guid` 读取路径一致）。
+/// - allowSilentBuffer / autoAdjust / version → FxProperties 值
+///   （`info.rs::read_install_version` 依 version 判定安装状态）。
 fn write_child_apo_config(
+    device_guid: &str,
     fx_key: &RegKey,
     config: &InstallConfig,
     original_premix: Option<windows::core::GUID>,
     original_postmix: Option<windows::core::GUID>,
 ) -> Result<()> {
-    // childGuid — 保留的原始 APO GUID（如果有）。
-    let child_guid = original_premix.or(original_postmix);
-    if let Some(g) = child_guid {
-        fx_key.write_sz("childGuid", &guid_to_string(&g))?;
+    // 独立安装信息区：HKLM\SOFTWARE\VxAPO\Child APOs\{device_guid}
+    // （HKLM\SOFTWARE 管理员可建子键；require_admin 探测键同区已验证）。
+    let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+    let (root, sub_key) = split_hklm_path(&info_key)?;
+    let info = RegKey::create(root, sub_key)?;
+
+    // PreMixChild / PostMixChild — 保留的原始 APO GUID（有才写）。
+    if let Some(g) = original_premix {
+        info.write_sz(ChildApoKind::PreMix.value_name(), &guid_to_string(&g))?;
+    }
+    if let Some(g) = original_postmix {
+        info.write_sz(ChildApoKind::PostMix.value_name(), &guid_to_string(&g))?;
     }
 
-    // allowSilentBuffer（Note 11）。
+    // 控制开关 → FxProperties（注意：本键由调用方以 KEY_SET_VALUE 打开，
+    // 仅写值所需的最小权限）。
     fx_key.write_dword("allowSilentBuffer", config.allow_silent_buffer as u32)?;
-
-    // autoAdjust（E3.3：读取 InstallConfig.auto_adjust，非硬编码）。
     fx_key.write_dword("autoAdjust", config.auto_adjust as u32)?;
-
-    // version（Note 24）。
     fx_key.write_sz("version", INSTALL_VERSION)?;
 
     Ok(())
+}
+
+/// 拆分 `HKLM\...` 完整路径为 (root HKEY, 子键路径)。
+fn split_hklm_path(path: &str) -> Result<(windows::Win32::System::Registry::HKEY, &str)> {
+    let (root_str, rest) = path
+        .split_once('\\')
+        .ok_or_else(|| VxApoError::internal(&format!("路径无根键：{path}")))?;
+    if !root_str.eq_ignore_ascii_case("HKLM") {
+        return Err(VxApoError::internal(&format!("仅支持 HKLM 根：{path}")));
+    }
+    Ok((HKEY_LOCAL_MACHINE, rest))
 }
 
 /// 删除非当前模式的旧槽位（Note 26）。
