@@ -111,6 +111,8 @@ pub fn process_audio(
             BufferAction::Skip | BufferAction::Silent => {
                 output_info.zero();
                 output_prop.u32BufferFlags = BUFFER_SILENT;
+                // EAPO:482 对齐：所有输出路径必须设置帧数（含静音/无效分支）。
+                output_prop.u32ValidFrameCount = frames as u32;
                 continue;
             }
             BufferAction::Process => {}
@@ -127,6 +129,7 @@ pub fn process_audio(
             if is_silent(&temp_buffers[..out_ch.min(temp_buffers.len())], frames) {
                 output_info.zero();
                 output_prop.u32BufferFlags = BUFFER_SILENT;
+                output_prop.u32ValidFrameCount = frames as u32;
                 continue;
             } else {
                 output_flags = BUFFER_VALID;
@@ -165,12 +168,16 @@ pub fn process_audio(
                 ErrorPolicy::Bypass => BUFFER_VALID,
                 ErrorPolicy::Silence => BUFFER_SILENT,
             };
+            output_prop.u32ValidFrameCount = frames as u32;
             continue;
         }
 
         // Step 7: 去交织 → 交织
         interleave_from(&temp_buffers[..out_ch.min(temp_buffers.len())], output_slice, out_ch.min(temp_buffers.len()), frames);
         output_prop.u32BufferFlags = output_flags;
+        // EAPO:482 对齐：显式设置输出帧数（APO 契约要求 APO 写回）——
+        // 缺失 → 引擎判输出无效 → 完全无声（2026-08-04 实测 audiodg 加载但无声根因）。
+        output_prop.u32ValidFrameCount = frames as u32;
     }
     Ok(())
 }

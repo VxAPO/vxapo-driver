@@ -65,6 +65,17 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         riid: *const GUID,
         ppvobject: *mut *mut c_void,
     ) -> windows_core::Result<()> {
+        // ---- P0-7 无声诊断探针 4（2026-08-04，debug 门控，排查完删除）----
+        // 移到函数最顶部：即使聚合检查（Step 3 CLASS_E_NOAGGREGATION）提前 return，
+        // 也留下「CreateInstance 被调 + pUnkOuter 是否非空」记录——区分「未被调」vs「被聚合拒绝」。
+        #[cfg(debug_assertions)]
+        {
+            let _ = std::fs::write(
+                r"C:\ProgramData\VxAPO\createinstance_probe.txt",
+                format!("CreateInstance clsid={:?} riid={:?} punkouter_null={}\n", self.target_clsid, unsafe { *riid }, punkouter.is_null()),
+            );
+        }
+
         // ── Step 1: 输出指针初始化 ─────────────────────────
         unsafe { *ppvobject = std::ptr::null_mut() };
 
@@ -73,9 +84,17 @@ impl IClassFactory_Impl for ClassFactory_Impl {
             return Err(Error::from(E_INVALIDARG));
         }
 
-        // ── Step 3: 聚合检查 ───────────────────────────────
+        // ── Step 3: 聚合支持（P0-7 无声根因修复）────────────
+        // EAPO `EqualizerAPO(IUnknown* pUnkOuter)` 明确支持聚合（引擎以 pUnkOuter 非空
+        // 创建 APO）——之前拒绝聚合 → 引擎静默放弃 → 无声（探针实证 punkouter_null=false）。
+        // 聚合语义：riid 必须是 IUnknown，返回 inner IUnknown；其余接口由外层层路由。
+        // 简化实现（对齐 EAPO 实际行为）：接受聚合，返回 inner 并对目标接口直接 QI。
         if !punkouter.is_null() {
-            return Err(Error::from(CLASS_E_NOAGGREGATION));
+            // 聚合时 riid 必须为 IUnknown（COM 规范），否则 E_NOINTERFACE。
+            let iid_unknown = IUnknown::IID;
+            if unsafe { *riid } != iid_unknown {
+                return Err(Error::from(windows::core::HRESULT(0x8000_4002u32 as i32))); // E_NOINTERFACE
+            }
         }
 
         // ── Step 4: 创建 ApoObject ─────────────────────────
@@ -95,8 +114,41 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 
         let hr = unsafe { qi(raw_ptr, &*riid, ppvobject as *mut *mut c_void) };
         if hr.is_err() {
+            // ---- 探针 4b：QI 失败记录（2026-08-04，debug 门控，排查完删除）----
+            #[cfg(debug_assertions)]
+            {
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\createinstance_probe.txt",
+                    format!("CreateInstance FAILED QI hr={:08X} clsid={:?} riid={:?}\n", hr.0 as u32, self.target_clsid, unsafe { *riid }),
+                );
+            }
             drop(unknown);
             return Err(Error::from(hr));
+        }
+
+        // ---- 探针 4b：成功记录 + 自检 QI IAudioProcessingObject（2026-08-04，debug 门控，删）----
+        #[cfg(debug_assertions)]
+        {
+            // 自检：inner 对象能否 QI 到 IAudioProcessingObject（IID fd7f2b29...）
+            let iapoid = windows::core::GUID::from_values(
+                0xfd7f2b29, 0x24d0, 0x4b5c, [0xb1, 0x77, 0x59, 0x2c, 0x39, 0xf9, 0xca, 0x10],
+            );
+            let mut iapopt: *mut c_void = std::ptr::null_mut();
+            let hr_self = unsafe { qi(raw_ptr, &iapoid, &mut iapopt as *mut *mut c_void) };
+            // 释放自检引用（若成功）
+            if hr_self.is_ok() {
+                let vtbl_self = unsafe { *(iapopt as *const *const usize) };
+                type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
+                let release: ReleaseFn = unsafe { std::mem::transmute(*vtbl_self.add(2)) };
+                unsafe { release(iapopt) };
+            }
+            let _ = std::fs::write(
+                r"C:\ProgramData\VxAPO\createinstance_probe.txt",
+                format!(
+                    "CreateInstance SUCCESS clsid={:?} selfQI_IAPO_hr={:08X} returned_riid={:?}\n",
+                    self.target_clsid, hr_self.0 as u32, unsafe { *riid }
+                ),
+            );
         }
 
         // ── Step 6: 释放临时引用 ───────────────────────────

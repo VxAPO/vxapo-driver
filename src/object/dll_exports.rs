@@ -128,6 +128,16 @@ pub unsafe extern "system" fn DllGetClassObject(
     // SAFETY: 由调用方（COM 运行时）保证 rclsid 有效。
     let clsid = unsafe { *rclsid };
 
+    // ---- P0-7 无声诊断探针 3（2026-08-04，debug 门控，排查完删除）----
+    // 记录引擎请求的 CLSID + riid——定位「引擎请求哪个接口」「QI 是否被拒」。
+    #[cfg(debug_assertions)]
+    {
+        let _ = std::fs::write(
+            r"C:\ProgramData\VxAPO\getclassobject_probe.txt",
+            format!("DllGetClassObject clsid={:?} riid={:?}\n", clsid, unsafe { *riid }),
+        );
+    }
+
     // ── CLSID 路由（Note 4） ────────────────────────────────
 
     // 创建工厂（#[implement] COM 智能指针，ref_count 初始 = 1）
@@ -156,6 +166,17 @@ pub unsafe extern "system" fn DllGetClassObject(
 
     if hr.is_err() {
         unsafe { *ppv = std::ptr::null_mut() };
+    }
+
+    // ---- 探针 3b：记录返回 HRESULT（2026-08-04，debug 门控，排查完删除）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\getclassobject_probe.txt",
+        ) {
+            let _ = writeln!(f, "  -> hr={:08X}", hr.0 as u32);
+        }
     }
 
     hr
@@ -326,6 +347,14 @@ fn register_com_class(
     ae_key.write_sz("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}")
         .map_err(|e| e.code())?;
     ae_key.write_dword("MaxInstances", 0xFFFF_FFFFu32).map_err(|e| e.code())?;
+    // 完整 11 字段对齐 EAPO（2026-08-04 22:35 手动补写才发现缺失；字段不全 → 引擎
+    // 只 LoadLibrary 不实例化 APO → 无声）。Major/Minor + Min/Max In/Out 6 字段。
+    ae_key.write_dword("MajorVersion", 1).map_err(|e| e.code())?;
+    ae_key.write_dword("MinorVersion", 0).map_err(|e| e.code())?;
+    ae_key.write_dword("MinInputConnections", 1).map_err(|e| e.code())?;
+    ae_key.write_dword("MaxInputConnections", 1).map_err(|e| e.code())?;
+    ae_key.write_dword("MinOutputConnections", 1).map_err(|e| e.code())?;
+    ae_key.write_dword("MaxOutputConnections", 1).map_err(|e| e.code())?;
     drop(ae_key);
 
     Ok(())

@@ -597,6 +597,21 @@ impl ApoObject {
         num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
+        // ---- P0-7 无声诊断探针（2026-08-04，debug 门控，排查完删除）----
+        // 每次调用 +1，写文件（仅测试用；RT 违规但 debug 阶段可接受）。
+        // 用 static AtomicU32 每 100 次写一次，确认 APOProcess 是否被引擎调用。
+        #[cfg(debug_assertions)]
+        {
+            use std::sync::atomic::{AtomicU32, Ordering as AOrd};
+            static FRAME_COUNTER: AtomicU32 = AtomicU32::new(0);
+            let n = FRAME_COUNTER.fetch_add(1, AOrd::Relaxed);
+            if n % 200 == 0 {
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\apo_process_probe.txt",
+                    format!("APOProcess called: {} frames={}\n", n, unsafe { (**pp_inputs).u32ValidFrameCount }),
+                );
+            }
+        }
         // P0-6（v8.1 D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
         // 双链共享同一份 child 输出作输入；child 不在 current/outgoing 任一链内。
         // 锁 inner **前**调（避免持 inner 锁调 child——child 是独立 COM 对象，无循环依赖）。
@@ -843,6 +858,16 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn Initialize(&self, cb_data_size: u32, pby_data: *const u8) -> Result<()> {
+        // ---- P0-7 无声诊断探针 5（2026-08-04，debug 门控，排查完删除）----
+        // Initialize 被调与否：引擎拿到 IAudioProcessingObject 后先调 Initialize。
+        // 之前只有 lock/apoprocess 探针，Initialize 失败被拒时 lock 自然不触发——补上。
+        #[cfg(debug_assertions)]
+        {
+            let _ = std::fs::write(
+                r"C:\ProgramData\VxAPO\initialize_probe.txt",
+                format!("Initialize clsid={:?} cb={}\n", self.clsid, cb_data_size),
+            );
+        }
         // 1. 参数校验：pby_data 非空、cb_data_size 足以容纳 APOInitSystemEffects
         //    （SDK 约定：Initialize 的 pby_data 指向完整的 APOInitSystemEffects；
         //    数据非法 → 仍初始化成功并降级默认配置，不阻断 APO 加载）。
@@ -994,6 +1019,15 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         num_output: u32,
         pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
     ) -> Result<()> {
+        // ---- P0-7 无声诊断探针 2（2026-08-04，debug 门控，排查完删除）----
+        // 记录 LockForProcess 是否被调 + 输入/输出连接数（判断引擎是否走到配置阶段）。
+        #[cfg(debug_assertions)]
+        {
+            let _ = std::fs::write(
+                r"C:\ProgramData\VxAPO\lock_probe.txt",
+                format!("LockForProcess called: num_input={} num_output={}\n", num_input, num_output),
+            );
+        }
         // Step 0: 状态机 Initialized → Locked，失败自动回退。
         self.state_cell
             .transition(ApoState::Initialized, ApoState::Locked)
