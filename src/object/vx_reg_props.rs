@@ -274,11 +274,22 @@ mod tests {
 pub struct ClsidEntry {
     pub clsid: windows::core::GUID,
     pub clsid_str: String,
+    /// CLSID 父键 (Default) 友好名（EAPO 对齐：EAPO 注册树父键有
+    /// (Default)="EqualizerAPO Pre-Mix Class"，VxAPO 之前缺失——补上供引擎辨识）。
+    pub friendly_name: String,
 }
 
 impl ClsidEntry {
     pub fn new(clsid: windows::core::GUID) -> Self {
-        Self { clsid, clsid_str: crate::sys::com::prelude::guid_to_string(&clsid) }
+        Self {
+            clsid,
+            clsid_str: crate::sys::com::prelude::guid_to_string(&clsid),
+            friendly_name: if clsid == CLSID_VXAPO_PRE_MIX {
+                "VxAPO Pre-Mix Class".to_owned()
+            } else {
+                "VxAPO Post-Mix Class".to_owned()
+            },
+        }
     }
     pub fn clsid_key_path(&self) -> String { format!("CLSID\\{}", self.clsid_str) }
     pub fn inproc_server_path(&self) -> String { format!("CLSID\\{}\\InprocServer32", self.clsid_str) }

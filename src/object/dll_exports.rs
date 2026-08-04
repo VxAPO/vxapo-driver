@@ -281,15 +281,25 @@ fn get_dll_path() -> Option<String> {
 
 /// 注册单个 CLSID 的 COM 类。
 ///
-/// 写入 `HKCR\CLSID\{GUID}\InprocServer32`（创建/打开 + 写值，经 `sys/registry`）。
+/// 写入 `HKCR\CLSID\{GUID}`（(Default)=友好名）与 `InprocServer32`
+/// （(Default)=DLL 路径 + ThreadingModel="Both"），经 `sys/registry`。
 /// 失败返回具体 HRESULT，由 `DllRegisterServer` 统一回滚。
+///
+/// **CLSID 父键 (Default) 友好名（2026-08-04 对齐 EAPO）**：EAPO 的 CLSID 注册树
+/// 在父键有 (Default)="EqualizerAPO Pre-Mix Class"；VxAPO 之前只写 InprocServer32
+/// 缺父键默认值——音频引擎按 CLSID 父键辨识 APO，补写 `entry.friendly_name`。
 fn register_com_class(
     entry: &vx_reg_props::ClsidEntry,
     dll_path: &str,
 ) -> Result<(), HRESULT> {
-    let inproc_path = entry.inproc_server_path();
+    // CLSID 父键 (Default) = 友好名（EAPO 对齐）。
+    let clsid_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &entry.clsid_key_path())
+        .map_err(|e| e.code())?;
+    clsid_key.write_sz("", &entry.friendly_name).map_err(|e| e.code())?;
+    drop(clsid_key);
 
-    // 创建/打开 InprocServer32 键（KEY_ALL_ACCESS；键已存在时覆盖写入 → 幂等）
+    // InprocServer32 键（KEY_ALL_ACCESS；键已存在时覆盖写入 → 幂等）
+    let inproc_path = entry.inproc_server_path();
     let key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &inproc_path)
         .map_err(|e| e.code())?;
 
