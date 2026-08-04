@@ -1066,9 +1066,12 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         let temp_buffer_new = vec![0.0f32; max_samples];
 
         // deinterleave 空间（channels 个 Vec）。
+        // **必须用 vec![0.0; len]（带长度），不能用 Vec::with_capacity（len=0）**——
+        // deinterleave_into 按 `output[ch][f]` 写会越界 panic → catch_unwind 捕获 →
+        // panic 兜底输出清零 + BUFFER_SILENT → 完全无声（2026-08-04 实测 audiodg 加载后无声音根因）。
         let mut temp_buffers: Vec<Vec<f32>> = Vec::with_capacity(max_ch);
         for _ in 0..max_ch {
-            temp_buffers.push(Vec::with_capacity(pipeline_context.max_frame_count));
+            temp_buffers.push(vec![0.0f32; pipeline_context.max_frame_count]);
         }
 
         // Step 6: 更新内部状态。（R1：退役链由控制线程锁内统一析构）
