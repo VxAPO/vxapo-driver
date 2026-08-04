@@ -6,11 +6,11 @@
 use crate::install::device::endpoint::{query_endpoint, EndpointInfo, EndpointState};
 use crate::install::device::format::{read_audio_format, AudioFormat};
 use crate::install::device::slots::{
-    read_all_slots, ApoSlot, InstallMode, SlotValue, FX_PROPERTIES_KEY, INSTALL_VERSION,
-    INSTALL_VERSION_LEGACY,
+    read_all_slots, ApoSlot, InstallMode, SlotValue, detect_install_mode as eapo_detect_mode,
+    FX_PROPERTIES_KEY, INSTALL_VERSION, INSTALL_VERSION_LEGACY,
 };
+use crate::sys::registry::{RegKey, is_windows_version_at_least};
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
-use crate::sys::registry::RegKey;
 use crate::utils::vx_error::Result;
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
@@ -200,6 +200,35 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 /// 检查端点的 FxProperties 键是否存在。
 pub fn has_fx_properties(endpoint_key: &RegKey) -> bool {
     endpoint_key.open_sub_key(FX_PROPERTIES_KEY).is_ok()
+}
+
+/// 蓝牙组合设备容器 ID 值名（PKEY_Device_ContainerId，WT_DEVICE PID 41）。
+///
+/// EAPO DeviceAPOInfo.cpp 51/410-411 实证——端点 `Properties` 子键下存在此值
+/// 即 Win11 蓝牙组合设备（EFX 无效），SfxMfx 模式探测判据。
+const BLUETOOTH_CONTAINER_VALUE: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},41";
+
+/// EAPO 三档安装模式自动探测（CLI 缺省 / APP 调用入口）。
+///
+/// 组合三个输入交给 `slots::detect_install_mode`（纯逻辑）：
+/// - OS 版本：`is_windows_version_at_least(6,3,9600)` → Win8.1+；
+/// - 5 槽位：从端点 FxProperties 读取；
+/// - 蓝牙容器：端点 `Properties` 子键下 `{b3f8fa53-...},41` 值存在。
+///
+/// # 返回
+///
+/// `InstallMode`（LfxGfx / SfxMfx / SfxEfx）——CLI `--mode` 缺省时用此结果；
+/// APP 自动安装同样调用。
+pub fn detect_mode_for_device(endpoint_key: &RegKey) -> InstallMode {
+    let is_win81 = is_windows_version_at_least(6, 3, 9600).unwrap_or(false);
+    let slots = read_all_slots(endpoint_key);
+
+    let has_bluetooth = endpoint_key
+        .open_sub_key("Properties")
+        .map(|p| p.value_exists(BLUETOOTH_CONTAINER_VALUE).unwrap_or(false))
+        .unwrap_or(false);
+
+    eapo_detect_mode(is_win81, &slots, has_bluetooth)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
