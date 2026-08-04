@@ -363,6 +363,35 @@ impl RegKey {
         win32_ok(err)
     }
 
+    /// 写入 REG_MULTI_SZ（多字符串，双 null 结束）。
+    ///
+    /// APO 处理模式注册（EAPO DeviceAPOInfo.cpp 74-77/603-638）：
+    /// `{d3993a3f-...},{PID}` 槽位的 ProcessingModes 值是 REG_MULTI_SZ，
+    /// 值 = 处理模式 GUID（如 AUDIO_SIGNALPROCESSINGMODE_DEFAULT）——Windows
+    /// 音频引擎按此值判定「该槽位 APO 参与哪个处理模式」，缺了它父槽位 APO 不被加载。
+    pub fn write_multi_value(&self, name: &str, values: &[String]) -> Result<()> {
+        let name = HSTRING::from(name);
+        // REG_MULTI_SZ 布局：各字符串 UTF-16LE + \0，最后双 \0 结束。
+        let mut bytes: Vec<u8> = Vec::new();
+        for v in values {
+            for u in v.encode_utf16() {
+                bytes.extend_from_slice(&u.to_le_bytes());
+            }
+            bytes.extend_from_slice(&[0, 0]); // 每项 null 终止
+        }
+        bytes.extend_from_slice(&[0, 0]); // 列表结束（双 null）
+        let err = unsafe {
+            RegSetValueExW(
+                self.handle,
+                &name,
+                None,
+                REG_MULTI_SZ,
+                Some(&bytes),
+            )
+        };
+        win32_ok(err)
+    }
+
     /// 删除值（幂等）。
     pub fn delete_value(&self, name: &str) -> Result<()> {
         let name = HSTRING::from(name);

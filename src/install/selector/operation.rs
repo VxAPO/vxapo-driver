@@ -615,12 +615,20 @@ fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: windows::core::GUID) -> 
     Ok(())
 }
 
-/// 写入默认处理模式 GUID（Step 6，Note 26）。
+/// 写入默认处理模式（Step 6，**对齐 EAPO DeviceAPOInfo.cpp 74-77/603-638**）。
+///
+/// EAPO 写槽位 GUID 的**同时**写 `{d3993a3f-99c2-4402-b5ec-a92a0367664b},{PID}`
+/// 的 REG_MULTI_SZ，值 = AUDIO_SIGNALPROCESSINGMODE_DEFAULT（{C18E2F7E-...}）。
+/// Windows 音频引擎按此判「该槽位 APO 参与默认处理模式」——缺了它父槽位 APO 不加载
+/// （2026-08-04 实证：EAPO 当父时 VxAPO 子 APO 能加载；VxAPO 独立父槽位不加载）。
 fn write_default_processmode(fx_key: &RegKey) -> Result<()> {
-    fx_key.write_sz(
-        "KSDATAFORMAT_SUBTYPE_DEFAULT_PROCESSMODE",
-        &guid_to_string(&AUDIO_SIGNALPROCESSINGMODE_DEFAULT),
-    )?;
+    // ProcessingModes 值名（EAPO 源码常量）：{d3993a3f-99c2-4402-b5ec-a92a0367664b},{sfx|efx PID}。
+    let modes_name_sfx = format!("{{{}}},{}", "d3993a3f-99c2-4402-b5ec-a92a0367664b", 5);
+    let modes_name_efx = format!("{{{}}},{}", "d3993a3f-99c2-4402-b5ec-a92a0367664b", 7);
+    let default_str = guid_to_string(&AUDIO_SIGNALPROCESSINGMODE_DEFAULT);
+    let values = vec![default_str];
+    fx_key.write_multi_value(&modes_name_sfx, &values)?;
+    fx_key.write_multi_value(&modes_name_efx, &values)?;
     Ok(())
 }
 
