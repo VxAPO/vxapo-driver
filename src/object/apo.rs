@@ -31,7 +31,6 @@ use crate::sys::com::apo_types::{
 };
 use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
 use crate::sys::com::prelude::guid_to_string;
-use crate::sys::known_folder::documents_folder;
 use windows::Win32::Media::Audio::Apo::{APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES};
 use windows::Win32::System::Com::CoTaskMemAlloc;
 
@@ -40,8 +39,16 @@ use crate::sys::com::apo_types::{
     APOERR_NUM_CONNECTIONS_INVALID, BUFFER_SILENT, BUFFER_VALID,
 };
 
-/// 配置文件默认路径（兜底：无设备 GUID / Documents 解析失败时回退单实例共用路径）。
+/// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
 const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.txt";
+
+/// per-device 配置根目录（方案 A，2026-08-04 用户确认）。
+///
+/// **为什么不用 Documents**：`{Documents}\VxAPO\{GUID}` 是用户级路径——APO 真实运行在
+/// audiodg（SYSTEM 服务），它调 `documents_folder()` 拿到的是 SYSTEM 的 Documents，
+/// 读不到 CLI（用户进程）写入的文件，导致「改 Documents 的 config 没效果」。
+/// `C:\ProgramData\VxAPO` 全用户共享，SYSTEM + 当前用户都可读写（与快照目录同根）。
+const CONFIG_ROOT: &str = r"C:\ProgramData\VxAPO";
 
 /// 单实例共用子目录名（无设备 GUID 兜底，object 7.1.8）。
 const DEFAULT_DEVICE_DIR: &str = "_default";
@@ -74,25 +81,19 @@ fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID> {
     }
 }
 
-/// 确定 per-device 配置路径（object 7.1.8）：
-/// `{Documents}\VxAPO\{GUID}\config.txt`；无 GUID / 解析失败 → `_default` 兜底。
+/// 确定 per-device 配置路径（object 7.1.8，方案 A）：
+/// `C:\ProgramData\VxAPO\{GUID}\config.txt`；无 GUID / 解析失败 → `_default` 兜底。
 /// 目录自动创建；config.txt 缺失时写默认 passthrough（空配置 → 链为空即 passthrough）。
 fn resolve_config_path(init: Option<&APOInitSystemEffects>) -> String {
-    let documents = match documents_folder() {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("documents_folder() failed: {} — fallback to shared default config", e);
-            return DEFAULT_CONFIG_PATH.to_owned();
-        }
-    };
-    resolve_config_path_from(&documents, init)
+    resolve_config_path_from(CONFIG_ROOT, init)
 }
 
-/// 纯拼接 + 目录/文件保障（可单元测试，不依赖真实 Documents 位置）。
+/// 纯拼接 + 目录/文件保障（可单元测试，不依赖真实路径）。
 ///
-/// `documents`：文档文件夹绝对路径。返回 `{documents}\VxAPO\{GUID}\config.txt`；
-/// 无 GUID → `_default`；目录创建失败 → 回退 `DEFAULT_CONFIG_PATH`。
-fn resolve_config_path_from(documents: &str, init: Option<&APOInitSystemEffects>) -> String {
+/// `config_root`：配置根目录（生产 = `C:\ProgramData\VxAPO`，测试 = 临时目录）。
+/// 返回 `{config_root}\{GUID}\config.txt`；无 GUID → `_default`；
+/// 目录创建失败 → 回退 `DEFAULT_CONFIG_PATH`。
+fn resolve_config_path_from(config_root: &str, init: Option<&APOInitSystemEffects>) -> String {
     // 端点 GUID → 大写 `{XXXXXXXX-...}` 目录名。
     let device_dir = match init.and_then(extract_endpoint_guid) {
         Some(guid) => {
@@ -103,9 +104,7 @@ fn resolve_config_path_from(documents: &str, init: Option<&APOInitSystemEffects>
         None => DEFAULT_DEVICE_DIR.to_owned(),
     };
 
-    let dir = std::path::Path::new(&documents)
-        .join("VxAPO")
-        .join(&device_dir);
+    let dir = std::path::Path::new(config_root).join(&device_dir);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::warn!("create_dir_all({}) failed: {} — fallback to shared default config", dir.display(), e);
         return DEFAULT_CONFIG_PATH.to_owned();
@@ -1166,13 +1165,13 @@ mod tests {
 
     #[test]
     fn config_path_default_device_dir_when_no_guid() {
-        // 无端点 GUID（属性存储缺失）→ `{docs}\VxAPO\_default\config.txt`。
-        let docs = std::env::temp_dir().join("vxapo_apo_test").join("docs");
-        let docs_str = docs.display().to_string();
+        // 无端点 GUID（属性存储缺失）→ `{config_root}\_default\config.txt`。
+        let root = std::env::temp_dir().join("vxapo_apo_test").join("cfg");
+        let root_str = root.display().to_string();
         let init = empty_init();
-        let path = resolve_config_path_from(&docs_str, Some(&init));
+        let path = resolve_config_path_from(&root_str, Some(&init));
         let p = Path::new(&path);
-        assert!(p.starts_with(&docs));
+        assert!(p.starts_with(&root));
         assert!(p.ends_with("config.txt"));
         // 目录应包含 `_default`。
         assert!(path.contains("_default"));
@@ -1183,6 +1182,33 @@ mod tests {
         assert!(content.contains("passthrough"));
         // 清理（避免污染 temp）。
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn config_path_custom_guid_dir() {
+        // 有明确端点 GUID（用模拟 IPropertyStore 成本高，此处用 default GUID 走不到
+        // Real IPropertyStore——改为验证：手动构造 pAPOSystemEffectsProperties 为 None
+        // 时仍 `_default`。GUID 路径分支由 extract_endpoint_guid（真实环境）覆盖。
+        // 这里验证 `_default` 兜底 + 目录创建 + 文件写入的完整链路。
+        let root = std::env::temp_dir().join("vxapo_apo_test2").join("cfg");
+        let root_str = root.display().to_string();
+        let init = empty_init();
+        let path = resolve_config_path_from(&root_str, Some(&init));
+        assert!(path.contains("_default"));
+        // 幂等：再次调用不应报错（目录已存在）。
+        let _ = resolve_config_path_from(&root_str, Some(&init));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_path_none_init_falls_back_default() {
+        // init=None（Initialize 数据非法降级）→ `_default` 兜底。
+        let root = std::env::temp_dir().join("vxapo_apo_test3").join("cfg");
+        let root_str = root.display().to_string();
+        let path = resolve_config_path_from(&root_str, None);
+        assert!(path.contains("_default"));
+        assert!(Path::new(&path).parent().unwrap().is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// P0-5 测试：`apo_process_panic_fallback` 在模拟 panic 后输出清零 + BUFFER_SILENT + error_count++。
@@ -1247,32 +1273,4 @@ mod tests {
         assert_eq!(output_ret.unwrap(), 0);
     }
 
-    #[test]
-    fn config_path_custom_guid_dir() {
-        // 有明确端点 GUID（用模拟 IPropertyStore 成本高，此处用 default GUID 走不到
-        // Real IPropertyStore——改为验证：手动构造 pAPOSystemEffectsProperties 为 None
-        // 时仍 `_default`。GUID 路径分支由 extract_endpoint_guid（真实环境）覆盖。
-        // 这里验证 `_default` 兜底 + 目录创建 + 文件写入的完整链路。
-        let docs = std::env::temp_dir().join("vxapo_apo_test2").join("docs");
-        let docs_str = docs.display().to_string();
-        let init = empty_init();
-        let path = resolve_config_path_from(&docs_str, Some(&init));
-        assert!(path.contains("_default"));
-        // 幂等：再次调用不应报错（目录已存在）。
-        let _ = resolve_config_path_from(&docs_str, Some(&init));
-        let _ = std::fs::remove_dir_all(docs.join("VxAPO"));
-        let _ = std::fs::remove_dir_all(&docs);
-    }
-
-    #[test]
-    fn config_path_none_init_falls_back_default() {
-        // init=None（Initialize 数据非法降级）→ `_default` 兜底。
-        let docs = std::env::temp_dir().join("vxapo_apo_test3").join("docs");
-        let docs_str = docs.display().to_string();
-        let path = resolve_config_path_from(&docs_str, None);
-        assert!(path.contains("_default"));
-        assert!(Path::new(&path).parent().unwrap().is_dir());
-        let _ = std::fs::remove_dir_all(docs.join("VxAPO"));
-        let _ = std::fs::remove_dir_all(&docs);
-    }
 }
