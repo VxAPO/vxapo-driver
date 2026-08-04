@@ -11,9 +11,14 @@ pub fn increment() -> u32 {
 }
 
 /// 实例析构时递减。返回递减后的值。
+///
+/// 使用 saturating_sub：INST_COUNT 仅用于统计（DllCanUnloadNow），
+/// 生产路径由 COM 引用计数保证不会重复 drop；测试并行时各测试
+/// 的 `reset_for_test()` 会交错清零全局计数，若此时仍有 ApoObject
+/// 存活 drop，裸 `prev - 1` 会在 prev=0 时 u32 下溢 panic（flaky）。
 pub fn decrement() -> u32 {
     let prev = INST_COUNT.fetch_sub(1, Ordering::SeqCst);
-    prev - 1
+    prev.saturating_sub(1)
 }
 
 /// 读取当前活跃实例数。

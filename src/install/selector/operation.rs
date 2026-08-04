@@ -333,7 +333,8 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     let endpoint_path = find_endpoint_path(device_guid)?;
     let fx_path = format!("{}\\{}", endpoint_path, FX_PROPERTIES_KEY);
 
-    let fx_key = match RegKey::open(HKEY_LOCAL_MACHINE, &fx_path) {
+    // 用 SAM_ALL（create）打开：删除值需要写权限，SAM_READ 的 open 会 0x80070005。
+    let fx_key = match RegKey::create(HKEY_LOCAL_MACHINE, &fx_path) {
         Ok(k) => k,
         Err(_) => {
             // FxProperties 不存在 → 无安装，直接返回成功。
@@ -393,17 +394,27 @@ fn find_endpoint_path(device_guid: &str) -> Result<String> {
 /// 确保 FxProperties 子键存在。
 ///
 /// 返回 `(key, is_new)`。
+///
+/// **只读句柄 bug（2026-08-04 实证）**：旧实现已存在时用 `RegKey::open`（SAM_READ）
+/// 返回——后续 `write_child_apo_config` / `write_apo_slot` / `delete_value` 对只读句柄
+/// 全部拒绝访问（0x80070005），即使进程是管理员。已存在时必须重新以 SAM_ALL 打开
+/// （`RegKey::create`），is_new 判定仍是读 `version` 值。
 fn ensure_fx_properties(fx_path: &str, tx: &mut Transaction) -> Result<(RegKey, bool)> {
-    // 先尝试打开（已存在）。
-    if let Ok(key) = RegKey::open(HKEY_LOCAL_MACHINE, fx_path) {
-        let is_new = !key.value_exists("version").unwrap_or(false);
+    // 已存在：读 version 判定 is_new，然后以可写句柄（SAM_ALL）打开。
+    if RegKey::open(HKEY_LOCAL_MACHINE, fx_path).is_ok() {
+        let is_new = match RegKey::open(HKEY_LOCAL_MACHINE, fx_path) {
+            Ok(k) => !k.value_exists("version").unwrap_or(false),
+            Err(_) => true,
+        };
+        // create = SAM_ALL（等价 create-or-open 并保证可写）。
+        let key = RegKey::create(HKEY_LOCAL_MACHINE, fx_path)?;
         if is_new {
             tx.record(RollbackAction::DeleteKey(fx_path.to_string()));
         }
         return Ok((key, is_new));
     }
 
-    // 不存在 → 创建。
+    // 不存在 → 创建（SAM_ALL）。
     let key = RegKey::create(HKEY_LOCAL_MACHINE, fx_path)?;
     tx.record(RollbackAction::DeleteKey(fx_path.to_string()));
     Ok((key, true))
