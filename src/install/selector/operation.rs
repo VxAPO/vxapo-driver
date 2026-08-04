@@ -144,6 +144,41 @@ fn guid_to_bytes(g: windows::core::GUID) -> [u8; 16] {
     bytes
 }
 
+/// hex 片段（4 字符）→ 4 字节。
+fn hex_to_bytes(s: &[u8]) -> Option<[u8; 4]> {
+    if s.len() != 4 {
+        return None;
+    }
+    let mut out = [0u8; 4];
+    for (i, chunk) in s.chunks(2).enumerate() {
+        let hi = hex_val(chunk[0])?;
+        let lo = hex_val(chunk[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+/// hex 片段（4 字符）→ u16。
+fn hex_to_u16(s: &[u8]) -> Option<u16> {
+    Some(hex_to_bytes(s)?[0] as u16 * 256 + hex_to_bytes(s)?[1] as u16)
+}
+
+/// hex 片段（8 字符）→ u32。
+fn hex_to_u32(s: &[u8]) -> Option<u32> {
+    let b = hex_to_bytes(s)?;
+    Some(u32::from_be_bytes(b))
+}
+
+/// 单个 hex 字符 → 数值。
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// 16 字节 → GUID。
 fn guid_from_bytes(bytes: &[u8]) -> Option<windows::core::GUID> {
     if bytes.len() < 16 {
@@ -408,37 +443,21 @@ fn read_slot_safe(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
     match fx_key.read_value(&slot.value_name()) {
         Ok(crate::sys::registry::RegValue::Sz(s)) => {
             let s = s.trim();
-            // 复用 slots 的表达式太长，就地解析 `{...}` 格式（与 guid_to_string 输出一致）。
-            if s.starts_with('{') && s.ends_with('}') {
-                let inner = &s[1..s.len() - 1];
-                let parts: Vec<&str> = inner.split('-').collect();
-                if parts.len() == 5 {
-                    let data1 = u32::from_str_radix(parts[0], 16).ok();
-                    let data2 = u16::from_str_radix(parts[1], 16).ok();
-                    let data3 = u16::from_str_radix(parts[2], 16).ok();
-                    if let (Some(d1), Some(d2), Some(d3)) = (data1, data2, data3) {
-                        if parts[3].len() == 4 && parts[4].len() == 12 {
-                            let mut data4 = [0u8; 8];
-                            let mut ok = true;
-                            for (i, c) in parts[3].chars().enumerate() {
-                                match u8::from_str_radix(&c.to_string(), 16) {
-                                    Ok(b) => data4[i] = b,
-                                    Err(_) => { ok = false; break; }
-                                }
-                            }
-                            if ok {
-                                for (i, c) in parts[4].chars().enumerate() {
-                                    match u8::from_str_radix(&c.to_string(), 16) {
-                                        Ok(b) => data4[i + 4] = b,
-                                        Err(_) => { ok = false; break; }
-                                    }
-                                }
-                            }
-                            if ok {
-                                return SlotValue::Guid(windows::core::GUID { data1: d1, data2: d2, data3: d3, data4 });
-                            }
-                        }
-                    }
+            // 就地解析 `{...}`（与 guid_to_string 输出一致）。data4 = 4+12=16 hex 字符，
+            // 每 2 字符 = 1 字节 = 8 字节。旧实现每字符 1 字节写 data4[i+4] 越界
+            // （data4 仅 [u8;8]）→ 安装读 EAPO REG_SZ（SFX=PreMix 等）时 panic。
+            let b = s.as_bytes();
+            if s.len() == 38 && s.starts_with('{') && s.ends_with('}') {
+                let d1 = hex_to_u32(&b[1..9]);
+                let d2 = hex_to_u16(&b[10..14]);
+                let d3 = hex_to_u16(&b[15..19]);
+                let lo = hex_to_bytes(&b[20..24]);
+                let hi = hex_to_bytes(&b[25..37]);
+                if let (Some(d1), Some(d2), Some(d3), Some(lo), Some(hi)) = (d1, d2, d3, lo, hi) {
+                    let mut data4 = [0u8; 8];
+                    data4[..4].copy_from_slice(&lo);
+                    data4[4..].copy_from_slice(&hi);
+                    return SlotValue::Guid(windows::core::GUID { data1: d1, data2: d2, data3: d3, data4 });
                 }
             }
             SlotValue::NoValue
