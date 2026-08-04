@@ -85,8 +85,9 @@ impl InstallConfig {
 enum RollbackAction {
     /// 删除指定键路径（安装新建的键）。
     DeleteKey(String),
-    /// 恢复指定值（原名 + 备份字节）。
-    RestoreValue { key_path: String, name: String, backup: Vec<u8> },
+    /// 恢复指定值（原名 + 备份 GUID 字符串——槽位必须写 REG_SZ，
+    /// 见 `write_apo_slot` 的 REG_SZ 实证说明）。
+    RestoreValue { key_path: String, name: String, backup: String },
 }
 
 /// 简单事务：记录回滚动作，Drop 时逆序执行（未 commit 时）。
@@ -123,7 +124,7 @@ impl Drop for Transaction {
                 }
                 RollbackAction::RestoreValue { key_path, name, backup } => {
                     if let Ok(key) = RegKey::create(HKEY_LOCAL_MACHINE, key_path) {
-                        let _ = key.write_binary(name, backup);
+                        let _ = key.write_sz(name, backup);
                     }
                 }
             }
@@ -453,11 +454,10 @@ fn record_slot_backups(
 ) {
     for slot in [mode.premix_slot(), mode.postmix_slot()] {
         if let SlotValue::Guid(g) = read_slot_safe(fx_key, slot) {
-            let bytes = guid_to_bytes(g).to_vec();
             tx.record(RollbackAction::RestoreValue {
                 key_path: fx_path.to_string(),
                 name: slot.value_name(),
-                backup: bytes,
+                backup: guid_to_string(&g),
             });
         }
     }
@@ -588,9 +588,13 @@ fn delete_other_mode_slots(fx_key: &RegKey, mode: InstallMode) {
 }
 
 /// 写入 APO CLSID 到指定槽位。
+///
+/// **必须写 REG_SZ（GUID 字符串）**——EAPO 生态（RegistryHelper.h）与 Windows
+/// 音频枚举器读此槽位期望 REG_SZ；写 REG_BINARY 会报
+/// 「Registry value ... has wrong type」导致 EAPO 无法枚举设备（2026-08-04 实证）。
+/// 与 `slots::read_slot_value` 的 REG_SZ 解析分支一致。
 fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: windows::core::GUID) -> Result<()> {
-    let bytes = guid_to_bytes(guid);
-    fx_key.write_binary(&slot.value_name(), &bytes)?;
+    fx_key.write_sz(&slot.value_name(), &guid_to_string(&guid))?;
     Ok(())
 }
 
