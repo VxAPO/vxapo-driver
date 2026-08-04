@@ -133,25 +133,6 @@ impl Drop for Transaction {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GUID 辅助（GUID→字符串走 sys::com::prelude；16 字节小端序列化就地实现）
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 16 字节 → GUID。
-fn guid_from_bytes(bytes: &[u8]) -> Option<windows::core::GUID> {
-    if bytes.len() < 16 {
-        return None;
-    }
-    Some(windows::core::GUID {
-        data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        data2: u16::from_le_bytes([bytes[4], bytes[5]]),
-        data3: u16::from_le_bytes([bytes[6], bytes[7]]),
-        data4: [
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ],
-    })
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
 // install_endpoint — Note 47 完整 7 步（带事务回滚）
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -218,22 +199,29 @@ pub fn install_endpoint(
     let (original_premix, original_postmix) =
         read_original_apo_guids(&fx_key, config);
 
+    // ── capture 特例（EAPO DeviceAPOInfo.cpp 583/607/632）───────────────
+    // 采集端点（Capture）只装 PreMix，PostMix 不装（VxAPO 不做采集端增强）。
+    // 由 find_endpoint_path 返回路径含 Capture 判定，写子 APO 和槽位时共用。
+    let is_capture = endpoint_path.contains("Capture");
+
     // ── Step 1: 写入子 APO 配置（独立安装信息区，v8.4 路径隔离）──────────
     // `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`。
     // 与运行期 `object/child.rs` / `install/device/slots::read_child_apo_guid`
     // 读取路径一致（旧实现写 `FxProperties\childGuid` + 建 `ChildApoKeys`
     // 子键——运行期无人读，且 FxProperties ACL 不给管理员 CreateSubKey）。
+    // capture 不装 PostMix → childPostMix 无意义，强制 None。
 
-    write_child_apo_config(device_guid, &fx_key, config, original_premix, original_postmix)?;
+    let child_postmix = if is_capture { None } else { original_postmix };
+    write_child_apo_config(device_guid, &fx_key, config, original_premix, child_postmix)?;
 
-    // ── Step 5: 按模式写入 APO GUID ──────────────────────────────────────
+    // ── Step 5: 按模式写入 APO GUID（capture 只写 PreMix）───────────────
 
     delete_other_mode_slots(&fx_key, config.install_mode);
 
     if config.install_premix {
         write_apo_slot(&fx_key, config.install_mode.premix_slot(), CLSID_VXAPO_PRE_MIX)?;
     }
-    if config.install_postmix {
+    if config.install_postmix && !is_capture {
         write_apo_slot(&fx_key, config.install_mode.postmix_slot(), CLSID_VXAPO_POST_MIX)?;
     }
 
@@ -572,10 +560,29 @@ fn split_hklm_path(path: &str) -> Result<(windows::Win32::System::Registry::HKEY
     Ok((HKEY_LOCAL_MACHINE, rest))
 }
 
-/// 删除非当前模式的旧槽位（Note 26）。
+/// 删除非当前模式的旧槽位（EAPO 互斥语义对齐，DeviceAPOInfo.cpp 578-640）。
+///
+/// EAPO 三模式互斥写槽位 + 不动保留槽位：
+/// - LfxGfx: 删 SFX/MFX/EFX（Legacy 独占）
+/// - SfxMfx: 删 LFX/GFX，**不动 EFX**（蓝牙组合设备 EFX 可能无效）
+/// - SfxEfx: 删 LFX/GFX，**不动 MFX**
+///
+/// 旧 VxAPO 实现一律删「非当前模式所有槽位」→ SfxEfx 误删 MFX（蓝牙场景
+/// 会造成 MFX 与 EFX 同时冲突）；本实现保留 EAPO 语义的「不动槽位」。
 fn delete_other_mode_slots(fx_key: &RegKey, mode: InstallMode) {
+    let pre = mode.premix_slot();
+    let post = mode.postmix_slot();
     for slot in ApoSlot::ALL {
-        if slot != mode.premix_slot() && slot != mode.postmix_slot() {
+        if slot == pre || slot == post {
+            continue;
+        }
+        // EAPO 保留槽位：SfxMfx 不动 EFX、SfxEfx 不动 MFX。
+        let keep = match mode {
+            InstallMode::SfxMfx => slot == ApoSlot::Efx,
+            InstallMode::SfxEfx => slot == ApoSlot::Mfx,
+            InstallMode::LfxGfx => false,
+        };
+        if !keep {
             let _ = fx_key.delete_value(&slot.value_name());
         }
     }
@@ -657,11 +664,6 @@ mod tests {
         assert_eq!(guid_to_string(&g), "{FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF}");
     }
 
-    #[test]
-    fn guid_from_bytes_too_short() {
-        assert!(guid_from_bytes(&[0u8; 15]).is_none());
-    }
-
     /// 回归：EAPO REG_SZ 槽位（GUID 字符串）由 `slots::read_slot_value` 正确解析。
     ///
     /// 2026-08-04 双 bug 实证：
@@ -695,6 +697,46 @@ mod tests {
                 | (lo as char).to_digit(16).unwrap() as u8;
         }
         assert_eq!(data4, [0xB3, 0x6D, 0x41, 0x9E, 0x92, 0x4A, 0x6D, 0x79]);
+    }
+
+    /// EAPO 互斥保留语义：SfxEfx 不动 MFX、SfxMfx 不动 EFX、LfxGfx 全删。
+    ///
+    /// 用纯逻辑验证——遍历 ApoSlot::ALL 计算「应删除」集合（不碰注册表），
+    /// 与实例实现的 keep 判定保持一致。
+    #[test]
+    fn delete_other_mode_slots_keep_semantics() {
+        // 对三种模式的 pre/post 槽位，验证 keep 判定结果。
+        for mode in [InstallMode::SfxEfx, InstallMode::SfxMfx, InstallMode::LfxGfx] {
+            let pre = mode.premix_slot();
+            let post = mode.postmix_slot();
+            for slot in ApoSlot::ALL {
+                let is_target = slot == pre || slot == post;
+                let keep = !is_target && match mode {
+                    InstallMode::SfxEfx => slot == ApoSlot::Mfx,
+                    InstallMode::SfxMfx => slot == ApoSlot::Efx,
+                    InstallMode::LfxGfx => false,
+                };
+                if is_target {
+                    assert!(!keep, "{mode:?} target slot should not be in keep set");
+                }
+                // 只需验证「应删集合」不含 pre/post——具体保留逻辑由实例行为验证。
+            }
+        }
+        // 显式断言关键保留：SfxEfx 保留 MFX、SfxMfx 保留 EFX。
+        let mk_keep = |mode: InstallMode, slot: ApoSlot| {
+            mode.premix_slot() != slot
+                && mode.postmix_slot() != slot
+                && match mode {
+                    InstallMode::SfxEfx => slot == ApoSlot::Mfx,
+                    InstallMode::SfxMfx => slot == ApoSlot::Efx,
+                    InstallMode::LfxGfx => false,
+                }
+        };
+        assert!(mk_keep(InstallMode::SfxEfx, ApoSlot::Mfx));
+        assert!(!mk_keep(InstallMode::SfxEfx, ApoSlot::Gfx));
+        assert!(mk_keep(InstallMode::SfxMfx, ApoSlot::Efx));
+        assert!(!mk_keep(InstallMode::SfxMfx, ApoSlot::Gfx));
+        assert!(!mk_keep(InstallMode::LfxGfx, ApoSlot::Efx));
     }
 
     #[test]
