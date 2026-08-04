@@ -277,6 +277,51 @@ fn is_zero_guid(g: &windows::core::GUID) -> bool {
     g == &windows::core::GUID::zeroed()
 }
 
+/// EAPO 三档安装模式探测（DeviceAPOInfo.cpp 396-413，C41-C44）。
+///
+/// 纯逻辑 API——调用方（APP/守护）负责准备输入，driver 只做判定：
+///
+/// | 优先级 | 条件 | 模式 |
+/// |--------|------|------|
+/// | 0 | Win < 8.1（不探测） | LfxGfx（Legacy 初始默认） |
+/// | 1 | Win8.1+ 且 FxProperties **只有 LFX/GFX 值、SFX/MFX/EFX 全空** | LfxGfx（驱动仅支持 Legacy） |
+/// | 2 | 端点 Properties 子键存在蓝牙容器 ID（`{b3f8fa53-...},41`） | SfxMfx（Win11 蓝牙组合，EFX 无效） |
+/// | 3 | 否则（现代驱动默认） | SfxEfx |
+///
+/// # 参数
+///
+/// - `is_windows_8_1_or_newer`：OS 版本判定（registry::is_windows_version_at_least(6,3,9600)）。
+/// - `slots`：5 槽位值（LFX/GFX/SFX/MFX/EFX），来自端点 FxProperties。
+/// - `has_bluetooth_container`：端点 `Properties` 子键下
+///   `{b3f8fa53-0004-438e-9003-51a46e139bfc},41`（PKEY_Device_ContainerId，PID 41）值存在。
+pub fn detect_install_mode(
+    is_windows_8_1_or_newer: bool,
+    slots: &[SlotValue; 5],
+    has_bluetooth_container: bool,
+) -> InstallMode {
+    if !is_windows_8_1_or_newer {
+        return InstallMode::LfxGfx;
+    }
+
+    // C41：只有 LFX/GFX 值、SFX/MFX/EFX 全空 → Legacy 独占。
+    let has_lfx = matches!(slots[ApoSlot::Lfx.index() as usize], SlotValue::Guid(_));
+    let has_gfx = matches!(slots[ApoSlot::Gfx.index() as usize], SlotValue::Guid(_));
+    let has_sfx = matches!(slots[ApoSlot::Sfx.index() as usize], SlotValue::Guid(_));
+    let has_mfx = matches!(slots[ApoSlot::Mfx.index() as usize], SlotValue::Guid(_));
+    let has_efx = matches!(slots[ApoSlot::Efx.index() as usize], SlotValue::Guid(_));
+    if (has_lfx || has_gfx) && !has_sfx && !has_mfx && !has_efx {
+        return InstallMode::LfxGfx;
+    }
+
+    // C42：蓝牙组合设备容器 ID 存在 → SfxMfx。
+    if has_bluetooth_container {
+        return InstallMode::SfxMfx;
+    }
+
+    // C43：默认 SfxEfx。
+    InstallMode::SfxEfx
+}
+
 /// 从端点根键读取所有 5 个槽位的值。
 ///
 /// 尝试打开 `FxProperties` 子键：
@@ -934,6 +979,56 @@ mod tests {
     }
 
     // ── 常量验证 ──────────────────────────────────────────────────────────
+
+    // ── detect_install_mode（EAPO 三档探测） ──────────────────────────────
+
+    #[test]
+    fn detect_mode_old_windows_defaults_lfxgfx() {
+        // Win < 8.1 → 不探测，Legacy 初始默认。
+        let slots = [SlotValue::NoKey; 5];
+        assert_eq!(detect_install_mode(false, &slots, false), InstallMode::LfxGfx);
+        assert_eq!(detect_install_mode(false, &slots, true), InstallMode::LfxGfx);
+    }
+
+    #[test]
+    fn detect_mode_legacy_only_lfxgfx() {
+        // Win8.1+ 且仅 LFX/GFX 有值、SFX/MFX/EFX 全空 → LfxGfx。
+        let mut slots = [SlotValue::NoValue; 5];
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(1));
+        slots[ApoSlot::Gfx.index() as usize] = SlotValue::Guid(test_guid(2));
+        assert_eq!(detect_install_mode(true, &slots, false), InstallMode::LfxGfx);
+    }
+
+    #[test]
+    fn detect_mode_sfx_occupied_not_legacy() {
+        // SFX 被占 → 非 Legacy 独占 → 继续探测。
+        let mut slots = [SlotValue::NoValue; 5];
+        slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(1));
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(3));
+        assert_eq!(detect_install_mode(true, &slots, false), InstallMode::SfxEfx);
+    }
+
+    #[test]
+    fn detect_mode_bluetooth_sfxmfx() {
+        // 蓝牙容器 ID 存在 → SfxMfx。
+        let slots = [SlotValue::NoValue; 5];
+        assert_eq!(detect_install_mode(true, &slots, true), InstallMode::SfxMfx);
+    }
+
+    #[test]
+    fn detect_mode_bluetooth_beats_legacy() {
+        // 蓝牙容器存在且 SFX 被占 → 仍 SfxMfx（C42 优先于 C43 默认）。
+        let mut slots = [SlotValue::NoValue; 5];
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(3));
+        assert_eq!(detect_install_mode(true, &slots, true), InstallMode::SfxMfx);
+    }
+
+    #[test]
+    fn detect_mode_default_sfxefx() {
+        // 现代驱动、无蓝牙、SFX 等被占 → SfxEfx 默认。
+        let slots = [SlotValue::NoValue; 5];
+        assert_eq!(detect_install_mode(true, &slots, false), InstallMode::SfxEfx);
+    }
 
     #[test]
     fn install_version_constants() {
