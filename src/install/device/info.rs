@@ -231,6 +231,22 @@ pub fn detect_mode_for_device(endpoint_key: &RegKey) -> InstallMode {
     eapo_detect_mode(is_win81, &slots, has_bluetooth)
 }
 
+/// 按端点 GUID 自动探测安装模式（CLI `install` 缺省 `--mode` 用）。
+///
+/// 内部：先按 GUID 定位端点根键（Render 优先，Capture 兜底），
+/// 再交给 `detect_mode_for_device`。定位失败返回 `default_mode()`（SfxEfx）。
+pub fn detect_mode_for_guid(device_guid: &str) -> InstallMode {
+    for root_path in [RENDER_PATH, CAPTURE_PATH] {
+        if let Ok(root) = RegKey::open(HKEY_LOCAL_MACHINE, root_path) {
+            if let Ok(key) = root.open_sub_key(device_guid) {
+                return detect_mode_for_device(&key);
+            }
+        }
+    }
+    let empty = [SlotValue::NoKey; 5];
+    eapo_detect_mode(true, &empty, false)
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 内部辅助
 // ══════════════════════════════════════════════════════════════════════════════
