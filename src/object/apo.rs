@@ -811,6 +811,9 @@ impl Drop for ApoObject {
 // ═══ IAudioProcessingObject 实现（windows-rs _Impl trait 签名） ═══
 impl IAudioProcessingObject_Impl for ApoObject_Impl {
     fn Reset(&self) -> Result<()> {
+        // ---- 探针 6: Reset 被调（2026-08-04 排查，删）----
+        #[cfg(debug_assertions)]
+        { let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "Reset called\n"); }
         let mut inner = self.mutex.lock().unwrap();
         inner.current_chain = Box::new(Chain::new());
         inner.outgoing_chain = None;
@@ -830,6 +833,9 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn GetLatency(&self) -> Result<i64> {
+        // ---- 探针 6: GetLatency 被调（2026-08-04 排查，删）----
+        #[cfg(debug_assertions)]
+        { let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "GetLatency called\n"); }
         // P0-6（v8.3 S4）：有 child → 委托 child；无 child → 返回 0
         // （align EAPO `*pTime=0` 后仅 child 委托改写——EAPO 不维护自身延迟值）。
         if let Some(child) = self.child_apo.lock().unwrap().as_ref() {
@@ -946,6 +952,9 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn GetInputChannelCount(&self) -> Result<u32> {
+        // ---- 探针 6: GetInputChannelCount 被调（2026-08-04 排查，删）----
+        #[cfg(debug_assertions)]
+        { let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "GetInputChannelCount called\n"); }
         if self.state_cell.current() != ApoState::Locked {
             return Err(windows::core::Error::from(APOERR_NOT_INITIALIZED));
         }
@@ -1159,6 +1168,9 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
     }
 
     fn UnlockForProcess(&self) -> Result<()> {
+        // ---- 探针 6: UnlockForProcess 被调（2026-08-04 排查，删）----
+        #[cfg(debug_assertions)]
+        { let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "UnlockForProcess called\n"); }
         self.state_cell
             .transition(ApoState::Locked, ApoState::Initialized)
             .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
