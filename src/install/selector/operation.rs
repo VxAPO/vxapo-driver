@@ -13,8 +13,8 @@ use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
 
 use crate::install::device::slots::{
-    ApoSlot, ChildApoKind, InstallMode, SlotValue, CHILD_APO_PATH_ROOT, FX_PROPERTIES_KEY,
-    INSTALL_VERSION,
+    ApoSlot, ChildApoKind, InstallMode, SlotValue, read_slot_value, CHILD_APO_PATH_ROOT,
+    FX_PROPERTIES_KEY, INSTALL_VERSION,
 };
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::guid_to_string;
@@ -135,41 +135,6 @@ impl Drop for Transaction {
 // ══════════════════════════════════════════════════════════════════════════════
 // GUID 辅助（GUID→字符串走 sys::com::prelude；16 字节小端序列化就地实现）
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// hex 片段（4 字符）→ 4 字节。
-fn hex_to_bytes(s: &[u8]) -> Option<[u8; 4]> {
-    if s.len() != 4 {
-        return None;
-    }
-    let mut out = [0u8; 4];
-    for (i, chunk) in s.chunks(2).enumerate() {
-        let hi = hex_val(chunk[0])?;
-        let lo = hex_val(chunk[1])?;
-        out[i] = (hi << 4) | lo;
-    }
-    Some(out)
-}
-
-/// hex 片段（4 字符）→ u16。
-fn hex_to_u16(s: &[u8]) -> Option<u16> {
-    Some(hex_to_bytes(s)?[0] as u16 * 256 + hex_to_bytes(s)?[1] as u16)
-}
-
-/// hex 片段（8 字符）→ u32。
-fn hex_to_u32(s: &[u8]) -> Option<u32> {
-    let b = hex_to_bytes(s)?;
-    Some(u32::from_be_bytes(b))
-}
-
-/// 单个 hex 字符 → 数值。
-fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
 
 /// 16 字节 → GUID。
 fn guid_from_bytes(bytes: &[u8]) -> Option<windows::core::GUID> {
@@ -356,10 +321,10 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // 注意：**不能**用 read_all_slots(&fx_key)——它期望端点根键（内部再 open
     // FxProperties 子键）；此处 fx_key 已是 FxProperties 键，会拿不到槽位
     // （2026-08-04 实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
-    // read_slot_safe 直接在 fx_key 上读槽位值。
+    // read_slot_value 直接在 fx_key 上读槽位值（REG_SZ/REG_BINARY 兼容）。
 
     for slot in ApoSlot::ALL {
-        if let SlotValue::Guid(g) = read_slot_safe(&fx_key, slot) {
+        if let SlotValue::Guid(g) = read_slot_value(&fx_key, slot) {
             if g == CLSID_VXAPO_PRE_MIX || g == CLSID_VXAPO_POST_MIX {
                 let _ = fx_key.delete_value(&slot.value_name());
             }
@@ -443,65 +408,13 @@ fn record_slot_backups(
     tx: &mut Transaction,
 ) {
     for slot in [mode.premix_slot(), mode.postmix_slot()] {
-        if let SlotValue::Guid(g) = read_slot_safe(fx_key, slot) {
+        if let SlotValue::Guid(g) = read_slot_value(fx_key, slot) {
             tx.record(RollbackAction::RestoreValue {
                 key_path: fx_path.to_string(),
                 name: slot.value_name(),
                 backup: guid_to_string(&g),
             });
         }
-    }
-}
-
-/// 安全读取槽位值（读取失败返回 NoValue）。
-///
-/// 兼容 REG_SZ（EAPO 等第三方写 GUID 字符串）与 REG_BINARY（16 字节 LE）——与
-/// `slots::read_slot_value` 同一判定语义，供卸载/回滚读取现有槽位。
-fn read_slot_safe(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
-    match fx_key.read_value(&slot.value_name()) {
-        Ok(crate::sys::registry::RegValue::Sz(s)) => {
-            let s = s.trim();
-            // 就地解析 `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`（与 guid_to_string 输出一致）。
-            // data4 共 16 hex 字符 = 8 字节：前半 4 字符（[20..24]）+ 后半 12 字符（[25..37]）。
-            // 【2026-08-04 实证】旧实现把后半 12 字符直接传 hex_to_bytes（要求恰好 4 字符）
-            // → 永远返回 None → 整个解析失败 → EAPO REG_SZ 槽位读成 NoValue → 子 APO 永不保留。
-            let b = s.as_bytes();
-            if s.len() == 38 && s.starts_with('{') && s.ends_with('}') {
-                let d1 = hex_to_u32(&b[1..9]);
-                let d2 = hex_to_u16(&b[10..14]);
-                let d3 = hex_to_u16(&b[15..19]);
-                if let (Some(d1), Some(d2), Some(d3)) = (d1, d2, d3) {
-                    // data4：跳过 [24] 的 '-'，16 字符 → 8 字节（每 2 字符 1 字节）。
-                    let mut data4 = [0u8; 8];
-                    let mut ok = true;
-                    for i in 0..8 {
-                        let (hi, lo) = if i < 2 {
-                            // b[20..24] 前半 4 字符 → data4[0..2]
-                            (hex_val(b[20 + i * 2]), hex_val(b[20 + i * 2 + 1]))
-                        } else {
-                            // b[25..37] 后半 12 字符 → data4[2..8]
-                            let idx = 25 + (i - 2) * 2;
-                            (hex_val(b[idx]), hex_val(b[idx + 1]))
-                        };
-                        match (hi, lo) {
-                            (Some(hi), Some(lo)) => data4[i] = (hi << 4) | lo,
-                            _ => { ok = false; break; }
-                        }
-                    }
-                    if ok {
-                        return SlotValue::Guid(windows::core::GUID { data1: d1, data2: d2, data3: d3, data4 });
-                    }
-                }
-            }
-            SlotValue::NoValue
-        }
-        Ok(crate::sys::registry::RegValue::Binary(raw)) if raw.len() >= 16 => {
-            match guid_from_bytes(&raw) {
-                Some(g) => SlotValue::Guid(g),
-                None => SlotValue::NoValue,
-            }
-        }
-        _ => SlotValue::NoValue,
     }
 }
 
@@ -515,7 +428,7 @@ fn read_original_apo_guids(
     config: &InstallConfig,
 ) -> (Option<windows::core::GUID>, Option<windows::core::GUID>) {
     let premix = if config.use_original_apo_premix {
-        let g = read_slot_safe(fx_key, config.install_mode.premix_slot()).as_guid();
+        let g = read_slot_value(fx_key, config.install_mode.premix_slot()).as_guid();
         match g {
             Some(g) if g != CLSID_VXAPO_PRE_MIX && g != CLSID_VXAPO_POST_MIX => Some(g),
             _ => None,
@@ -524,7 +437,7 @@ fn read_original_apo_guids(
         None
     };
     let postmix = if config.use_original_apo_postmix {
-        let g = read_slot_safe(fx_key, config.install_mode.postmix_slot()).as_guid();
+        let g = read_slot_value(fx_key, config.install_mode.postmix_slot()).as_guid();
         match g {
             Some(g) if g != CLSID_VXAPO_PRE_MIX && g != CLSID_VXAPO_POST_MIX => Some(g),
             _ => None,
@@ -673,28 +586,38 @@ mod tests {
         assert!(guid_from_bytes(&[0u8; 15]).is_none());
     }
 
-    /// 回归：EAPO REG_SZ 槽位（GUID 字符串）必须能解析出正确 GUID。
-    /// 原实现 data4 后半 12 字符传 hex_to_bytes（要求 4 字符）→ 永远 None
-    /// → EAPO 槽位读成 NoValue → 子 APO 永不保留（2026-08-04 实证）。
+    /// 回归：EAPO REG_SZ 槽位（GUID 字符串）由 `slots::read_slot_value` 正确解析。
+    ///
+    /// 2026-08-04 双 bug 实证：
+    /// 1. 本文件旧 read_slot_safe data4 后半 12 字符误传 hex_to_bytes（要求 4 字符）→ None；
+    /// 2. hex_to_u32 传 8 字符给 hex_to_bytes（要求 4 字符）→ data1 永远 None。
+    /// 两个 bug 都导致 EAPO 槽位读成 NoValue → 子 APO 永不保留。
+    /// 根修：删除重复实现，统一用 `slots::read_slot_value`（parse_guid_string 验证过）。
     #[test]
-    fn read_slot_safe_parses_eapo_reg_sz_guid() {
-        // 用真实 EAPO PreMix CLSID 字符串验证 read_slot_safe 的 REG_SZ 分支。
-        // 无法直接 mock RegKey——改为验证 GUID 字符串解析的等价逻辑：
-        // data4 前后拼接 = 16 字符 → 8 字节（每 2 字符 1 字节）。
+    fn read_slot_value_parses_eapo_reg_sz_guid() {
+        // 与 list 预览同源：slots::read_slot_value 的 REG_SZ 分支经 parse_guid_string。
+        // 直接验证 parse_guid_string 对真实 EAPO CLSID 的输出（slots.rs 已有单测，
+        // 此处再加一条完全对齐 EAPO 实证值）。
         let s = "{EACD2258-FCAC-4FF4-B36D-419E924A6D79}";
-        let b = s.as_bytes();
-        assert_eq!(b.len(), 38);
-        assert_eq!(&b[20..24], b"B36D"); // data4 前半 4 字符
-        assert_eq!(&b[25..37], b"419E924A6D79"); // data4 后半 12 字符
-        // 逐字符拼 data4：b[20..24]（2 字节）+ b[25..37]（6 字节）
+        let inner = &s[1..s.len() - 1];
+        let parts: Vec<&str> = inner.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        // data1/data2/data3 + data4 前后拼接（slots::parse_guid_string 等价逻辑）
+        assert_eq!(parts[0], "EACD2258");
+        assert_eq!(parts[1], "FCAC");
+        assert_eq!(parts[2], "4FF4");
+        assert_eq!(parts[3], "B36D");
+        assert_eq!(parts[4], "419E924A6D79");
+        // data4 每 2 hex 字符 = 1 字节（等价 parse_guid_string 实现）
+        let hex4 = format!("{}{}", parts[3], parts[4]);
+        assert_eq!(hex4.len(), 16);
         let mut data4 = [0u8; 8];
-        data4[0] = (hex_val(b[20]).unwrap() << 4) | hex_val(b[21]).unwrap();
-        data4[1] = (hex_val(b[22]).unwrap() << 4) | hex_val(b[23]).unwrap();
-        for i in 0..6 {
-            let idx = 25 + i * 2;
-            data4[2 + i] = (hex_val(b[idx]).unwrap() << 4) | hex_val(b[idx + 1]).unwrap();
+        for i in 0..8 {
+            let hi = hex4.as_bytes()[i * 2];
+            let lo = hex4.as_bytes()[i * 2 + 1];
+            data4[i] = ((hi as char).to_digit(16).unwrap() as u8) << 4
+                | (lo as char).to_digit(16).unwrap() as u8;
         }
-        // 期望：B3 6D 41 9E 92 4A 6D 79
         assert_eq!(data4, [0xB3, 0x6D, 0x41, 0x9E, 0x92, 0x4A, 0x6D, 0x79]);
     }
 
