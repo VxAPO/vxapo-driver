@@ -175,6 +175,12 @@ pub fn install_endpoint(
 
     let (fx_key, fx_is_new) = ensure_fx_properties(&fx_path, &mut tx)?;
 
+    // ── Step 2b: 新建时写 fxTitle（EAPO DeviceAPOInfo.cpp 527 对齐）────────
+    // EAPO 在 FxProperties 创建后立即写 `fxTitle={b725f130-...},10="Equalizer APO"`，
+    // 标识该键由哪个 APO 建立。已存在（可能其他 APO 建）不动，避免覆盖 EAPO 标记。
+
+    write_fx_title(&fx_key, fx_is_new)?;
+
     // ── Step 3: 备份原始 GUID ─────────────────────────────────────────────
 
     if !fx_is_new {
@@ -629,6 +635,22 @@ fn write_default_processmode(fx_key: &RegKey) -> Result<()> {
     let values = vec![default_str];
     fx_key.write_multi_value(&modes_name_sfx, &values)?;
     fx_key.write_multi_value(&modes_name_efx, &values)?;
+    Ok(())
+}
+
+/// 写入 FxProperties 标记（EAPO DeviceAPOInfo.cpp 527：FxProperties **新建时**写
+/// `fxTitle = L"VxAPO"` + 各槽位 NOKEY 占位到独立安装信息区）。
+///
+/// fxTitle 值名 `{b725f130-47ef-101a-a5f1-02608c9eebac},10` 标识该 FxProperties 由
+/// 哪个 APO 建立；Windows 引擎扫槽位时可能要求 FxProperties 有效才有 APO 实例化。
+/// 仅 FxProperties 新建（fx_is_new=true）时写——已存在（可能其他 APO 建的）不动，
+/// 避免覆盖 EAPO 的标记。
+fn write_fx_title(fx_key: &RegKey, is_new: bool) -> Result<()> {
+    if !is_new {
+        return Ok(());
+    }
+    let fx_title_name = "{b725f130-47ef-101a-a5f1-02608c9eebac},10";
+    fx_key.write_sz(fx_title_name, "VxAPO")?;
     Ok(())
 }
 
