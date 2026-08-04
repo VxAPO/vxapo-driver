@@ -324,13 +324,29 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // FxProperties 子键）；此处 fx_key 已是 FxProperties 键，会拿不到槽位
     // （2026-08-04 实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
     // read_slot_value 直接在 fx_key 上读槽位值（REG_SZ/REG_BINARY 兼容）。
+    //
+    // 【2026-08-04 实测】audiodg 持有点端时 MMDevices 槽位值删除可能被锁
+    // （Windows 拒绝删除正在使用的 APO 槽位值）→ 不能静默吞掉失败：记录 +
+    // 返回错误，提示调用方重启音频服务（uninstall 后 net stop audiosrv &&
+    // net start audiosrv 使槽位变更生效）。信息区（HKLM\SOFTWARE\VxAPO）非
+    // MMDevices 不被锁——所以「第一次删信息区成功但槽位值残留」。
 
+    let mut any_failed = false;
     for slot in ApoSlot::ALL {
         if let SlotValue::Guid(g) = read_slot_value(&fx_key, slot) {
             if g == CLSID_VXAPO_PRE_MIX || g == CLSID_VXAPO_POST_MIX {
-                let _ = fx_key.delete_value(&slot.value_name());
+                let name = slot.value_name();
+                if let Err(e) = fx_key.delete_value(&name) {
+                    log::warn!("uninstall: delete slot {name} failed: {e} (audio service may hold endpoint)");
+                    any_failed = true;
+                }
             }
         }
+    }
+    if any_failed {
+        return Err(VxApoError::internal(
+            "卸载槽位失败：音频服务可能仍在占用端点。请重启音频服务（管理员：net stop audiosrv && net start audiosrv）后重试卸载。",
+        ));
     }
 
     // ── 恢复被覆盖的第三方 APO（快照恢复的核心）──────────────────────────
