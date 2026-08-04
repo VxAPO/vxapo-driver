@@ -297,12 +297,26 @@ pub fn install_endpoint(
 
 /// 从指定音频端点卸载 VxAPO。
 ///
-/// # 卸载步骤
+/// # 卸载语义（2026-08-04 用户明确）
 ///
-/// 1. 定位端点 FxProperties
-/// 2. 读取当前槽位，删除 VxAPO 的 CLSID
-/// 3. 删除子 APO 配置值（childGuid / allowSilentBuffer / autoAdjust / version）
-/// 4. 删除 DisableEnhancements
+/// **只卸载「能确定属于 VxAPO 的部分」**，绝不碰其他 APO：
+///
+/// 1. **定位 FxProperties**（不存在 = 无安装，直接返回）。
+/// 2. **删 VxAPO 的 CLSID**：遍历 5 槽位，仅当槽位值 == VxAPO PRE/POST CLSID
+///    才删除该槽位值（别的 APO 的槽位不动——EAPO 重装占回时不受影响）。
+/// 3. **看槽位是否为空**：VxAPO 的槽位被删后（NoValue/NoKey）才写回备份；
+///    若该槽位已被其他 APO 接管（Guid 存在）→ **尊重接管者，不覆盖**。
+///    （备份在 install 覆盖前写入信息区：槽位名 PreMixSlot/PostMixSlot + 原值。）
+/// 4. **恢复完成后**，再删除 VxAPO 的信息区目录
+///    `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`（含所有备份与 child 记录）。
+/// 5. 清理 FxProperties 上的 VxAPO 配置值（childGuid/allowSilentBuffer/autoAdjust/
+///    version——旧遗留 best-effort）+ DisableEnhancements。
+///
+/// # 为什么「槽位空才恢复」？
+///
+/// 用户实测场景：VxAPO 把 EAPO 弄成子 APO 后，另一软件又覆盖了父 APO 槽位。
+/// 此时卸载：父槽位归接管软件（不删不覆盖），EAPO 作为旧子 APO 的恢复只发生在
+/// 「VxAPO 槽位被我们删空了」之后——绝不覆盖任何现存 APO 的所有权。
 pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     let endpoint_path = find_endpoint_path(device_guid)?;
     let fx_path = format!("{}\\{}", endpoint_path, FX_PROPERTIES_KEY);
@@ -332,28 +346,44 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     }
 
     // ── 恢复被覆盖的第三方 APO（快照恢复的核心）──────────────────────────
-    // 2026-08-04 实证：install 覆盖槽位后只删不恢复 → 快照恢复变 NoValue。
-    // install 时把「覆盖前槽位名 + 原值」备份到信息区（EAPO 等第三方）。
-    // 此处读回写槽位，把设备恢复成安装前状态；无备份则槽位已删（VxAPO）。
+    // 只有在 **VxAPO 槽位被删空之后**（上一步），才把 install 时备份的
+    // 「覆盖前槽位名 + 原值」读回写槽位 → 把设备恢复成安装前状态。
+    //
+    // 【接管者优先级】另一个软件可能已覆盖 VxAPO 槽位（EAPO 重装写回、第三方
+    // 接管）。此时（上一步没删它——因为槽位不是 VxAPO CLSID）槽位仍有值：
+    // - 槽位 = 备份原值 → 已是恢复目标，不动；
+    // - 槽位 = 其他 APO → **尊重接管者，不覆盖**；
+    // - 槽位空（NoValue/NoKey，VxAPO 槽位被我们删空）→ 写回备份原值。
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
     if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
         if let Ok(info) = RegKey::open(root, sub_key) {
-            // PreMix：读备份槽位名 + 原值 → 写回 FxProperties。
-            if let Some(slot_name) = info.read_sz(BACKUP_PREMIX_SLOT) {
-                if let Some(val) = info.read_sz(BACKUP_PREMIX_SLOT_VALUE) {
-                    let _ = fx_key.write_sz(&slot_name, &val);
-                }
-            }
-            // PostMix：同理。
-            if let Some(slot_name) = info.read_sz(BACKUP_POSTMIX_SLOT) {
-                if let Some(val) = info.read_sz(BACKUP_POSTMIX_SLOT_VALUE) {
-                    let _ = fx_key.write_sz(&slot_name, &val);
+            for backup_name in [BACKUP_PREMIX_SLOT, BACKUP_POSTMIX_SLOT] {
+                // 槽位名（字符串，如 {d04e05a6-...},5）。
+                if let Some(slot_name) = info.read_sz(backup_name) {
+                    // 对应原值备份名：PreMixSlot → PreMixSlotValue。
+                    let value_name = if backup_name == BACKUP_PREMIX_SLOT {
+                        BACKUP_PREMIX_SLOT_VALUE
+                    } else {
+                        BACKUP_POSTMIX_SLOT_VALUE
+                    };
+                    if let Some(val) = info.read_sz(value_name) {
+                        // 定位 ApoSlot 判断当前槽位状态。
+                        if let Some(slot) = ApoSlot::ALL.iter().find(|s| s.value_name() == slot_name) {
+                            let cur = read_slot_value(&fx_key, *slot);
+                            // 仅当槽位为空才写回（NoValue=VxAPO 卸载后/未占；
+                            // NoKey=键缺失）。接管者（Guid≠备份值）不动。
+                            if matches!(cur, SlotValue::NoValue | SlotValue::NoKey) {
+                                let _ = fx_key.write_sz(&slot_name, &val);
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    // ── 删除 VxAPO 独立安装信息区（含所有备份，v8.4）────────────────────
+    // ── 恢复完成后，再删除 VxAPO 独立安装信息区（含所有备份，v8.4）──────
+    // 顺序保证：先恢复槽位（从信息区读值），再删信息区本身，避免读到一半被删。
 
     if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
         let _ = crate::sys::registry::delete_tree(root, sub_key);
