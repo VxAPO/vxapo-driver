@@ -116,7 +116,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
             .map(|u| Interface::as_raw(u) as *mut c_void)
             .unwrap_or(std::ptr::null_mut());
         // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
-        let na = unsafe { crate::object::aggregate::create_aggregate(outer_raw, self.target_clsid) };
+        let na = unsafe { crate::object::apo::aggregate::create_aggregate(outer_raw, self.target_clsid) };
         if na.is_null() {
             return Err(Error::from(E_OUTOFMEMORY));
         }
@@ -131,14 +131,14 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         let hr = unsafe { qi2(na, &*riid, ppvobject) };
         if hr.is_err() {
             // QI 失败 → 释放 NApo（其 Release 会释放内部 ApoObject/接口）。
-            unsafe { crate::object::aggregate::release_aggregate(na) };
+            unsafe { crate::object::apo::aggregate::release_aggregate(na) };
             return Err(Error::from(hr));
         }
 
         // EAPO ClassFactory.cpp:73 对齐：创建后立即 NonDelegatingRelease 工厂临时引用。
         // create_aggregate 初始 cref=1；QI 成功后 +1，这里释放工厂临时引用，
         // 最终由调用方持有的那一个引用负责销毁（不释放会永久泄漏 NApo）。
-        unsafe { crate::object::aggregate::release_aggregate(na) };
+        unsafe { crate::object::apo::aggregate::release_aggregate(na) };
 
         // ---- 探针 4b：CreateInstance 结果（2026-08-04，debug 门控，排查完删除）----
         #[cfg(debug_assertions)]

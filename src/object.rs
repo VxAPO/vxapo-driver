@@ -2,7 +2,6 @@
 //!
 //! 边界：胶水层。Windows 加载 DLL 时创建的 COM 对象。允许依赖所有模块。
 
-pub mod aggregate;
 pub mod apo;
 pub mod child;
 pub mod dll_exports;

@@ -1,6 +1,13 @@
 ﻿//! object/apo.rs — ApoObject 核心（v6.3 规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
+//! 模块入口：纯逻辑子模块见 `object/apo/`。
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+pub mod config;
+pub mod aggregate;
+pub mod inner;
+pub mod negotiate;
+pub mod state;
+
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows::core::Result;
@@ -8,14 +15,15 @@ use windows::core::Result;
 use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
+use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
+use crate::object::child::ChildApo;
 use crate::object::ref_count;
 use crate::object::vx_reg_props::{REG_PROPS_PRE_MIX, REG_PROPS_POST_MIX};
 use crate::pipeline::chain::Chain;
 use crate::pipeline::context::PipelineContext;
 use crate::pipeline::dsp::factory::FilterRegistry;
 use crate::pipeline::dsp::filter::{DspContext, DeviceType, ProcessingStage};
-use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
-use crate::pipeline::format::{extract_format, is_float_format};
+use crate::pipeline::format::extract_format;
 use crate::pipeline::process::{
     ErrorPolicy, ProcessParams, ProcessStatistics, process_audio, process_chain_interleaved,
 };
@@ -25,471 +33,24 @@ use crate::sys::com::apo_interfaces::{
     IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl, IAudioProcessingObjectConfiguration_Impl,
     IAudioSystemEffects, IAudioSystemEffects_Impl,
 };
-use crate::object::child::ChildApo;
 use crate::sys::com::apo_types::{
-    APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
+    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES,
+    APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT, APOERR_NOT_INITIALIZED,
+    APOERR_NUM_CONNECTIONS_INVALID, APOInitSystemEffects, BUFFER_SILENT, BUFFER_VALID,
 };
-use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
 use crate::sys::com::prelude::{
     CoTaskMemAlloc, E_FAIL, E_OUTOFMEMORY, GUID, HRESULT, guid_to_string, implement,
 };
 
-use crate::sys::com::apo_types::{
-    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES,
-    APOERR_ALREADY_INITIALIZED, APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT,
-    APOERR_NOT_INITIALIZED, APOERR_NUM_CONNECTIONS_INVALID, BUFFER_SILENT, BUFFER_VALID,
+use crate::object::apo::config::{
+    DEFAULT_CONFIG_PATH, WatcherState, extract_endpoint_guid, hot_reload_impl, resolve_config_path,
 };
+use crate::object::apo::inner::ApoObjectInner;
+use crate::object::apo::negotiate::{check_format_supported, extract_format_ref};
+use crate::object::apo::state::{ApoState, LockGuard, StateCell};
 
-/// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
-const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.txt";
-
-/// per-device 配置根目录（方案 A，2026-08-04 用户确认）。
-///
-/// **为什么不用 Documents**：`{Documents}\VxAPO\{GUID}` 是用户级路径——APO 真实运行在
-/// audiodg（SYSTEM 服务），它调 `documents_folder()` 拿到的是 SYSTEM 的 Documents，
-/// 读不到 CLI（用户进程）写入的文件，导致「改 Documents 的 config 没效果」。
-/// `C:\ProgramData\VxAPO` 全用户共享，SYSTEM + 当前用户都可读写（与快照目录同根）。
-const CONFIG_ROOT: &str = r"C:\ProgramData\VxAPO";
-
-/// 单实例共用子目录名（无设备 GUID 兜底，object 7.1.8）。
-const DEFAULT_DEVICE_DIR: &str = "_default";
-
-/// 从 APOInitSystemEffects 提取端点 GUID（object 7.1.8，v7.2）。
-///
-/// EAPO 源码（EqualizerAPO.cpp:126）从 `pAPOEndpointProperties` 取端点属性存储；
-/// windows-rs 0.62.2 的 APOInitSystemEffects 同时有 pAPOEndpointProperties 和
-/// pAPOSystemEffectsProperties 两个字段——端点 GUID 在 Endpoint 那个里面。
-/// 先用 pAPOEndpointProperties，缺失时回退 pAPOSystemEffectsProperties。
-fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID> {
-    let props = init
-        .pAPOEndpointProperties
-        .as_ref()
-        .or_else(|| init.pAPOSystemEffectsProperties.as_ref())?;
-    // Safety: PKEY_AudioEndpoint_GUID 为静态键；GetValue 返回的 PROPVARIANT 由
-    // windows-rs 管理内存（含 puuid/pwszVal 指针有效期内读取）。
-    // PROPVARIANT 是 union（Anonymous.Anonymous.Anonymous），读取/比较均在 unsafe 内。
-    let pv: PROPVARIANT = unsafe { props.GetValue(&PKEY_AudioEndpoint_GUID) }.ok()?;
-    unsafe {
-        // PROPVARIANT_0_0: { vt: VARENUM, wReserved1-3, Anonymous: PROPVARIANT_0_0_0 }
-        match pv.Anonymous.Anonymous.vt {
-            // 部分系统/驱动返回 VT_CLSID（puuid 指向 GUID）。
-            VT_CLSID => {
-                let guid_ptr = pv.Anonymous.Anonymous.Anonymous.puuid;
-                if guid_ptr.is_null() {
-                    None
-                } else {
-                    Some(*guid_ptr)
-                }
-            }
-            // Windows 11 实测 EAPO 同款：PKEY_AudioEndpoint_GUID 返回 VT_LPWSTR，
-            // 字符串形如 {3b1c3cb8-af9e-47b9-b776-3dac8c7ca333}。
-            VT_LPWSTR => {
-                let str_ptr = pv.Anonymous.Anonymous.Anonymous.pwszVal;
-                if str_ptr.is_null() {
-                    None
-                } else {
-                    let s = str_ptr.to_string().ok()?;
-                    let s = s.trim().trim_start_matches('{').trim_end_matches('}');
-                    GUID::try_from(s).ok()
-                }
-            }
-            _ => None,
-        }
-    }
-}
-
-/// 确定 per-device 配置路径（object 7.1.8，方案 A）：
-/// `C:\ProgramData\VxAPO\{GUID}\config.txt`；无 GUID / 解析失败 → `_default` 兜底。
-/// 目录自动创建；config.txt 缺失时写默认 passthrough（空配置 → 链为空即 passthrough）。
-fn resolve_config_path(init: Option<&APOInitSystemEffects>) -> String {
-    resolve_config_path_from(CONFIG_ROOT, init)
-}
-
-/// 纯拼接 + 目录/文件保障（可单元测试，不依赖真实路径）。
-///
-/// `config_root`：配置根目录（生产 = `C:\ProgramData\VxAPO`，测试 = 临时目录）。
-/// 返回 `{config_root}\{GUID}\config.txt`；无 GUID → `_default`；
-/// 目录创建失败 → 回退 `DEFAULT_CONFIG_PATH`。
-fn resolve_config_path_from(config_root: &str, init: Option<&APOInitSystemEffects>) -> String {
-    // 端点 GUID → 大写 `{XXXXXXXX-...}` 目录名。
-    let device_dir = match init.and_then(extract_endpoint_guid) {
-        Some(guid) => {
-            let s = guid_to_string(&guid);
-            log::info!("endpoint GUID: {}", s);
-            s
-        }
-        None => DEFAULT_DEVICE_DIR.to_owned(),
-    };
-
-    let dir = std::path::Path::new(config_root).join(&device_dir);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        log::warn!("create_dir_all({}) failed: {} — fallback to shared default config", dir.display(), e);
-        return DEFAULT_CONFIG_PATH.to_owned();
-    }
-    let path = dir.join("config.txt");
-
-    // config.txt 缺失 → 写默认 passthrough（空文件 = 无滤波器 = passthrough）。
-    if !path.exists() {
-        log::info!("config not found at {}, writing default passthrough", path.display());
-        if let Err(e) = std::fs::write(&path, "# VxAPO default passthrough\n") {
-            log::warn!("write default config failed: {}", e);
-        }
-    }
-    path.display().to_string()
-}
-
-/// 格式协商独立属性检查（object 7.1.16，v7.7 修订）。
-///
-/// `IsInputFormatSupported`/`IsOutputFormatSupported` 由 Windows 引擎在**格式协商阶段**
-/// 调用，**早于 LockForProcess**——此时 `pipeline_context` 为全零 `PipelineContext::new()`，
-/// **禁止依赖 pipeline_context 做等值比较**（真实格式 vs 全零永远不等 → 拒绝所有格式、
-/// APO 无法协商）。正确做法：浮点格式 + 采样率 44.1k~192k + 通道数 1~8 独立检查，
-/// 这些属性在协商时即已确定、与锁定后上下文无关。
-///
-/// `p_requested` 是 `Ref<IAudioMediaType>`（Deref 到 `Option<IAudioMediaType>`）。
-/// 从 IAudioMediaType 引用提取 AudioFormat（协商双格式检查统一入口）。
-fn extract_format_ref(
-    media_ref: &windows::core::Ref<IAudioMediaType>,
-) -> Result<crate::pipeline::format::AudioFormat> {
-    let Some(mt) = media_ref.as_ref() else {
-        return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
-    };
-    let mt_ptr = mt as *const IAudioMediaType as *mut IAudioMediaType;
-    // Safety: mt 为有效 COM 对象（引擎传入的自窗口指针）。
-    unsafe { extract_format(mt_ptr) }
-        .map_err(|_| windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
-}
-
-/// 基础格式检查（EAPO 对齐，EqualizerAPO.cpp IsInputFormatSupported）：
-/// - 仅拒绝非 float（DSP 链为 f32 处理）
-/// - 通道 1~8（DSP 链真实能力）
-/// - **不设采样率限制**——EAPO 基类不限制采样率；此前 44.1k 下限会误拒
-///   16k/22.05k 设备协商 → 「格式消失/无法播放」直接嫌疑。
-fn check_format_supported(p_requested: &windows::core::Ref<IAudioMediaType>) -> Result<()> {
-    let fmt = extract_format_ref(p_requested)?;
-    let Some(req) = p_requested.as_ref() else {
-        return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
-    };
-    let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
-    // 浮点格式检查（WAVE_FORMAT_IEEE_FLOAT）。
-    if !unsafe { is_float_format(mt_ptr) } {
-        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
-    }
-    // 通道数范围：1 ~ 8。
-    if fmt.channels == 0 || fmt.channels > 8 {
-        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
-    }
-    Ok(())
-}
-
-/// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
-fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> DspContext {
-    let channel_names = get_channel_names(ctx.channel_mask);
-    DspContext {
-        sample_rate: ctx.sample_rate,
-        channel_count: ctx.input_channels,
-        channel_mask: ctx.channel_mask,
-        channel_names,
-        max_frame_count: ctx.max_frame_count as u32,
-        bits_per_sample,
-        device_type: DeviceType::Render,
-        stage: ProcessingStage::None,
-        variables: std::collections::HashMap::new(),
-        rt_marker: std::marker::PhantomData,
-    }
-}
-
-/// RAII guard：LockForProcess 失败时自动回退状态。
-struct LockGuard<'a> {
-    state_cell: &'a StateCell,
-    armed: bool,
-}
-
-impl<'a> LockGuard<'a> {
-    fn new(state_cell: &'a StateCell) -> Self {
-        Self { state_cell, armed: true }
-    }
-    fn disarm(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for LockGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let _: std::result::Result<(), TransitionError> =
-                self.state_cell.transition(ApoState::Locked, ApoState::Initialized);
-        }
-    }
-}
-
-// ═══ 状态机（O2/v6.6） ═══
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ApoState { Created = 0, Initialized = 1, Locked = 2 }
-
-/// 状态转换错误（O2/v6.6）：携带期望/尝试/实际三态，替代纯字符串描述。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TransitionError {
-    /// 期望的起始状态。
-    pub expected: ApoState,
-    /// 尝试转换到的目标状态。
-    pub attempted: ApoState,
-    /// 实际所处的状态。
-    pub actual: ApoState,
-}
-
-impl TransitionError {
-    fn new(expected: ApoState, attempted: ApoState, actual: ApoState) -> Self {
-        Self { expected, attempted, actual }
-    }
-}
-
-impl std::fmt::Display for TransitionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "状态转换失败：期望 {:?} → {:?}，但当前为 {:?}",
-            self.expected, self.attempted, self.actual
-        )
-    }
-}
-
-/// TransitionError → HRESULT（O2）：统一映射为 APOERR_ALREADY_INITIALIZED。
-impl From<TransitionError> for HRESULT {
-    fn from(_: TransitionError) -> Self {
-        APOERR_ALREADY_INITIALIZED
-    }
-}
-
-pub struct StateCell { state: AtomicU8 }
-impl StateCell {
-    pub fn new() -> Self { Self { state: AtomicU8::new(ApoState::Created as u8) } }
-
-    /// CAS 转换：成功返回 Ok，失败返回 `TransitionError{expected, attempted, actual}`。
-    pub fn transition(&self, from: ApoState, to: ApoState) -> std::result::Result<(), TransitionError> {
-        let actual_raw = self.state.load(Ordering::Acquire);
-        if actual_raw != from as u8 {
-            return Err(TransitionError::new(from, to, state_from_u8(actual_raw)));
-        }
-        self.state.compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ())
-            .map_err(|actual| TransitionError::new(from, to, state_from_u8(actual)))
-    }
-
-    /// 当前状态。
-    pub fn current(&self) -> ApoState {
-        state_from_u8(self.state.load(Ordering::Acquire))
-    }
-
-    /// release（O2）：任意状态 → Created，返回旧状态。DLL 卸载终态复位用。
-    pub fn release(&self) -> ApoState {
-        let old = self.state.swap(ApoState::Created as u8, Ordering::AcqRel);
-        state_from_u8(old)
-    }
-
-    // ── 语义化便捷转换（失败即 TransitionError） ──
-    pub fn initialize(&self) -> std::result::Result<(), TransitionError> { self.transition(ApoState::Created, ApoState::Initialized) }
-    pub fn lock(&self)       -> std::result::Result<(), TransitionError> { self.transition(ApoState::Initialized, ApoState::Locked) }
-    pub fn unlock(&self)     -> std::result::Result<(), TransitionError> { self.transition(ApoState::Locked, ApoState::Initialized) }
-}
-
-fn state_from_u8(v: u8) -> ApoState {
-    match v {
-        1 => ApoState::Initialized,
-        2 => ApoState::Locked,
-        _ => ApoState::Created,
-    }
-}
-
-// ═══ ApoObjectInner（双链过渡状态） ═══
-pub struct ApoObjectInner {
-    pub current_chain: Box<Chain>,
-    pub outgoing_chain: Option<Box<Chain>>,
-    /// 退役链（R1/v6.9）：过渡完成后由 RT 线程移入，控制线程锁内统一析构。
-    pub retired_chain: Option<Box<Chain>>,
-    pub pipeline_context: PipelineContext,
-    pub transition: Option<SmoothingProvider>,
-    pub temp_buffers: Vec<Vec<f32>>,
-    pub temp_buffer_old: Vec<f32>,
-    pub temp_buffer_new: Vec<f32>,
-    pub pending_reload: bool,
-    /// 阻塞式重载标志（R2/v6.9）：同一过渡周期内至多触发一次重载。
-    pub reloading: bool,
-    /// 生效配置指纹（v7.9，P0-4 配置变更检测）——当前生效链的 filter_spec 有序序列。
-    /// 类型：`Vec<config::parser::FilterSpec>`（FilterSpec = String）。
-    /// - LockForProcess：建立基线（本次解析产出）
-    /// - hot_reload：与新解析 spec 比对；相同短路跳过，不同建新链 + 更新
-    /// - UnlockForProcess/Reset：清空（重新 Lock 重新建立）
-    pub active_spec: Vec<String>,
-}
-impl ApoObjectInner {
-    pub fn new() -> Self {
-        Self {
-            current_chain: Box::new(Chain::new()),
-            outgoing_chain: None,
-            retired_chain: None,
-            pipeline_context: PipelineContext::new(),
-            transition: None,
-            temp_buffers: Vec::new(),
-            temp_buffer_old: Vec::new(),
-            temp_buffer_new: Vec::new(),
-            pending_reload: false,
-            reloading: false,
-            active_spec: Vec::new(),
-        }
-    }
-}
-
-/// watcher 运行时状态（v7.10，P0-4 外部驱动模型）。
-///
-/// `#[implement]` 生成的 `_Impl` 不暴露 `&mut Foo`（宏源码 gen.rs 明文禁止），
-/// COM 方法只有 `&self`——因此 watcher 的可变字段包 `Mutex` 让 `&self` 也可改
-/// （内部可变性，用户分析方案 A）。start_watcher/stop_watcher 均按 `&self` 实现，
-/// spawn 线程 clone `Arc` 移入（满足 'static）。
-#[derive(Default)]
-struct WatcherState {
-    /// watcher 线程句柄（start_watcher 创建 / stop_watcher join 后清空）。
-    thread: Option<std::thread::JoinHandle<()>>,
-    /// watcher 退出事件（start_watcher 创建 / stop_watcher CloseHandle）。
-    shutdown_event: Option<windows::Win32::Foundation::HANDLE>,
-}
-
-/// 热重载实现（object 7.1.18，v7.9 六步）。
-///
-/// 模块级函数——供 watcher 线程独立调用（`#[implement]` 限制：线程无法持有 self，
-/// 因此 clone 的 `config_path`/`mutex` Arc 移入线程，本函数接收引用即复用主逻辑）。
-fn hot_reload_impl(
-    config_path: &Arc<Mutex<String>>,
-    inner: &Arc<Mutex<ApoObjectInner>>,
-    clsid: GUID,
-    obj_ptr: usize,
-) {
-    // 1. R2 阻塞式（短锁检查，不构建新链）。
-    {
-        let mut guard = inner.lock().unwrap();
-        if guard.transition.is_some() || guard.reloading {
-            #[cfg(debug_assertions)]
-            {
-                let transition = guard.transition.is_some();
-                let reloading = guard.reloading;
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    format!(
-                        "hot_reload pending/stale: clsid={clsid:?} obj=0x{obj_ptr:x} transition={transition} reloading={reloading} thread={:?}\n",
-                        std::thread::current().id(),
-                    ),
-                );
-            }
-            // 过渡在途：不丢弃，记 pending，过渡完成后 APOProcess 会触发一次重载。
-            // 若过渡对象已到终点但未被 APOProcess 清掉（实例可能未走 RT 路径），
-            // 直接清掉陈旧 transition，让本次变更立即走正常解析。
-            let finished = guard
-                .transition
-                .as_ref()
-                .map_or(false, |p| p.counter() >= p.length());
-            if finished {
-                guard.transition = None;
-            } else {
-                guard.pending_reload = true;
-                return;
-            }
-        }
-    }
-
-    // 2. 128KB 文件大小闸门（控制线程 IO 安全上限，主文件提前短路）。
-    let config_path = config_path.lock().unwrap().clone();
-    if std::fs::metadata(&config_path)
-        .map(|m| m.len() > crate::config::parser::MAX_CONFIG_FILE_SIZE)
-        .unwrap_or(false)
-    {
-        log::warn!("hot_reload: config exceeded 128KB — keeping old chain");
-        return;
-    }
-
-    // 3. 锁外解析（不持有 mutex）。parse_file_with_spec 双返回。
-    let current_ctx = { inner.lock().unwrap().pipeline_context.clone() };
-    let dsp_ctx = build_dsp_context(&current_ctx, 32);
-    let mut registry = FilterRegistry::new();
-    register_all_commands(&mut registry);
-    let parser = ConfigParser::new(registry);
-    let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
-        Ok(r) => r,
-        Err(_) => {
-            // v7.9：解析失败 = 整体失败（语法错误 / Include 失败 / 任一文件超 128KB）
-            // → **保留旧链、不更新 active_spec**（v7.8 对齐 EAPO：log::warn + 返回）。
-            log::warn!("hot_reload: config parse failed — keeping old chain");
-            #[cfg(debug_assertions)]
-            {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    "hot_reload parse failed\n",
-                );
-            }
-            return;
-        }
-    };
-
-    // 4. spec 指纹短路（短锁内比较，避免与交换的 TOCTOU）。
-    {
-        let guard = inner.lock().unwrap();
-        let same = guard.active_spec.len() == new_spec.len()
-            && guard.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
-        if same {
-            log::debug!("hot_reload: config unchanged — skip");
-            #[cfg(debug_assertions)]
-            {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    "hot_reload unchanged (spec same)\n",
-                );
-            }
-            return;
-        }
-    }
-
-    // 5. 锁内构建 + 交换。构建成功即更新 active_spec（与 current_chain 同步）。
-    let spec_len = new_spec.len();
-    let mut new_chain = Chain::new();
-    for f in filters {
-        if new_chain.add_filter(f).is_err() {
-            log::warn!("hot_reload: add_filter failed — keeping old chain");
-            return;
-        }
-    }
-    // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
-    new_chain.initialize(dsp_ctx.sample_rate, &dsp_ctx.channel_names);
-
-    let mut guard = inner.lock().unwrap();
-    if guard.transition.is_some() {
-        // 竞态兜底：解析期间已有新过渡启动，退回阻塞排队。
-        guard.pending_reload = true;
-        return;
-    }
-    // 旧链进 outgoing；退役链由控制线程在此统一析构（R1）。
-    let old = std::mem::replace(&mut guard.current_chain, Box::new(new_chain));
-    guard.outgoing_chain = Some(old);
-    guard.pending_reload = false;
-    guard.reloading = false;
-    guard.active_spec = new_spec;
-
-    // 热重载落地探针（debug 门控，验证 config 变更确实切换了链）。
-    #[cfg(debug_assertions)]
-            {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    format!(
-                        "hot_reload applied clsid={clsid:?} obj=0x{obj_ptr:x} spec_len={spec_len} path={config_path} thread={:?}\n",
-                        std::thread::current().id(),
-                    ),
-                );
-            }
-
-    let length = default_smoothing_length(guard.pipeline_context.sample_rate);
-    let mut sm = SmoothingProvider::new(length);
-    sm.begin();
-    guard.transition = Some(sm);
-}
+#[cfg(test)]
+use crate::object::apo::config::resolve_config_path_from;
 
 // ═══ ApoObject ═══
 #[implement(

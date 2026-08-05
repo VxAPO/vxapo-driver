@@ -1,4 +1,4 @@
-//! object/aggregate.rs — COM 聚合委托外壳（P0-7 无声根因修复）
+//! object/apo/aggregate.rs — COM 聚合委托外壳（P0-7 无声根因修复）
 //!
 //! Windows 音频引擎**强制用聚合模式（pUnkOuter 非空）创建 APO**（探针实证 punkouter_null=false）。
 //! windows-rs 0.62 `#[implement]` 生成的 IUnknown 自包含、**不委托**——引擎聚合创建后
