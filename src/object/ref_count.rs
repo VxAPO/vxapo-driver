@@ -17,8 +17,17 @@ pub fn increment() -> u32 {
 /// 的 `reset_for_test()` 会交错清零全局计数，若此时仍有 ApoObject
 /// 存活 drop，裸 `prev - 1` 会在 prev=0 时 u32 下溢 panic（flaky）。
 pub fn decrement() -> u32 {
-    let prev = INST_COUNT.fetch_sub(1, Ordering::SeqCst);
-    prev.saturating_sub(1)
+    let mut prev = INST_COUNT.load(Ordering::SeqCst);
+    loop {
+        if prev == 0 {
+            // 并行测试 reset 交错时保护：计数已为 0，不再下溢为 u32::MAX。
+            return 0;
+        }
+        match INST_COUNT.compare_exchange(prev, prev - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return prev - 1,
+            Err(actual) => prev = actual,
+        }
+    }
 }
 
 /// 读取当前活跃实例数。

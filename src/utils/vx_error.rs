@@ -69,6 +69,9 @@ pub(crate) const APOERR_ALREADY_INITIALIZED: u32 = 0x887D_0001;
 /// 0x887D_0003
 pub(crate) const APOERR_FORMAT_NOT_SUPPORTED: u32 = 0x887D_0003;
 
+const E_FAIL: windows_core::HRESULT = windows_core::HRESULT(0x8000_4005u32 as i32);
+const E_UNEXPECTED: windows_core::HRESULT = windows_core::HRESULT(0x8000_FFFFu32 as i32);
+
 // ── VxApoError → HRESULT 映射（供 COM 方法返回）────────────────────────────
 
 impl From<windows_core::Error> for VxApoError {
@@ -80,18 +83,18 @@ impl From<windows_core::Error> for VxApoError {
 impl From<VxApoError> for windows_core::HRESULT {
     fn from(err: VxApoError) -> Self {
         match err {
-            VxApoError::Registry(_) => windows_core::HRESULT(0x8000_4005u32 as i32), // E_FAIL
-            VxApoError::Config(_) => windows_core::HRESULT(0x8000_4005u32 as i32),   // E_FAIL
+            VxApoError::Registry(_) => E_FAIL,
+            VxApoError::Config(_) => E_FAIL,
             VxApoError::Format(_) => {
                 windows_core::HRESULT(APOERR_FORMAT_NOT_SUPPORTED as i32)
             }
-            VxApoError::Io(_) => windows_core::HRESULT(0x8000_4005u32 as i32),   // E_FAIL
-            VxApoError::Internal(_) => windows_core::HRESULT(0x8000_FFFF_u32 as i32), // E_UNEXPECTED
-            VxApoError::RtSafety(_) => windows_core::HRESULT(0x8000_4005u32 as i32), // E_FAIL
+            VxApoError::Io(_) => E_FAIL,
+            VxApoError::Internal(_) => E_UNEXPECTED,
+            VxApoError::RtSafety(_) => E_FAIL,
             VxApoError::State(_) => {
                 windows_core::HRESULT(APOERR_ALREADY_INITIALIZED as i32)
             }
-            VxApoError::DeviceNotFound(_) => windows_core::HRESULT(0x8000_4005u32 as i32), // E_FAIL
+            VxApoError::DeviceNotFound(_) => E_FAIL,
         }
     }
 }

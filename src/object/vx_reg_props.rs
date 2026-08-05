@@ -77,37 +77,28 @@ const fn str_to_u16_256(s: &str) -> [u16; 256] {
 // 注册属性实例
 // ══════════════════════════════════════════════════════════════════════════════
 
-pub static REG_PROPS_PRE_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
-    clsid: CLSID_VXAPO_PRE_MIX,
-    Flags: APO_FLAGS,
-    szFriendlyName: str_to_u16_256(APO_NAME),
-    szCopyrightInfo: str_to_u16_256(APO_COPYRIGHT),
-    u32MajorVersion: 1,
-    u32MinorVersion: 0,
-    u32MinInputConnections: 1,
-    u32MaxInputConnections: 1,
-    u32MinOutputConnections: 1,
-    u32MaxOutputConnections: 1,
-    u32MaxInstances: 1,
-    u32NumAPOInterfaces: 1,
-    iidAPOInterfaceList: [IID_IAPO],
-};
+/// Pre/PostMix 共用注册属性构造（仅 CLSID 不同）。
+const fn make_reg_props(clsid: GUID) -> APO_REG_PROPERTIES {
+    APO_REG_PROPERTIES {
+        clsid,
+        Flags: APO_FLAGS,
+        szFriendlyName: str_to_u16_256(APO_NAME),
+        szCopyrightInfo: str_to_u16_256(APO_COPYRIGHT),
+        u32MajorVersion: 1,
+        u32MinorVersion: 0,
+        u32MinInputConnections: 1,
+        u32MaxInputConnections: 1,
+        u32MinOutputConnections: 1,
+        u32MaxOutputConnections: 1,
+        u32MaxInstances: 1,
+        u32NumAPOInterfaces: 1,
+        iidAPOInterfaceList: [IID_IAPO],
+    }
+}
 
-pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = APO_REG_PROPERTIES {
-    clsid: CLSID_VXAPO_POST_MIX,
-    Flags: APO_FLAGS,
-    szFriendlyName: str_to_u16_256(APO_NAME),
-    szCopyrightInfo: str_to_u16_256(APO_COPYRIGHT),
-    u32MajorVersion: 1,
-    u32MinorVersion: 0,
-    u32MinInputConnections: 1,
-    u32MaxInputConnections: 1,
-    u32MinOutputConnections: 1,
-    u32MaxOutputConnections: 1,
-    u32MaxInstances: 1,
-    u32NumAPOInterfaces: 1,
-    iidAPOInterfaceList: [IID_IAPO],
-};
+pub static REG_PROPS_PRE_MIX: APO_REG_PROPERTIES = make_reg_props(CLSID_VXAPO_PRE_MIX);
+
+pub static REG_PROPS_POST_MIX: APO_REG_PROPERTIES = make_reg_props(CLSID_VXAPO_POST_MIX);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 编译期断言

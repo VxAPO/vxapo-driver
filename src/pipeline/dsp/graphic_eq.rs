@@ -74,36 +74,9 @@ impl Filter for GraphicEqFilter {
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
-        #[cfg(debug_assertions)]
-        {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static CALLS: AtomicU32 = AtomicU32::new(0);
-            let n = CALLS.fetch_add(1, Ordering::Relaxed);
-            if n % 200 == 0 {
-                let in_first = samples.first().and_then(|ch| ch.first()).copied().unwrap_or(0.0);
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\graphiceq_process_probe.txt",
-                    format!(
-                        "graphiceq process biquads={} frame_count={frame_count} in_first={in_first} ",
-                        self.biquads.len()
-                    ),
-                );
-            }
-        }
         // 级联处理：每段依次处理
         for bq in self.biquads.iter_mut() {
             bq.process(samples, frame_count);
-        }
-        #[cfg(debug_assertions)]
-        {
-            let out_first = samples.first().and_then(|ch| ch.first()).copied().unwrap_or(0.0);
-            let buf_ptr = samples.as_ptr() as usize;
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
-                r"C:\ProgramData\VxAPO\graphiceq_process_probe.txt",
-            ) {
-                let _ = writeln!(f, "buf=0x{buf_ptr:x} out_first={out_first}");
-            }
         }
     }
 

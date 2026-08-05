@@ -3,7 +3,16 @@
 //! 查询 Windows 音频端点的设备 ID、友好名称与连接状态。只读。
 
 use crate::sys::registry::{RegKey, RegValue};
+use crate::sys::com::prelude::guid_to_string;
 use crate::utils::vx_error::Result;
+use crate::utils::guid::guid_from_bytes;
+
+// ── MMDevices Properties 值名常量（Windows 11 实证）──
+const PKEY_DEVICE_INSTANCE_ID: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},2";
+const PKEY_DEVICE_INTERFACE_FRIENDLY_NAME: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+const PKEY_DEVICE_PRODUCT_NAME: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
+const PKEY_AUDIO_ENDPOINT_GUID_VALUE: &str = "{9D631510-92A8-4a79-A79E-A83812C9C119},2";
+const PKEY_AUDIO_ENDPOINT_GUID_NAME: &str = "PKEY_AudioEndpoint_GUID";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 数据结构
@@ -81,7 +90,7 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
 
     let device_id = properties
         .as_ref()
-        .and_then(|p| p.read_sz("{b3f8fa53-0004-438e-9003-51a46e139bfc},2"))
+        .and_then(|p| p.read_sz(PKEY_DEVICE_INSTANCE_ID))
         .unwrap_or_default();
 
     // ── 友好名称 ──────────────────────────────────────────────────────────
@@ -91,10 +100,10 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
     // 让用户能看到具体设备而非只有类型。
     let interface_name = properties
         .as_ref()
-        .and_then(|p| p.read_sz("{a45c254e-df1c-4efd-8020-67d146a850e0},2"));
+        .and_then(|p| p.read_sz(PKEY_DEVICE_INTERFACE_FRIENDLY_NAME));
     let product_name = properties
         .as_ref()
-        .and_then(|p| p.read_sz("{b3f8fa53-0004-438e-9003-51a46e139bfc},6"));
+        .and_then(|p| p.read_sz(PKEY_DEVICE_PRODUCT_NAME));
     let friendly_name = match (&interface_name, &product_name) {
         (Some(a), Some(b)) if a != b => format!("{a} ({b})"),
         (Some(a), _) => a.clone(),
@@ -156,25 +165,17 @@ fn detect_flow(_endpoint_key: &RegKey) -> Flow {
 fn extract_endpoint_guid(endpoint_key: &RegKey) -> String {
     if let Ok(props_key) = endpoint_key.open_sub_key("Properties") {
         // Windows 实际值名（与端点子键名一致的 GUID，Windows 11 实证）。
-        if let Ok(RegValue::Sz(s)) = props_key.read_value("{9D631510-92A8-4a79-A79E-A83812C9C119},2") {
+        if let Ok(RegValue::Sz(s)) = props_key.read_value(PKEY_AUDIO_ENDPOINT_GUID_VALUE) {
             return s;
         }
         // 兼容部分系统以文本名存储。
-        if let Ok(RegValue::Sz(s)) = props_key.read_value("PKEY_AudioEndpoint_GUID") {
+        if let Ok(RegValue::Sz(s)) = props_key.read_value(PKEY_AUDIO_ENDPOINT_GUID_NAME) {
             return s;
         }
         // 备选：二进制 GUID 值（16 字节小端）→ 格式化。
-        if let Ok(raw) = props_key.read_binary_value("PKEY_AudioEndpoint_GUID") {
-            if raw.len() >= 16 {
-                let guid = windows::core::GUID {
-                    data1: u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
-                    data2: u16::from_le_bytes([raw[4], raw[5]]),
-                    data3: u16::from_le_bytes([raw[6], raw[7]]),
-                    data4: [
-                        raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15],
-                    ],
-                };
-                return crate::sys::com::prelude::guid_to_string(&guid);
+        if let Ok(raw) = props_key.read_binary_value(PKEY_AUDIO_ENDPOINT_GUID_NAME) {
+            if let Some(guid) = guid_from_bytes(&raw) {
+                return guid_to_string(&guid);
             }
         }
     }

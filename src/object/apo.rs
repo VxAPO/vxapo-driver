@@ -894,8 +894,6 @@ impl ApoObject {
         let inputs = std::slice::from_ref(input_one);
         let output_one = unsafe { &mut **pp_outputs };
         let outputs = std::slice::from_mut(output_one);
-        let chain_count = inner.current_chain.filter_count();
-        let obj_ptr = self as *const _ as usize;
         let mut owned_chain = std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
         let mut tbufs = std::mem::take(&mut inner.temp_buffers);
         let _ = process_audio(
@@ -906,39 +904,6 @@ impl ApoObject {
             &self.process_stats,
             tbufs.as_mut_slice(),
         );
-
-        // 输入/输出采样探针（debug 门控，验证 DSP 是否真的改变了音频数据）。
-        #[cfg(debug_assertions)]
-        {
-            use std::sync::atomic::{AtomicU32, Ordering as AOrd2};
-            static SAMPLE_COUNTER: AtomicU32 = AtomicU32::new(0);
-            let sn = SAMPLE_COUNTER.fetch_add(1, AOrd2::Relaxed);
-            if sn % 200 == 0 {
-                let in_slice = unsafe {
-                    std::slice::from_raw_parts(
-                        input_one.pBuffer as *const f32,
-                        frames * in_ch as usize,
-                    )
-                };
-                let out_slice = unsafe {
-                    std::slice::from_raw_parts(
-                        output_one.pBuffer as *const f32,
-                        frames * out_ch as usize,
-                    )
-                };
-                let n = in_slice.len().min(out_slice.len()).min(16);
-                let tbuf0 = tbufs.first().map(|v| v.as_ptr() as usize).unwrap_or(0);
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\samples_probe.txt",
-                    format!(
-                        "clsid={:?} obj=0x{obj_ptr:x} chain_count={chain_count} tbuf0=0x{tbuf0:x} in={:?} out={:?}\n",
-                        self.clsid,
-                        &in_slice[..n],
-                        &out_slice[..n]
-                    ),
-                );
-            }
-        }
 
         inner.current_chain = owned_chain;
         inner.temp_buffers = tbufs;

@@ -178,21 +178,9 @@ impl ChildApo {
         p_requested: Option<&IAudioMediaType>,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
-        if pp_supported.is_null() {
-            return E_POINTER;
-        }
-        // windows-rs: IsInputFormatSupported(p0, p1) -> Result<IAudioMediaType>
-        // （Param<IAudioMediaType> 由 Option<&T> 满足——可空借用语义）。
-        match unsafe { self.iapo.IsInputFormatSupported(p_opposite, p_requested) } {
-            Ok(supported) => {
-                // 返回的接口引用 +1（from_abi）；ManuallyDrop 防泄漏，as_raw 取指针移交调用方
-                // （调用方负责最终 Release）。
-                let leaked = std::mem::ManuallyDrop::new(supported);
-                unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };
-                HRESULT(0)
-            }
-            Err(e) => e.into(),
-        }
+        self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
+            unsafe { self.iapo.IsInputFormatSupported(a, b) }
+        })
     }
 
     /// 检查输出格式是否支持（`IsOutputFormatSupported`，v8.6 参数采纳）。
@@ -208,11 +196,35 @@ impl ChildApo {
         p_requested: Option<&IAudioMediaType>,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
+        self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
+            unsafe { self.iapo.IsOutputFormatSupported(a, b) }
+        })
+    }
+
+    /// 格式协商公共出口：调用具体接口方法，把返回的 `IAudioMediaType` 以 COM 输出指针移交。
+    ///
+    /// # Safety
+    /// `pp_supported` 必须是有效的 COM 输出指针；`call` 由调用方保证只调用格式协商接口。
+    unsafe fn resolve_supported<F>(
+        &self,
+        p_opposite: Option<&IAudioMediaType>,
+        p_requested: Option<&IAudioMediaType>,
+        pp_supported: *mut *mut IAudioMediaType,
+        call: F,
+    ) -> HRESULT
+    where
+        F: FnOnce(
+            Option<&IAudioMediaType>,
+            Option<&IAudioMediaType>,
+        ) -> windows::core::Result<IAudioMediaType>,
+    {
         if pp_supported.is_null() {
             return E_POINTER;
         }
-        match unsafe { self.iapo.IsOutputFormatSupported(p_opposite, p_requested) } {
+        match call(p_opposite, p_requested) {
             Ok(supported) => {
+                // 返回的接口引用 +1（from_abi）；ManuallyDrop 防泄漏，as_raw 取指针移交调用方
+                // （调用方负责最终 Release）。
                 let leaked = std::mem::ManuallyDrop::new(supported);
                 unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };
                 HRESULT(0)

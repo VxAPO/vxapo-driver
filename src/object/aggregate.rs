@@ -297,95 +297,37 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
     r
 }
 
+// ── vtable 转发宏（零成本：仅展开为既有的直接 vtable 调用） ──────
+macro_rules! forward_method {
+    ($name:ident, $base:expr, $inner:ident, $slot:expr, $ret:ty,
+     ($($param:ident: $pty:ty),*), ($($arg:ident),*)) => {
+        unsafe extern "system" fn $name(this: *mut c_void $(, $param: $pty)*) -> $ret {
+            let base = $base(this);
+            let vtbl = unsafe { *(base.$inner as *const *const usize) };
+            let f: unsafe extern "system" fn(*mut c_void $(, $pty)*) -> $ret =
+                unsafe { std::mem::transmute(*vtbl.add($slot)) };
+            unsafe { f(base.$inner $(, $arg)*) }
+        }
+    };
+}
+
 // ── IAPO vtable stub（offset 0 = 基址） ─────────────────────────
-unsafe extern "system" fn na_reset(this: *mut c_void) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(3)) };
-    unsafe { f(base.i_apo) }
-}
-
-unsafe extern "system" fn na_get_latency(this: *mut c_void, out: *mut i64) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, *mut i64) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(4)) };
-    unsafe { f(base.i_apo, out) }
-}
-
-unsafe extern "system" fn na_get_reg_props(this: *mut c_void, out: *mut *mut c_void) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(5)) };
-    unsafe { f(base.i_apo, out) }
-}
-
-unsafe extern "system" fn na_initialize(this: *mut c_void, cb: u32, data: *const u8) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, u32, *const u8) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(6)) };
-    unsafe { f(base.i_apo, cb, data) }
-}
-
-unsafe extern "system" fn na_is_input_fmt(this: *mut c_void, a: *mut c_void, b: *mut c_void, out: *mut *mut c_void) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(7)) };
-    unsafe { f(base.i_apo, a, b, out) }
-}
-
-unsafe extern "system" fn na_is_output_fmt(this: *mut c_void, a: *mut c_void, b: *mut c_void, out: *mut *mut c_void) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(8)) };
-    unsafe { f(base.i_apo, a, b, out) }
-}
-
-unsafe extern "system" fn na_get_input_channels(this: *mut c_void, out: *mut u32) -> HRESULT {
-    let base = as_apo(this as *mut NApo);
-    let vtbl = unsafe { *(base.i_apo as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(9)) };
-    unsafe { f(base.i_apo, out) }
-}
+forward_method!(na_reset, |this| as_apo(this as *mut NApo), i_apo, 3, HRESULT, (), ());
+forward_method!(na_get_latency, |this| as_apo(this as *mut NApo), i_apo, 4, HRESULT, (out: *mut i64), (out));
+forward_method!(na_get_reg_props, |this| as_apo(this as *mut NApo), i_apo, 5, HRESULT, (out: *mut *mut c_void), (out));
+forward_method!(na_initialize, |this| as_apo(this as *mut NApo), i_apo, 6, HRESULT, (cb: u32, data: *const u8), (cb, data));
+forward_method!(na_is_input_fmt, |this| as_apo(this as *mut NApo), i_apo, 7, HRESULT, (a: *mut c_void, b: *mut c_void, out: *mut *mut c_void), (a, b, out));
+forward_method!(na_is_output_fmt, |this| as_apo(this as *mut NApo), i_apo, 8, HRESULT, (a: *mut c_void, b: *mut c_void, out: *mut *mut c_void), (a, b, out));
+forward_method!(na_get_input_channels, |this| as_apo(this as *mut NApo), i_apo, 9, HRESULT, (out: *mut u32), (out));
 
 // ── IAPO_RT vtable stub（offset 8，需回退） ────────────────────
-// RT stub 的 this 指向 vtbl_rt 字段地址；回退 OFF_RT 得基址。
-// IUnknown 槽 0-2 = delegating（聚合时委托 outer，身份检查通过）。
-unsafe extern "system" fn rt_apo_process(this: *mut c_void, nin: u32, pin: *const *const c_void, nout: u32, pout: *mut *mut c_void) {
-    let base = as_apo(base_from_iface(this, OFF_RT));
-    let vtbl = unsafe { *(base.i_apo_rt as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, u32, *const *const c_void, u32, *mut *mut c_void) = unsafe { std::mem::transmute(*vtbl.add(3)) };
-    unsafe { f(base.i_apo_rt, nin, pin, nout, pout) }
-}
-
-unsafe extern "system" fn rt_calc_input(this: *mut c_void, f: u32) -> u32 {
-    let base = as_apo(base_from_iface(this, OFF_RT));
-    let vtbl = unsafe { *(base.i_apo_rt as *const *const usize) };
-    let fn_: unsafe extern "system" fn(*mut c_void, u32) -> u32 = unsafe { std::mem::transmute(*vtbl.add(4)) };
-    unsafe { fn_(base.i_apo_rt, f) }
-}
-
-unsafe extern "system" fn rt_calc_output(this: *mut c_void, f: u32) -> u32 {
-    let base = as_apo(base_from_iface(this, OFF_RT));
-    let vtbl = unsafe { *(base.i_apo_rt as *const *const usize) };
-    let fn_: unsafe extern "system" fn(*mut c_void, u32) -> u32 = unsafe { std::mem::transmute(*vtbl.add(5)) };
-    unsafe { fn_(base.i_apo_rt, f) }
-}
+forward_method!(rt_apo_process, |this| as_apo(base_from_iface(this, OFF_RT)), i_apo_rt, 3, (), (nin: u32, pin: *const *const c_void, nout: u32, pout: *mut *mut c_void), (nin, pin, nout, pout));
+forward_method!(rt_calc_input, |this| as_apo(base_from_iface(this, OFF_RT)), i_apo_rt, 4, u32, (f: u32), (f));
+forward_method!(rt_calc_output, |this| as_apo(base_from_iface(this, OFF_RT)), i_apo_rt, 5, u32, (f: u32), (f));
 
 // ── IAPO_CFG vtable stub（offset 16） ───────────────────────────
-// IUnknown 槽 0-2 = delegating。
-unsafe extern "system" fn cfg_lock(this: *mut c_void, nin: u32, pin: *const *const c_void, nout: u32, pout: *const *const c_void) -> HRESULT {
-    let base = as_apo(base_from_iface(this, OFF_CFG));
-    let vtbl = unsafe { *(base.i_cfg as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void, u32, *const *const c_void, u32, *const *const c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(3)) };
-    unsafe { f(base.i_cfg, nin, pin, nout, pout) }
-}
-
-unsafe extern "system" fn cfg_unlock(this: *mut c_void) -> HRESULT {
-    let base = as_apo(base_from_iface(this, OFF_CFG));
-    let vtbl = unsafe { *(base.i_cfg as *const *const usize) };
-    let f: unsafe extern "system" fn(*mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(4)) };
-    unsafe { f(base.i_cfg) }
-}
+forward_method!(cfg_lock, |this| as_apo(base_from_iface(this, OFF_CFG)), i_cfg, 3, HRESULT, (nin: u32, pin: *const *const c_void, nout: u32, pout: *const *const c_void), (nin, pin, nout, pout));
+forward_method!(cfg_unlock, |this| as_apo(base_from_iface(this, OFF_CFG)), i_cfg, 4, HRESULT, (), ());
 
 // ── IAPO_ASE vtable stub（offset 24） ───────────────────────────
 // IUnknown 槽 0-2 = delegating。

@@ -55,6 +55,13 @@ pub const INSTALL_VERSION_LEGACY: &str = "1";
 /// 各槽位通过属性索引区分。
 const APO_FX_PROPERTY_GUID: &str = "d04e05a6-594b-4fb6-a80d-01af5eed7d1d";
 
+// Windows 真实注册表槽位属性 ID（PID），2026-08-04 reg query 实证。
+const PID_LFX: u8 = 0;
+const PID_GFX: u8 = 3;
+const PID_SFX: u8 = 5;
+const PID_MFX: u8 = 6;
+const PID_EFX: u8 = 7;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // ApoSlot — 5 个 APO 槽位（Note 25）
 // ══════════════════════════════════════════════════════════════════════════════
@@ -100,11 +107,11 @@ impl ApoSlot {
 /// - 值与旧 CLI `src/reg.rs` 常量一致（VAL_SFX=5 / VAL_MFX=6 / VAL_EFX=7）
 pub fn registry_pid(self) -> u8 {
     match self {
-        ApoSlot::Lfx => 0,
-        ApoSlot::Gfx => 3,
-        ApoSlot::Sfx => 5,
-        ApoSlot::Mfx => 6,
-        ApoSlot::Efx => 7,
+        ApoSlot::Lfx => PID_LFX,
+        ApoSlot::Gfx => PID_GFX,
+        ApoSlot::Sfx => PID_SFX,
+        ApoSlot::Mfx => PID_MFX,
+        ApoSlot::Efx => PID_EFX,
     }
 }
 

@@ -204,6 +204,16 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 /// SELFREG_E_CLASS = 0x80040201（windows crate 未导出该常量，本地定义）。
 const SELFREG_E_CLASS: HRESULT = HRESULT(0x8004_0201u32 as i32);
 
+// ── AudioEngine APO 注册键常量（对齐 EAPO 注册树，2026-08-04 reg query 实证）──
+const AE_FLAGS: u32 = 0x0000_000D; // FRAMESPERSECOND_MUST_MATCH | BITSPERSAMPLE_MUST_MATCH | INPLACE
+const AE_MAX_INSTANCES: u32 = 0xFFFF_FFFF;
+const AE_NUM_INTERFACES: u32 = 1;
+const AE_VERSION_MAJOR: u32 = 1;
+const AE_VERSION_MINOR: u32 = 0;
+const AE_CONNECTION_MIN: u32 = 1;
+const AE_CONNECTION_MAX: u32 = 1;
+const AE_INTERFACE0: &str = "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"; // IAudioProcessingObject::IID
+
 // ══════════════════════════════════════════════════════════════════════════════
 // DllRegisterServer（Note 29）
 //
@@ -341,20 +351,19 @@ fn register_com_class(
         .map_err(|e| e.code())?;
     ae_key.write_sz("FriendlyName", &entry.friendly_name).map_err(|e| e.code())?;
     ae_key.write_sz("Copyright", "VxAPO Project").map_err(|e| e.code())?;
-    ae_key.write_dword("Flags", 0x0000_000D).map_err(|e| e.code())?;
-    ae_key.write_dword("NumAPOInterfaces", 1).map_err(|e| e.code())?;
-    // APOInterface0 = IAudioProcessingObject::IID（windows-rs IID_IAPO 的同值字符串）。
-    ae_key.write_sz("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}")
+    ae_key.write_dword("Flags", AE_FLAGS).map_err(|e| e.code())?;
+    ae_key.write_dword("NumAPOInterfaces", AE_NUM_INTERFACES).map_err(|e| e.code())?;
+    ae_key.write_sz("APOInterface0", AE_INTERFACE0)
         .map_err(|e| e.code())?;
-    ae_key.write_dword("MaxInstances", 0xFFFF_FFFFu32).map_err(|e| e.code())?;
+    ae_key.write_dword("MaxInstances", AE_MAX_INSTANCES).map_err(|e| e.code())?;
     // 完整 11 字段对齐 EAPO（2026-08-04 22:35 手动补写才发现缺失；字段不全 → 引擎
     // 只 LoadLibrary 不实例化 APO → 无声）。Major/Minor + Min/Max In/Out 6 字段。
-    ae_key.write_dword("MajorVersion", 1).map_err(|e| e.code())?;
-    ae_key.write_dword("MinorVersion", 0).map_err(|e| e.code())?;
-    ae_key.write_dword("MinInputConnections", 1).map_err(|e| e.code())?;
-    ae_key.write_dword("MaxInputConnections", 1).map_err(|e| e.code())?;
-    ae_key.write_dword("MinOutputConnections", 1).map_err(|e| e.code())?;
-    ae_key.write_dword("MaxOutputConnections", 1).map_err(|e| e.code())?;
+    ae_key.write_dword("MajorVersion", AE_VERSION_MAJOR).map_err(|e| e.code())?;
+    ae_key.write_dword("MinorVersion", AE_VERSION_MINOR).map_err(|e| e.code())?;
+    ae_key.write_dword("MinInputConnections", AE_CONNECTION_MIN).map_err(|e| e.code())?;
+    ae_key.write_dword("MaxInputConnections", AE_CONNECTION_MAX).map_err(|e| e.code())?;
+    ae_key.write_dword("MinOutputConnections", AE_CONNECTION_MIN).map_err(|e| e.code())?;
+    ae_key.write_dword("MaxOutputConnections", AE_CONNECTION_MAX).map_err(|e| e.code())?;
     drop(ae_key);
 
     Ok(())
