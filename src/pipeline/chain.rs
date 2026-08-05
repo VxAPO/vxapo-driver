@@ -26,6 +26,20 @@ impl Chain {
         Ok(())
     }
 
+    /// 初始化整条链：按顺序调用每个 Filter 的 `initialize`。
+    ///
+    /// 部分 DSP（GraphicEQ/PEQ/IIR/Delay/Convolution 等）依赖 `initialize`
+    /// 预计算系数/分配状态；不调用会变成空处理（声音不变）。
+    /// `Channel:` 类滤波器可能返回新的通道名列表，后续滤波器按更新后的名字初始化。
+    pub fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) {
+        let mut names = channel_names.to_vec();
+        for filter in self.filters.iter_mut() {
+            if let Some(next) = filter.initialize(sample_rate, &names) {
+                names = next;
+            }
+        }
+    }
+
     /// 总延迟（采样数）。
     pub fn total_latency(&self) -> u32 {
         self.total_latency
@@ -92,6 +106,21 @@ mod tests {
         gain: f32,
     }
 
+    #[derive(Debug)]
+    struct InitTrackingFilter {
+        initialized: bool,
+    }
+
+    impl Filter for InitTrackingFilter {
+        fn process(&mut self, _samples: &mut [Vec<f32>], _frame_count: usize) {
+            assert!(self.initialized, "filter process called before initialize");
+        }
+        fn initialize(&mut self, _sample_rate: u32, _channel_names: &[String]) -> Option<Vec<String>> {
+            self.initialized = true;
+            None
+        }
+    }
+
     impl Filter for GainFilter {
         fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
             for ch in samples.iter_mut() {
@@ -117,6 +146,16 @@ mod tests {
         let mut c = Chain::new();
         c.add_filter(Box::new(PassthroughFilter)).unwrap();
         assert_eq!(c.filter_count(), 1);
+    }
+
+    #[test]
+    fn initialize_calls_each_filter() {
+        let mut c2 = Chain::new();
+        c2.add_filter(Box::new(InitTrackingFilter { initialized: false })).unwrap();
+        c2.initialize(48000, &["L".into(), "R".into()]);
+        assert_eq!(c2.filter_count(), 1);
+        let mut samples = vec![vec![0.0f32; 4]; 2];
+        c2.process(&mut samples, 4).unwrap();
     }
 
     #[test]

@@ -72,11 +72,20 @@ struct IapoAseVtbl {
 // ── NApo 聚合对象（多接口 offset 布局） ───────────────────────
 // repr(C) 字段顺序固定：vtbl_apo(0) / vtbl_rt(8) / vtbl_cfg(16) / vtbl_ase(24)。
 // 每个接口指针 = 对应 vtable 字段地址；stub 用偏移还原基址（标准 COM 多接口 offset）。
+#[repr(C)]
+struct IUnknownVtbl {
+    qi: QiFn,
+    addref: RefFn,
+    release: RefFn,
+}
+
 // 常量（x64 指针 8 字节）：
-const OFF_APO: usize = 0;
 const OFF_RT: usize = 8;
 const OFF_CFG: usize = 16;
 const OFF_ASE: usize = 24;
+/// 非委托 IUnknown 视图（EAPO INonDelegatingUnknown 子对象，offset 32）。
+/// CreateInstance 返回此视图——引擎 QI(IAPO) 走此视图的 NonDelegatingQI。
+const OFF_ND_UNKNOWN: usize = 32;
 
 #[repr(C)]
 pub struct NApo {
@@ -88,6 +97,10 @@ pub struct NApo {
     vtbl_cfg: *const IapoCfgVtbl,
     /// IAudioSystemEffects vtable 指针（offset 24）。
     vtbl_ase: *const IapoAseVtbl,
+    /// 非委托 IUnknown 视图（offset 32，EAPO INonDelegatingUnknown）。
+    /// 槽 0-2 = NonDelegatingQI/AddRef/Release（自维护 + 直接暴露 inner 接口）。
+    /// **CreateInstance 聚合/非聚合统一返回此视图**（EAPO ClassFactory.cpp:73 语义）。
+    vtbl_nondeg_unknown: *const IUnknownVtbl,
     /// 聚合外壳 IUnknown（NULL = 非聚合）。
     p_unk_outer: *mut c_void,
     /// 引用计数（自维护，NonDelegating 语义）。
@@ -110,32 +123,124 @@ fn as_apo<'a>(base: *mut NApo) -> &'a NApo {
     unsafe { &*base }
 }
 
-unsafe fn inner_addref(inner: *mut c_void) -> u32 {
-    let vtbl = unsafe { *(inner as *const *const usize) };
-    let addref: RefFn = unsafe { std::mem::transmute(*vtbl.add(1)) };
-    unsafe { addref(inner) }
+/// 从任意接口视图还原 NApo 基址。
+unsafe fn base_from_this(this: *mut c_void) -> *mut NApo {
+    // SAFETY: 调用方保证 this 指向 NApo 内某个视图字段地址。
+    let this_vtbl = unsafe { *(this as *const *const usize) };
+    if this_vtbl as usize == &ND_UNKNOWN_VTBL as *const _ as usize {
+        base_from_iface(this, OFF_ND_UNKNOWN)
+    } else {
+        this as *mut NApo
+    }
+}
+
+// ── Delegating IUnknown（聚合语义核心）───────────────────────
+// 引擎通过 IAPO/RT/CFG/ASE 接口指针调 QI/AddRef/Release 时，走的是 **delegating 版本**
+// （委托 pUnkOuter）——引擎 IAPO->QI(IUnknown) 必须返回 outer IUnknown（聚合身份），
+// 身份检查才通过（否则判接口来自不同对象 → 弃用 → 方法零调用）。
+// NonDelegating（na_qi/na_addref/na_release）保留为 inner 真实实现，供 outer 经特殊路径调用。
+
+/// delegating QI 核心：非聚合 → na_qi；聚合 → 委托 outer->QI。
+unsafe fn delegate_qi_at(base: *mut NApo, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+    let apo = as_apo(base);
+    if apo.p_unk_outer.is_null() {
+        return na_qi(base as *mut c_void, riid, ppv);
+    }
+    // ★ 委托 outer——引擎身份检查通过（IAPO->QI(IUnknown) = outer IUnknown）
+    let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
+    let qi: QiFn = unsafe { std::mem::transmute(*outer_vtbl) };
+    unsafe { qi(apo.p_unk_outer, riid, ppv) }
+}
+
+/// delegating AddRef：非聚合 → na_addref；聚合 → 委托 outer->AddRef。
+unsafe fn delegate_addref_at(base: *mut NApo) -> u32 {
+    let apo = as_apo(base);
+    if apo.p_unk_outer.is_null() {
+        return na_addref(base as *mut c_void);
+    }
+    let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
+    let addref: RefFn = unsafe { std::mem::transmute(*outer_vtbl.add(1)) };
+    unsafe { addref(apo.p_unk_outer) }
+}
+
+/// delegating Release：非聚合 → na_release；聚合 → 委托 outer->Release。
+unsafe fn delegate_release_at(base: *mut NApo) -> u32 {
+    let apo = as_apo(base);
+    if apo.p_unk_outer.is_null() {
+        return na_release(base as *mut c_void);
+    }
+    let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
+    let release: RefFn = unsafe { std::mem::transmute(*outer_vtbl.add(2)) };
+    unsafe { release(apo.p_unk_outer) }
+}
+
+// IAPO 接口 ptr = base+0（offset 0，this 即 base）。
+unsafe extern "system" fn apo_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+    delegate_qi_at(this as *mut NApo, riid, ppv)
+}
+unsafe extern "system" fn apo_dl_addref(this: *mut c_void) -> u32 {
+    delegate_addref_at(this as *mut NApo)
+}
+unsafe extern "system" fn apo_dl_release(this: *mut c_void) -> u32 {
+    delegate_release_at(this as *mut NApo)
+}
+
+// IAPO_RT 接口 ptr = base+8，需回退。
+unsafe extern "system" fn rt_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+    delegate_qi_at(base_from_iface(this, OFF_RT), riid, ppv)
+}
+unsafe extern "system" fn rt_dl_addref(this: *mut c_void) -> u32 {
+    delegate_addref_at(base_from_iface(this, OFF_RT))
+}
+unsafe extern "system" fn rt_dl_release(this: *mut c_void) -> u32 {
+    delegate_release_at(base_from_iface(this, OFF_RT))
+}
+
+// IAPO_CFG 接口 ptr = base+16，需回退。
+unsafe extern "system" fn cfg_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+    delegate_qi_at(base_from_iface(this, OFF_CFG), riid, ppv)
+}
+unsafe extern "system" fn cfg_dl_addref(this: *mut c_void) -> u32 {
+    delegate_addref_at(base_from_iface(this, OFF_CFG))
+}
+unsafe extern "system" fn cfg_dl_release(this: *mut c_void) -> u32 {
+    delegate_release_at(base_from_iface(this, OFF_CFG))
+}
+
+// IAPO_ASE 接口 ptr = base+24，需回退。
+unsafe extern "system" fn ase_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+    delegate_qi_at(base_from_iface(this, OFF_ASE), riid, ppv)
+}
+unsafe extern "system" fn ase_dl_addref(this: *mut c_void) -> u32 {
+    delegate_addref_at(base_from_iface(this, OFF_ASE))
+}
+unsafe extern "system" fn ase_dl_release(this: *mut c_void) -> u32 {
+    delegate_release_at(base_from_iface(this, OFF_ASE))
 }
 
 // ── NonDelegatingQI（EAPO:519-538）───────────────────────────
+// this 可能是任意接口视图（非委托 IUnknown 视图 base+32 / IAPO base / RT base+8 …），
+// 统一按指向的 vtable 判断当前这是哪个视图，还原 base 再暴露接口。
 unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-    // 本函数作为 4 个 vtable 的共用 stub——this 可能是任意接口指针，需还原基址。
-    // 从 vtable 首字段推断当前接口：比较 this 指向的 vtable 地址。
     if riid.is_null() || ppv.is_null() {
         return E_POINTER;
     }
     unsafe { *ppv = std::ptr::null_mut() };
     let iid = unsafe { *riid };
 
-    // 先还原基址：根据 this 指向的 vtable 常量判断属于哪个接口。
-    // 简化：QI 只被调用时 this 通常是对象基址（IAPO）。若引擎对 RT/Config 指针调 QI，
-    // 由各自 stub 转发到带偏移的 na_qi_inner——见下方各 stub 的调用方式。
-    let base = this as *mut NApo;
+    // 判断当前视图：this 指向的 vtable 地址 = ND_UNKNOWN_VTBL → 非委托 IUnknown 视图（offset 32）。
+    // 否则视为对象基址（offset 0，非聚合直接对对象调 QI 的路径）。
+    // SAFETY: this 必须是 NApo 内某视图字段地址（create_aggregate 返回的偏移指针）。
+    let base = base_from_this(this);
     let apo = as_apo(base);
 
-    // QI(IUnknown) 恒返回对象基址（NonDelegatingUnknown 身份）。
+    // QI(IUnknown) → 返回非委托 IUnknown 视图（EAPO:521-522，NonDelegatingUnknown 身份）。
+    // ★ 返回 `&vtbl_nondeg_unknown`（base+32），不是对象基址（base）——后者是 IAPO 委托视图，
+    //   引擎对它的 QI 走委托 outer → 外壳不认 → 弃用零方法（2026-08-05 实测根因）。
     if iid == IUnknown::IID {
-        unsafe { *ppv = base as *mut c_void };
-        unsafe { na_addref(base as *mut c_void) };
+        let nd_view = &raw const apo.vtbl_nondeg_unknown as *const IUnknownVtbl as *mut c_void;
+        unsafe { *ppv = nd_view };
+        unsafe { na_addref(nd_view) }; // NonDAddRef（自维护，base_from_this 自动回退）
         return S_OK;
     }
 
@@ -152,22 +257,30 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
         return E_NOINTERFACE;
     };
     unsafe { *ppv = target };
-    unsafe { na_addref(base as *mut c_void) };
+    // EAPO:519-538 对齐——QI 成功后调用「返回视图」的 AddRef：
+    // IUnknown 视图 = NonDAddRef；IAPO/RT/CFG/ASE 视图 = 该视图自己的 AddRef
+    // （聚合时委托 outer->AddRef，非聚合时 na_addref）。
+    unsafe {
+        let vtbl = *(target as *const *const usize);
+        let addref: RefFn = std::mem::transmute(*vtbl.add(1));
+        addref(target);
+    }
     S_OK
 }
 
 // ── NonDelegatingAddRef/Release（EAPO:541-555，自维护）────────
 unsafe extern "system" fn na_addref(this: *mut c_void) -> u32 {
-    let apo = as_apo(this as *mut NApo);
+    let apo = as_apo(base_from_this(this));
     apo.cref.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
-    let apo = as_apo(this as *mut NApo);
+    let base = base_from_this(this);
+    let apo = as_apo(base);
     let r = apo.cref.fetch_sub(1, Ordering::Release) - 1;
     if r == 0 {
         std::sync::atomic::fence(Ordering::Acquire);
-        let apo = as_apo(this as *mut NApo);
+        let apo = as_apo(base);
         let release_inner = |p: *mut c_void| {
             if !p.is_null() {
                 let vtbl = unsafe { *(p as *const *const usize) };
@@ -179,7 +292,7 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
         release_inner(apo.i_apo_rt);
         release_inner(apo.i_cfg);
         release_inner(apo.i_ase);
-        drop(Box::from_raw(this as *mut NApo));
+        drop(Box::from_raw(base));
     }
     r
 }
@@ -236,21 +349,7 @@ unsafe extern "system" fn na_get_input_channels(this: *mut c_void, out: *mut u32
 
 // ── IAPO_RT vtable stub（offset 8，需回退） ────────────────────
 // RT stub 的 this 指向 vtbl_rt 字段地址；回退 OFF_RT 得基址。
-unsafe extern "system" fn rt_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-    let base = base_from_iface(this, OFF_RT) as *mut c_void;
-    na_qi(base, riid, ppv)
-}
-
-unsafe extern "system" fn rt_addref(this: *mut c_void) -> u32 {
-    let base = base_from_iface(this, OFF_RT) as *mut c_void;
-    na_addref(base)
-}
-
-unsafe extern "system" fn rt_release(this: *mut c_void) -> u32 {
-    let base = base_from_iface(this, OFF_RT) as *mut c_void;
-    na_release(base)
-}
-
+// IUnknown 槽 0-2 = delegating（聚合时委托 outer，身份检查通过）。
 unsafe extern "system" fn rt_apo_process(this: *mut c_void, nin: u32, pin: *const *const c_void, nout: u32, pout: *mut *mut c_void) {
     let base = as_apo(base_from_iface(this, OFF_RT));
     let vtbl = unsafe { *(base.i_apo_rt as *const *const usize) };
@@ -273,21 +372,7 @@ unsafe extern "system" fn rt_calc_output(this: *mut c_void, f: u32) -> u32 {
 }
 
 // ── IAPO_CFG vtable stub（offset 16） ───────────────────────────
-unsafe extern "system" fn cfg_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-    let base = base_from_iface(this, OFF_CFG) as *mut c_void;
-    na_qi(base, riid, ppv)
-}
-
-unsafe extern "system" fn cfg_addref(this: *mut c_void) -> u32 {
-    let base = base_from_iface(this, OFF_CFG) as *mut c_void;
-    na_addref(base)
-}
-
-unsafe extern "system" fn cfg_release(this: *mut c_void) -> u32 {
-    let base = base_from_iface(this, OFF_CFG) as *mut c_void;
-    na_release(base)
-}
-
+// IUnknown 槽 0-2 = delegating。
 unsafe extern "system" fn cfg_lock(this: *mut c_void, nin: u32, pin: *const *const c_void, nout: u32, pout: *const *const c_void) -> HRESULT {
     let base = as_apo(base_from_iface(this, OFF_CFG));
     let vtbl = unsafe { *(base.i_cfg as *const *const usize) };
@@ -303,26 +388,15 @@ unsafe extern "system" fn cfg_unlock(this: *mut c_void) -> HRESULT {
 }
 
 // ── IAPO_ASE vtable stub（offset 24） ───────────────────────────
-unsafe extern "system" fn ase_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-    let base = base_from_iface(this, OFF_ASE) as *mut c_void;
-    na_qi(base, riid, ppv)
-}
+// IUnknown 槽 0-2 = delegating。
 
-unsafe extern "system" fn ase_addref(this: *mut c_void) -> u32 {
-    let base = base_from_iface(this, OFF_ASE) as *mut c_void;
-    na_addref(base)
-}
-
-unsafe extern "system" fn ase_release(this: *mut c_void) -> u32 {
-    let base = base_from_iface(this, OFF_ASE) as *mut c_void;
-    na_release(base)
-}
-
-// ── 静态 vtable（每接口独立） ──────────────────────────────────
+/// 非委托 IUnknown vtable（EAPO INonDelegatingUnknown）：槽 0-2 = na_qi/na_addref/na_release
+/// （自维护 + 直接暴露 inner 接口）。CreateInstance 返回此视图，引擎对它的 QI 走 NonDQI。
+static ND_UNKNOWN_VTBL: IUnknownVtbl = IUnknownVtbl { qi: na_qi, addref: na_addref, release: na_release };
 static IAPO_VTBL: IapoVtbl = IapoVtbl {
-    qi: na_qi,
-    addref: na_addref,
-    release: na_release,
+    qi: apo_dl_qi,
+    addref: apo_dl_addref,
+    release: apo_dl_release,
     reset: na_reset,
     get_latency: na_get_latency,
     get_reg_props: na_get_reg_props,
@@ -333,26 +407,26 @@ static IAPO_VTBL: IapoVtbl = IapoVtbl {
 };
 
 static IAPO_RT_VTBL: IapoRtVtbl = IapoRtVtbl {
-    qi: rt_qi,
-    addref: rt_addref,
-    release: rt_release,
+    qi: rt_dl_qi,
+    addref: rt_dl_addref,
+    release: rt_dl_release,
     apo_process: rt_apo_process,
     calc_input: rt_calc_input,
     calc_output: rt_calc_output,
 };
 
 static IAPO_CFG_VTBL: IapoCfgVtbl = IapoCfgVtbl {
-    qi: cfg_qi,
-    addref: cfg_addref,
-    release: cfg_release,
+    qi: cfg_dl_qi,
+    addref: cfg_dl_addref,
+    release: cfg_dl_release,
     lock_for_process: cfg_lock,
     unlock_for_process: cfg_unlock,
 };
 
 static IAPO_ASE_VTBL: IapoAseVtbl = IapoAseVtbl {
-    qi: ase_qi,
-    addref: ase_addref,
-    release: ase_release,
+    qi: ase_dl_qi,
+    addref: ase_dl_addref,
+    release: ase_dl_release,
 };
 
 // ── 创建入口 ────────────────────────────────────────────────────
@@ -408,6 +482,7 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
         vtbl_rt: &IAPO_RT_VTBL,
         vtbl_cfg: &IAPO_CFG_VTBL,
         vtbl_ase: &IAPO_ASE_VTBL,
+        vtbl_nondeg_unknown: &ND_UNKNOWN_VTBL,
         p_unk_outer,
         cref: AtomicU32::new(1),
         i_apo,
@@ -419,8 +494,11 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
     // 4. 释放 unknown 临时引用（内部接口由 NApo 持有引用）。
     drop(unknown);
 
-    // 5. 返回对象基址（首字段 = IAPO vtable 指针）。
-    Box::into_raw(apo_box) as *mut NApo as *mut c_void
+    // 5. ★ 返回**非委托 IUnknown 视图**（offset 32，EAPO ClassFactory.cpp:73 语义）——
+    //    引擎对返回值调 QI(IAPO) → na_qi（NonDQI，不委托）→ 直接返回 NApo 的 IAPO 视图。
+    //    （旧实现返回基址 = IAPO 视图（委托 QI）→ 引擎 QI 走 outer→ 外壳不认 → 弃用零方法）
+    let base = Box::into_raw(apo_box) as *mut NApo;
+    (base as usize + OFF_ND_UNKNOWN) as *mut c_void
 }
 
 /// 释放聚合对象（CreateInstance QI 失败时清理用）。
@@ -429,6 +507,7 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
 /// `obj` 必须是 create_aggregate 返回的有效指针或 null。
 pub unsafe fn release_aggregate(obj: *mut c_void) {
     if !obj.is_null() {
+        // na_release 现在能自动识别非委托 IUnknown 视图并回退基址。
         na_release(obj);
     }
 }
@@ -440,6 +519,7 @@ mod tests {
 
     #[test]
     fn non_aggregated_qi_unknown_succeeds() {
+        // obj 现在是「非委托 IUnknown 视图」（base+OFF_ND_UNKNOWN），与 EAPO 一致。
         let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
 
@@ -448,8 +528,9 @@ mod tests {
         let mut ppv: *mut c_void = std::ptr::null_mut();
         let hr = unsafe { qi(obj, &IUnknown::IID as *const GUID, &mut ppv) };
         assert_eq!(hr.0, 0);
-        assert!(!ppv.is_null());
-        unsafe { na_release(obj) };
+        // QI(IUnknown) 应返回非委托视图自身（base+OFF_ND_UNKNOWN），且等于 obj。
+        assert_eq!(ppv as usize, obj as usize);
+        unsafe { release_aggregate(obj) };
     }
 
     #[test]
@@ -464,9 +545,10 @@ mod tests {
         let hr = unsafe { qi(obj, &rtid, &mut rt) };
         assert_eq!(hr.0, 0);
         assert!(!rt.is_null());
-        // RT 接口指针应等于 NApo + OFF_RT（多接口偏移）。
-        assert_eq!((rt as usize) - (obj as usize), OFF_RT);
-        unsafe { na_release(obj) };
+        // RT 接口指针应等于 NApo + OFF_RT（多接口偏移）；obj = base+OFF_ND_UNKNOWN。
+        let base = base_from_iface(obj, OFF_ND_UNKNOWN);
+        assert_eq!((rt as usize) - (base as usize), OFF_RT);
+        unsafe { release_aggregate(obj) };
     }
 
     #[test]
@@ -481,8 +563,9 @@ mod tests {
         let hr = unsafe { qi(obj, &cfgid, &mut cfg) };
         assert_eq!(hr.0, 0);
         assert!(!cfg.is_null());
-        assert_eq!((cfg as usize) - (obj as usize), OFF_CFG);
-        unsafe { na_release(obj) };
+        let base = base_from_iface(obj, OFF_ND_UNKNOWN);
+        assert_eq!((cfg as usize) - (base as usize), OFF_CFG);
+        unsafe { release_aggregate(obj) };
     }
 
     #[test]
@@ -497,7 +580,122 @@ mod tests {
         let hr = unsafe { qi(obj, &aseid, &mut ase) };
         assert_eq!(hr.0, 0);
         assert!(!ase.is_null());
-        assert_eq!((ase as usize) - (obj as usize), OFF_ASE);
-        unsafe { na_release(obj) };
+        let base = base_from_iface(obj, OFF_ND_UNKNOWN);
+        assert_eq!((ase as usize) - (base as usize), OFF_ASE);
+        unsafe { release_aggregate(obj) };
+    }
+
+    #[test]
+    fn nondelegating_addref_release_handles_offset_view() {
+        let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
+        assert!(!obj.is_null());
+
+        let vtbl = unsafe { *(obj as *const *const usize) };
+        let addref: RefFn = unsafe { std::mem::transmute(*vtbl.add(1)) };
+        let release: RefFn = unsafe { std::mem::transmute(*vtbl.add(2)) };
+
+        // obj 是非委托 IUnknown 视图（base+OFF_ND_UNKNOWN）；AddRef/Release 必须
+        // 先回退到 NApo 基址再改 cref，否则会在错误偏移上读写。
+        assert_eq!(unsafe { addref(obj) }, 2);
+        assert_eq!(unsafe { release(obj) }, 1);
+
+        unsafe { release_aggregate(obj) };
+    }
+
+    #[test]
+    fn aggregated_qi_adds_outer_ref() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        #[repr(C)]
+        struct Outer {
+            vtbl: *const OuterVtbl,
+            refs: AtomicU32,
+            inner: *mut c_void,
+        }
+        #[repr(C)]
+        struct OuterVtbl {
+            qi: QiFn,
+            addref: RefFn,
+            release: RefFn,
+        }
+
+        unsafe extern "system" fn outer_qi(
+            this: *mut c_void,
+            riid: *const GUID,
+            ppv: *mut *mut c_void,
+        ) -> HRESULT {
+            let outer = &mut *(this as *mut Outer);
+            let iid = unsafe { *riid };
+            if iid == IUnknown::IID {
+                unsafe { *ppv = this };
+                outer_addref(this);
+                S_OK
+            } else if outer.inner.is_null() {
+                E_NOINTERFACE
+            } else {
+                let vtbl = unsafe { *(outer.inner as *const *const usize) };
+                let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
+                unsafe { qi(outer.inner, riid, ppv) }
+            }
+        }
+
+        unsafe extern "system" fn outer_addref(this: *mut c_void) -> u32 {
+            let outer = &*(this as *mut Outer);
+            outer.refs.fetch_add(1, Ordering::SeqCst) + 1
+        }
+
+        unsafe extern "system" fn outer_release(this: *mut c_void) -> u32 {
+            let outer = &*(this as *mut Outer);
+            outer.refs.fetch_sub(1, Ordering::SeqCst) - 1
+        }
+
+        static OUTER_VTBL: OuterVtbl = OuterVtbl {
+            qi: outer_qi,
+            addref: outer_addref,
+            release: outer_release,
+        };
+
+        let mut outer = Outer {
+            vtbl: &OUTER_VTBL,
+            refs: AtomicU32::new(1),
+            inner: std::ptr::null_mut(),
+        };
+        let outer_ptr = (&mut outer as *mut Outer) as *mut c_void;
+
+        // 模拟 CoCreateInstance(pUnkOuter)：inner 返回非委托 IUnknown 视图。
+        let obj = unsafe { create_aggregate(outer_ptr, CLSID_VXAPO_PRE_MIX) };
+        assert!(!obj.is_null());
+        outer.inner = obj;
+
+        let before = outer.refs.load(Ordering::SeqCst);
+        let nd_vtbl = unsafe { *(obj as *const *const usize) };
+        let nd_qi: QiFn = unsafe { std::mem::transmute(*nd_vtbl) };
+
+        // 引擎对返回的 inner 调 QI(IAPO)：NonDQI 返回 IAPO 视图，AddRef 应委托 outer。
+        let iapoid = windows::Win32::Media::Audio::Apo::IAudioProcessingObject::IID;
+        let mut iao: *mut c_void = std::ptr::null_mut();
+        let hr = unsafe { nd_qi(obj, &iapoid, &mut iao) };
+        assert_eq!(hr.0, 0);
+        assert!(!iao.is_null());
+        assert_eq!(outer.refs.load(Ordering::SeqCst), before + 1);
+
+        // 身份检查：IAPO->QI(IUnknown) 必须返回 outer（聚合身份）。
+        let iao_vtbl = unsafe { *(iao as *const *const usize) };
+        let iao_qi: QiFn = unsafe { std::mem::transmute(*iao_vtbl) };
+        let mut unk: *mut c_void = std::ptr::null_mut();
+        let hr2 = unsafe { iao_qi(iao, &IUnknown::IID as *const GUID, &mut unk) };
+        assert_eq!(hr2.0, 0);
+        assert_eq!(unk as usize, outer_ptr as usize);
+        // QI(IUnknown) 的返回值也要 Release，否则 outer 计数会多 1。
+        let unk_vtbl = unsafe { *(unk as *const *const usize) };
+        let unk_release: RefFn = unsafe { std::mem::transmute(*unk_vtbl.add(2)) };
+        unsafe { unk_release(unk) };
+
+        // 释放 IAPO 视图：委托 outer->Release，计数回到 QI 前。
+        let iao_release: RefFn = unsafe { std::mem::transmute(*iao_vtbl.add(2)) };
+        unsafe { iao_release(iao) };
+        assert_eq!(outer.refs.load(Ordering::SeqCst), before);
+
+        unsafe { release_aggregate(obj) };
     }
 }

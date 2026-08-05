@@ -9,7 +9,7 @@
 //!
 //! 禁止依赖：`pipeline/`、`config/`。
 
-use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+use windows::Win32::System::Registry::{HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE};
 use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
 
 use crate::install::device::slots::{
@@ -166,6 +166,12 @@ pub fn install_endpoint(
 ) -> Result<()> {
     let mut tx = Transaction::new();
 
+    // 全流程第一步：确保第三方 APO 可加载（DisableProtectedAudioDG=1）。
+    crate::install::audiodg::disable()?;
+
+    // 全流程第二步：刷新全局 APO 注册（旧注册可能缺 AudioEngine 键/字段）。
+    refresh_global_registration()?;
+
     // ── 定位端点 ──────────────────────────────────────────────────────────
 
     let endpoint_path = find_endpoint_path(device_guid)?;
@@ -174,12 +180,6 @@ pub fn install_endpoint(
     // ── Step 2: 确保 FxProperties 存在（已存在用 open_for_write 最小写权限）──
 
     let (fx_key, fx_is_new) = ensure_fx_properties(&fx_path, &mut tx)?;
-
-    // ── Step 2b: 新建时写 fxTitle（EAPO DeviceAPOInfo.cpp 527 对齐）────────
-    // EAPO 在 FxProperties 创建后立即写 `fxTitle={b725f130-...},10="Equalizer APO"`，
-    // 标识该键由哪个 APO 建立。已存在（可能其他 APO 建）不动，避免覆盖 EAPO 标记。
-
-    write_fx_title(&fx_key, fx_is_new)?;
 
     // ── Step 3: 备份原始 GUID ─────────────────────────────────────────────
 
@@ -233,7 +233,12 @@ pub fn install_endpoint(
 
     // ── Step 6: 写入默认处理模式 GUID ────────────────────────────────────
 
-    write_default_processmode(&fx_key)?;
+    write_default_processmode(
+        &fx_key,
+        config.install_mode,
+        config.install_premix,
+        config.install_postmix && !is_capture,
+    )?;
 
     // ── Step 7: 删除 DisableEnhancements ──────────────────────────────────
 
@@ -282,6 +287,8 @@ pub fn install_endpoint(
         }
     }
 
+    // 全流程收尾：重启音频服务使新槽位拓扑/注册生效（EAPO 安装对齐）。
+    crate::install::audiodg::restart_audio_service()?;
     Ok(())
 }
 
@@ -325,6 +332,9 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         }
     };
 
+    // 全流程前置：确认已安装后才停音频服务，避免 audiodg 锁住槽位导致删不掉。
+    let _ = crate::install::audiodg::stop_audio_service();
+
     // ── 删除 VxAPO CLSID ──────────────────────────────────────────────────
     // 注意：**不能**用 read_all_slots(&fx_key)——它期望端点根键（内部再 open
     // FxProperties 子键）；此处 fx_key 已是 FxProperties 键，会拿不到槽位
@@ -355,46 +365,13 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         ));
     }
 
-    // ── 恢复被覆盖的第三方 APO（快照恢复的核心）──────────────────────────
-    // 只有在 **VxAPO 槽位被删空之后**（上一步），才把 install 时备份的
-    // 「覆盖前槽位名 + 原值」读回写槽位 → 把设备恢复成安装前状态。
-    //
-    // 【接管者优先级】另一个软件可能已覆盖 VxAPO 槽位（EAPO 重装写回、第三方
-    // 接管）。此时（上一步没删它——因为槽位不是 VxAPO CLSID）槽位仍有值：
-    // - 槽位 = 备份原值 → 已是恢复目标，不动；
-    // - 槽位 = 其他 APO → **尊重接管者，不覆盖**；
-    // - 槽位空（NoValue/NoKey，VxAPO 槽位被我们删空）→ 写回备份原值。
+    // ── 删除 VxAPO 独立安装信息区（含所有备份，v8.4）────────────────────
+    // **卸载 ≠ 快照恢复**（2026-08-05 用户纠正）：卸载只删 VxAPO 自己的 CLSID，
+    // **不**把 install 时备份的第三方 APO（EAPO）写回父槽位——那是快照 restore
+    // （snapshot_restore）的职责。若卸载时恢复 EAPO，用户卸载 VxAPO 后 EAPO
+    // 莫名回到父槽位（错误语义）。
+
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
-    if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
-        if let Ok(info) = RegKey::open(root, sub_key) {
-            for backup_name in [BACKUP_PREMIX_SLOT, BACKUP_POSTMIX_SLOT] {
-                // 槽位名（字符串，如 {d04e05a6-...},5）。
-                if let Some(slot_name) = info.read_sz(backup_name) {
-                    // 对应原值备份名：PreMixSlot → PreMixSlotValue。
-                    let value_name = if backup_name == BACKUP_PREMIX_SLOT {
-                        BACKUP_PREMIX_SLOT_VALUE
-                    } else {
-                        BACKUP_POSTMIX_SLOT_VALUE
-                    };
-                    if let Some(val) = info.read_sz(value_name) {
-                        // 定位 ApoSlot 判断当前槽位状态。
-                        if let Some(slot) = ApoSlot::ALL.iter().find(|s| s.value_name() == slot_name) {
-                            let cur = read_slot_value(&fx_key, *slot);
-                            // 仅当槽位为空才写回（NoValue=VxAPO 卸载后/未占；
-                            // NoKey=键缺失）。接管者（Guid≠备份值）不动。
-                            if matches!(cur, SlotValue::NoValue | SlotValue::NoKey) {
-                                let _ = fx_key.write_sz(&slot_name, &val);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── 恢复完成后，再删除 VxAPO 独立安装信息区（含所有备份，v8.4）──────
-    // 顺序保证：先恢复槽位（从信息区读值），再删信息区本身，避免读到一半被删。
-
     if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
         let _ = crate::sys::registry::delete_tree(root, sub_key);
     }
@@ -409,6 +386,8 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
 
     let _ = fx_key.delete_value("DisableEnhancements");
 
+    // 全流程收尾：重启音频服务恢复输出（槽位删除后引擎需重枚举）。
+    crate::install::audiodg::restart_audio_service()?;
     Ok(())
 }
 
@@ -582,6 +561,29 @@ fn split_hklm_path(path: &str) -> Result<(windows::Win32::System::Registry::HKEY
     Ok((HKEY_LOCAL_MACHINE, rest))
 }
 
+/// 用已有 CLSID→DLL 绑定路径刷新全局 APO 注册。
+///
+/// 幂等：读 `HKCR\CLSID\{PreMix}\InprocServer32` 的 DLL 路径后调用
+/// `register_apo_with_path`，补写/覆盖 `AudioEngine\AudioProcessingObjects` 完整字段。
+/// 无绑定（从未 regsvr32）时跳过——CLI 安装前会自动注册，DllRegisterServer 也可单独做。
+fn refresh_global_registration() -> Result<()> {
+    let clsid_str = guid_to_string(&CLSID_VXAPO_PRE_MIX);
+    let binding = format!(r"CLSID\{}\InprocServer32", clsid_str);
+    let dll_path = RegKey::open(HKEY_CLASSES_ROOT, &binding)
+        .and_then(|k| k.read_sz_value(""))
+        .ok()
+        .filter(|p| !p.is_empty());
+    if let Some(path) = dll_path {
+        let hr = crate::object::dll_exports::register_apo_with_path(&path);
+        if hr.0 != 0 {
+            return Err(VxApoError::internal(&format!(
+                "刷新全局 APO 注册失败：{hr:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// 删除非当前模式的旧槽位（EAPO 互斥语义对齐，DeviceAPOInfo.cpp 578-640）。
 ///
 /// EAPO 三模式互斥写槽位 + 不动保留槽位：
@@ -627,31 +629,42 @@ fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: windows::core::GUID) -> 
 /// 的 REG_MULTI_SZ，值 = AUDIO_SIGNALPROCESSINGMODE_DEFAULT（{C18E2F7E-...}）。
 /// Windows 音频引擎按此判「该槽位 APO 参与默认处理模式」——缺了它父槽位 APO 不加载
 /// （2026-08-04 实证：EAPO 当父时 VxAPO 子 APO 能加载；VxAPO 独立父槽位不加载）。
-fn write_default_processmode(fx_key: &RegKey) -> Result<()> {
-    // ProcessingModes 值名（EAPO 源码常量）：{d3993a3f-99c2-4402-b5ec-a92a0367664b},{sfx|efx PID}。
-    let modes_name_sfx = format!("{{{}}},{}", "d3993a3f-99c2-4402-b5ec-a92a0367664b", 5);
-    let modes_name_efx = format!("{{{}}},{}", "d3993a3f-99c2-4402-b5ec-a92a0367664b", 7);
+fn write_default_processmode(
+    fx_key: &RegKey,
+    mode: InstallMode,
+    install_premix: bool,
+    install_postmix: bool,
+) -> Result<()> {
+    // ProcessingModes 值名（EAPO 源码常量）：{d3993a3f-99c2-4402-b5ec-a92a0367664b},{PID}。
     let default_str = guid_to_string(&AUDIO_SIGNALPROCESSINGMODE_DEFAULT);
     let values = vec![default_str];
-    fx_key.write_multi_value(&modes_name_sfx, &values)?;
-    fx_key.write_multi_value(&modes_name_efx, &values)?;
-    Ok(())
-}
-
-/// 写入 FxProperties 标记（EAPO DeviceAPOInfo.cpp 527：FxProperties **新建时**写
-/// `fxTitle = L"VxAPO"` + 各槽位 NOKEY 占位到独立安装信息区）。
-///
-/// fxTitle 值名 `{b725f130-47ef-101a-a5f1-02608c9eebac},10` 标识该 FxProperties 由
-/// 哪个 APO 建立；Windows 引擎扫槽位时可能要求 FxProperties 有效才有 APO 实例化。
-/// 仅 FxProperties 新建（fx_is_new=true）时写——已存在（可能其他 APO 建的）不动，
-/// 避免覆盖 EAPO 的标记。
-fn write_fx_title(fx_key: &RegKey, is_new: bool) -> Result<()> {
-    if !is_new {
-        return Ok(());
+    let write = |pid: u32| -> Result<()> {
+        let name = format!("{{{}}},{}", "d3993a3f-99c2-4402-b5ec-a92a0367664b", pid);
+        Ok(fx_key.write_multi_value(&name, &values)?)
+    };
+    // 对齐 EAPO DeviceAPOInfo.cpp：只为实际安装的槽位写对应 ProcessingModes；
+    // LFX/GFX 分支不写（旧版始终写 SFX+EFX，SfxMfx 模式会漏 MFX → 父槽位不加载）。
+    match mode {
+        InstallMode::LfxGfx => Ok(()),
+        InstallMode::SfxMfx => {
+            if install_premix {
+                write(5)?;
+            }
+            if install_postmix {
+                write(6)?;
+            }
+            Ok(())
+        }
+        InstallMode::SfxEfx => {
+            if install_premix {
+                write(5)?;
+            }
+            if install_postmix {
+                write(7)?;
+            }
+            Ok(())
+        }
     }
-    let fx_title_name = "{b725f130-47ef-101a-a5f1-02608c9eebac},10";
-    fx_key.write_sz(fx_title_name, "VxAPO")?;
-    Ok(())
 }
 
 /// .reg 备份（best-effort，经 sys::registry::save_to_file 导出 FxProperties）。

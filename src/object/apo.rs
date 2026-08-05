@@ -28,7 +28,7 @@ use crate::sys::com::apo_interfaces::{
 };
 use crate::object::child::ChildApo;
 use crate::sys::com::apo_types::{
-    APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID,
+    APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
 };
 use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
 use crate::sys::com::prelude::guid_to_string;
@@ -56,29 +56,45 @@ const DEFAULT_DEVICE_DIR: &str = "_default";
 
 /// 从 APOInitSystemEffects 提取端点 GUID（object 7.1.8，v7.2）。
 ///
-/// 规范原型为 `pSystemEffectsProperties->pEndpointGuid`，但 windows-rs 0.62.2 实测：
-/// `APOInitSystemEffects` 无 `pSystemEffectsProperties` 直接字段，而是
-/// `pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>`；端点 GUID
-/// 经 `IPropertyStore::GetValue(&PKEY_AudioEndpoint_GUID)` 返回 `PROPVARIANT`
-/// （`VT_CLSID`，`puuid` 指向 `GUID`）提取（P0-3 实现反馈②，见 roadmap 反馈段）。
+/// EAPO 源码（EqualizerAPO.cpp:126）从 `pAPOEndpointProperties` 取端点属性存储；
+/// windows-rs 0.62.2 的 APOInitSystemEffects 同时有 pAPOEndpointProperties 和
+/// pAPOSystemEffectsProperties 两个字段——端点 GUID 在 Endpoint 那个里面。
+/// 先用 pAPOEndpointProperties，缺失时回退 pAPOSystemEffectsProperties。
 fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID> {
-    let props = init.pAPOSystemEffectsProperties.as_ref()?;
+    let props = init
+        .pAPOEndpointProperties
+        .as_ref()
+        .or_else(|| init.pAPOSystemEffectsProperties.as_ref())?;
     // Safety: PKEY_AudioEndpoint_GUID 为静态键；GetValue 返回的 PROPVARIANT 由
-    // windows-rs 管理内存（含 puuid 指针有效期内读取）。
+    // windows-rs 管理内存（含 puuid/pwszVal 指针有效期内读取）。
     // PROPVARIANT 是 union（Anonymous.Anonymous.Anonymous），读取/比较均在 unsafe 内。
     let pv: PROPVARIANT = unsafe { props.GetValue(&PKEY_AudioEndpoint_GUID) }.ok()?;
     unsafe {
         // PROPVARIANT_0_0: { vt: VARENUM, wReserved1-3, Anonymous: PROPVARIANT_0_0_0 }
-        if pv.Anonymous.Anonymous.vt != VT_CLSID {
-            return None;
+        match pv.Anonymous.Anonymous.vt {
+            // 部分系统/驱动返回 VT_CLSID（puuid 指向 GUID）。
+            VT_CLSID => {
+                let guid_ptr = pv.Anonymous.Anonymous.Anonymous.puuid;
+                if guid_ptr.is_null() {
+                    None
+                } else {
+                    Some(*guid_ptr)
+                }
+            }
+            // Windows 11 实测 EAPO 同款：PKEY_AudioEndpoint_GUID 返回 VT_LPWSTR，
+            // 字符串形如 {3b1c3cb8-af9e-47b9-b776-3dac8c7ca333}。
+            VT_LPWSTR => {
+                let str_ptr = pv.Anonymous.Anonymous.Anonymous.pwszVal;
+                if str_ptr.is_null() {
+                    None
+                } else {
+                    let s = str_ptr.to_string().ok()?;
+                    let s = s.trim().trim_start_matches('{').trim_end_matches('}');
+                    windows::core::GUID::try_from(s).ok()
+                }
+            }
+            _ => None,
         }
-        // Safety: VT_CLSID 时 puuid 指向非空 GUID。
-        let guid_ptr = pv.Anonymous.Anonymous.Anonymous.puuid;
-        if guid_ptr.is_null() {
-            return None;
-        }
-        // Safety: 已验证非空且 VT_CLSID 语义。
-        Some(*guid_ptr)
     }
 }
 
@@ -131,20 +147,32 @@ fn resolve_config_path_from(config_root: &str, init: Option<&APOInitSystemEffect
 /// 这些属性在协商时即已确定、与锁定后上下文无关。
 ///
 /// `p_requested` 是 `Ref<IAudioMediaType>`（Deref 到 `Option<IAudioMediaType>`）。
+/// 从 IAudioMediaType 引用提取 AudioFormat（协商双格式检查统一入口）。
+fn extract_format_ref(
+    media_ref: &windows::core::Ref<IAudioMediaType>,
+) -> Result<crate::pipeline::format::AudioFormat> {
+    let Some(mt) = media_ref.as_ref() else {
+        return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
+    };
+    let mt_ptr = mt as *const IAudioMediaType as *mut IAudioMediaType;
+    // Safety: mt 为有效 COM 对象（引擎传入的自窗口指针）。
+    unsafe { extract_format(mt_ptr) }
+        .map_err(|_| windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))
+}
+
+/// 基础格式检查（EAPO 对齐，EqualizerAPO.cpp IsInputFormatSupported）：
+/// - 仅拒绝非 float（DSP 链为 f32 处理）
+/// - 通道 1~8（DSP 链真实能力）
+/// - **不设采样率限制**——EAPO 基类不限制采样率；此前 44.1k 下限会误拒
+///   16k/22.05k 设备协商 → 「格式消失/无法播放」直接嫌疑。
 fn check_format_supported(p_requested: &windows::core::Ref<IAudioMediaType>) -> Result<()> {
+    let fmt = extract_format_ref(p_requested)?;
     let Some(req) = p_requested.as_ref() else {
         return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
     };
     let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
     // 浮点格式检查（WAVE_FORMAT_IEEE_FLOAT）。
     if !unsafe { is_float_format(mt_ptr) } {
-        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
-    }
-    // 提取格式属性。
-    let fmt = unsafe { extract_format(mt_ptr) }
-        .map_err(|_| windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))?;
-    // 采样率范围：44.1kHz ~ 192kHz。
-    if fmt.sample_rate < 44100 || fmt.sample_rate > 192000 {
         return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
     }
     // 通道数范围：1 ~ 8。
@@ -331,13 +359,41 @@ struct WatcherState {
 ///
 /// 模块级函数——供 watcher 线程独立调用（`#[implement]` 限制：线程无法持有 self，
 /// 因此 clone 的 `config_path`/`mutex` Arc 移入线程，本函数接收引用即复用主逻辑）。
-fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObjectInner>>) {
+fn hot_reload_impl(
+    config_path: &Arc<Mutex<String>>,
+    inner: &Arc<Mutex<ApoObjectInner>>,
+    clsid: windows::core::GUID,
+    obj_ptr: usize,
+) {
     // 1. R2 阻塞式（短锁检查，不构建新链）。
     {
-        let guard = inner.lock().unwrap();
+        let mut guard = inner.lock().unwrap();
         if guard.transition.is_some() || guard.reloading {
-            // 过渡在途或加载中，本次变更丢弃（过渡完成后 APOProcess 会触发一次重载）。
-            return;
+            #[cfg(debug_assertions)]
+            {
+                let transition = guard.transition.is_some();
+                let reloading = guard.reloading;
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
+                    format!(
+                        "hot_reload pending/stale: clsid={clsid:?} obj=0x{obj_ptr:x} transition={transition} reloading={reloading} thread={:?}\n",
+                        std::thread::current().id(),
+                    ),
+                );
+            }
+            // 过渡在途：不丢弃，记 pending，过渡完成后 APOProcess 会触发一次重载。
+            // 若过渡对象已到终点但未被 APOProcess 清掉（实例可能未走 RT 路径），
+            // 直接清掉陈旧 transition，让本次变更立即走正常解析。
+            let finished = guard
+                .transition
+                .as_ref()
+                .map_or(false, |p| p.counter() >= p.length());
+            if finished {
+                guard.transition = None;
+            } else {
+                guard.pending_reload = true;
+                return;
+            }
         }
     }
 
@@ -363,6 +419,13 @@ fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObject
             // v7.9：解析失败 = 整体失败（语法错误 / Include 失败 / 任一文件超 128KB）
             // → **保留旧链、不更新 active_spec**（v7.8 对齐 EAPO：log::warn + 返回）。
             log::warn!("hot_reload: config parse failed — keeping old chain");
+            #[cfg(debug_assertions)]
+            {
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
+                    "hot_reload parse failed\n",
+                );
+            }
             return;
         }
     };
@@ -374,11 +437,19 @@ fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObject
             && guard.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
         if same {
             log::debug!("hot_reload: config unchanged — skip");
+            #[cfg(debug_assertions)]
+            {
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
+                    "hot_reload unchanged (spec same)\n",
+                );
+            }
             return;
         }
     }
 
     // 5. 锁内构建 + 交换。构建成功即更新 active_spec（与 current_chain 同步）。
+    let spec_len = new_spec.len();
     let mut new_chain = Chain::new();
     for f in filters {
         if new_chain.add_filter(f).is_err() {
@@ -386,6 +457,8 @@ fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObject
             return;
         }
     }
+    // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
+    new_chain.initialize(dsp_ctx.sample_rate, &dsp_ctx.channel_names);
 
     let mut guard = inner.lock().unwrap();
     if guard.transition.is_some() {
@@ -399,6 +472,19 @@ fn hot_reload_impl(config_path: &Arc<Mutex<String>>, inner: &Arc<Mutex<ApoObject
     guard.pending_reload = false;
     guard.reloading = false;
     guard.active_spec = new_spec;
+
+    // 热重载落地探针（debug 门控，验证 config 变更确实切换了链）。
+    #[cfg(debug_assertions)]
+            {
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
+                    format!(
+                        "hot_reload applied clsid={clsid:?} obj=0x{obj_ptr:x} spec_len={spec_len} path={config_path} thread={:?}\n",
+                        std::thread::current().id(),
+                    ),
+                );
+            }
+
     let length = default_smoothing_length(guard.pipeline_context.sample_rate);
     let mut sm = SmoothingProvider::new(length);
     sm.begin();
@@ -452,7 +538,12 @@ impl ApoObject {
 
     /// 配置热重载（watcher 回调）。委托模块级 `hot_reload_impl`（共享 Arc 字段）。
     pub fn hot_reload(&self) {
-        hot_reload_impl(&self.config_path, &self.mutex);
+        hot_reload_impl(
+            &self.config_path,
+            &self.mutex,
+            self.clsid,
+            self as *const _ as usize,
+        );
     }
 
     /// 读取当前输出通道数（panic 兜底路径专用）。
@@ -535,12 +626,26 @@ impl ApoObject {
         // 3. spawn 线程：wait_and_handle → hot_reload_impl；shutdown 事件置位 → 退出。
         let cfg = self.config_path.clone();
         let inner = self.mutex.clone();
+        let clsid = self.clsid;
+        let obj_ptr = self as *const _ as usize;
         let handle = std::thread::spawn(move || loop {
             if !watcher.wait_and_handle() {
                 break; // shutdown 或句柄失效。
             }
+            // watcher 事件探针（debug 门控，验证目录变更是否到达线程）。
+            #[cfg(debug_assertions)]
+            {
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\watcher_probe.txt",
+                    format!(
+                        "dir change at {:?} clsid={clsid:?} obj=0x{obj_ptr:x} thread={:?}\n",
+                        std::time::SystemTime::now(),
+                        std::thread::current().id()
+                    ),
+                );
+            }
             // 目录级变更 → 热重载（spec 短路 + 128KB 闸门内部处理）。
-            hot_reload_impl(&cfg, &inner);
+            hot_reload_impl(&cfg, &inner, clsid, obj_ptr);
         });
 
         // 4. 记录 watcher 运行时状态（&self 可写：Arc<Mutex> 内部可变性）。
@@ -789,6 +894,8 @@ impl ApoObject {
         let inputs = std::slice::from_ref(input_one);
         let output_one = unsafe { &mut **pp_outputs };
         let outputs = std::slice::from_mut(output_one);
+        let chain_count = inner.current_chain.filter_count();
+        let obj_ptr = self as *const _ as usize;
         let mut owned_chain = std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
         let mut tbufs = std::mem::take(&mut inner.temp_buffers);
         let _ = process_audio(
@@ -799,6 +906,40 @@ impl ApoObject {
             &self.process_stats,
             tbufs.as_mut_slice(),
         );
+
+        // 输入/输出采样探针（debug 门控，验证 DSP 是否真的改变了音频数据）。
+        #[cfg(debug_assertions)]
+        {
+            use std::sync::atomic::{AtomicU32, Ordering as AOrd2};
+            static SAMPLE_COUNTER: AtomicU32 = AtomicU32::new(0);
+            let sn = SAMPLE_COUNTER.fetch_add(1, AOrd2::Relaxed);
+            if sn % 200 == 0 {
+                let in_slice = unsafe {
+                    std::slice::from_raw_parts(
+                        input_one.pBuffer as *const f32,
+                        frames * in_ch as usize,
+                    )
+                };
+                let out_slice = unsafe {
+                    std::slice::from_raw_parts(
+                        output_one.pBuffer as *const f32,
+                        frames * out_ch as usize,
+                    )
+                };
+                let n = in_slice.len().min(out_slice.len()).min(16);
+                let tbuf0 = tbufs.first().map(|v| v.as_ptr() as usize).unwrap_or(0);
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\samples_probe.txt",
+                    format!(
+                        "clsid={:?} obj=0x{obj_ptr:x} chain_count={chain_count} tbuf0=0x{tbuf0:x} in={:?} out={:?}\n",
+                        self.clsid,
+                        &in_slice[..n],
+                        &out_slice[..n]
+                    ),
+                );
+            }
+        }
+
         inner.current_chain = owned_chain;
         inner.temp_buffers = tbufs;
     }
@@ -931,10 +1072,22 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
 
     fn IsInputFormatSupported(
         &self,
-        _p_opposite_format: windows::core::Ref<IAudioMediaType>,
+        p_opposite_format: windows::core::Ref<IAudioMediaType>,
         p_requested: windows::core::Ref<IAudioMediaType>,
     ) -> Result<IAudioMediaType> {
+        // EAPO 对齐（EqualizerAPO.cpp:228-306）：
+        // 读输入+输出双格式后仅拒绝「降混」（in > 2ch 且 in > out）。
+        // EAPO 返回 S_FALSE + 设备输出格式（CreateAudioMediaTypeFromUncompressedAudioFormat）；
+        // windows-rs Result 无法表达 S_FALSE（Ok→S_OK / Err→错误码），
+        // 降混拒绝退化为 Err(APOERR_FORMAT_NOT_SUPPORTED)（宁拒不错）。
+        let input = extract_format_ref(&p_requested)?;
         check_format_supported(&p_requested)?;
+        // opposite 缺失/解析失败时跳过降混检查（保守接受，宁多勿误拒）。
+        if let Ok(output) = extract_format_ref(&p_opposite_format) {
+            if input.channels > 2 && input.channels > output.channels {
+                return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+            }
+        }
         // 通过检查：返回请求格式（INPLACE 模式输入输出同格式）。
         let req = p_requested.as_ref().expect("checked above");
         Ok(req.clone())
@@ -942,11 +1095,17 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
 
     fn IsOutputFormatSupported(
         &self,
-        _p_opposite_format: windows::core::Ref<IAudioMediaType>,
+        p_opposite_format: windows::core::Ref<IAudioMediaType>,
         p_requested: windows::core::Ref<IAudioMediaType>,
     ) -> Result<IAudioMediaType> {
-        // 输出格式与输入格式使用相同的检查逻辑（INPLACE 模式）。
+        // 与 IsInputFormatSupported 对称：拒绝「上混」（out > 2ch 且 out > in）。
+        let output = extract_format_ref(&p_requested)?;
         check_format_supported(&p_requested)?;
+        if let Ok(input) = extract_format_ref(&p_opposite_format) {
+            if output.channels > 2 && output.channels > input.channels {
+                return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+            }
+        }
         let req = p_requested.as_ref().expect("checked above");
         Ok(req.clone())
     }
@@ -1046,34 +1205,52 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         if num_input == 0 || pp_inputs.is_null() {
             return Err(windows::core::Error::from(APOERR_NUM_CONNECTIONS_INVALID));
         }
+        // EAPO 对齐（EqualizerAPO.cpp:308-339）：Lock 需读输入+输出**双格式**，
+        // 引擎可协商 in≠out（如设备 5.1 输出）；输出通道数/掩码按输出格式（render 场景）。
+        if num_output == 0 || pp_outputs.is_null() {
+            return Err(windows::core::Error::from(APOERR_NUM_CONNECTIONS_INVALID));
+        }
 
-        // Step 1: 从输入连接描述符提取格式（pFormat 为 ManuallyDrop<Option<IAudioMediaType>>）。
+        // Step 1: 从输入/输出连接描述符提取格式（pFormat 为 ManuallyDrop<Option<IAudioMediaType>>）。
         let input_descriptor = unsafe { &**pp_inputs };
-        let format = match input_descriptor.pFormat.as_ref() {
-            Some(media_type) => {
-                let mt_ptr: *mut IAudioMediaType =
-                    media_type as *const IAudioMediaType as *mut IAudioMediaType;
-                unsafe { extract_format(mt_ptr) }
-                    .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?
-            }
-            None => return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT)),
-        };
+        let output_descriptor = unsafe { &**pp_outputs };
+        let extract_descriptor_format =
+            |desc: &APO_CONNECTION_DESCRIPTOR| -> Result<crate::pipeline::format::AudioFormat> {
+                match desc.pFormat.as_ref() {
+                    Some(media_type) => {
+                        let mt_ptr: *mut IAudioMediaType =
+                            media_type as *const IAudioMediaType as *mut IAudioMediaType;
+                        unsafe { extract_format(mt_ptr) }
+                            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
+                    }
+                    None => Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT)),
+                }
+            };
+        let format = extract_descriptor_format(input_descriptor)?;
+        let output_format = extract_descriptor_format(output_descriptor)?;
+
+        // EAPO render 掩码语义（372-383）：channelMask = out 格式掩码；
+        // out 掩码为 0 且 in/out 通道数相同 → 回退输入掩码。
+        let mut channel_mask = output_format.channel_mask;
+        if channel_mask == 0 && format.channels == output_format.channels {
+            channel_mask = format.channel_mask;
+        }
 
         // Step 2: 构建 PipelineContext + DspContext。
         let pipeline_context = PipelineContext {
             sample_rate: format.sample_rate,
             input_channels: format.channels,
-            output_channels: format.channels,
-            channel_mask: format.channel_mask,
+            output_channels: output_format.channels,
+            channel_mask,
             max_frame_count: input_descriptor.u32MaxFrameCount as usize,
         };
 
-        let channel_names = get_channel_names(format.channel_mask);
+        let channel_names = get_channel_names(channel_mask);
         let dsp_ctx = DspContext {
             sample_rate: format.sample_rate,
             channel_count: format.channels,
-            channel_mask: format.channel_mask,
-            channel_names,
+            channel_mask,
+            channel_names: channel_names.clone(),
             max_frame_count: input_descriptor.u32MaxFrameCount,
             bits_per_sample: format.bits_per_sample,
             device_type: DeviceType::Render,
@@ -1093,12 +1270,28 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         let (filters, spec_chain) = parser.parse_file_with_spec(&config_path, &dsp_ctx)
             .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
 
+        // 配置解析落地探针（debug 门控，验证 Lock 时确实读到了 per-device config）。
+        #[cfg(debug_assertions)]
+        {
+            let _ = std::fs::write(
+                r"C:\ProgramData\VxAPO\config_probe.txt",
+                format!(
+                    "Lock parsed filters={} spec={} path={}\n",
+                    filters.len(),
+                    spec_chain.len(),
+                    config_path
+                ),
+            );
+        }
+
         // Step 4: 组装 Chain。
         let mut chain = Chain::new();
         for f in filters {
             chain.add_filter(f)
                 .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
         }
+        // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
+        chain.initialize(format.sample_rate, &channel_names);
         let total_latency = chain.total_latency();
 
         // Step 5: 预分配过渡缓冲区（v7.8 修订，杜绝 RT 线程过渡首次 resize 扩容——

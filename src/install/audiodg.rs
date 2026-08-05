@@ -5,7 +5,7 @@
 //! `DisableProtectedAudioDG`（REG_DWORD）控制。
 
 use crate::sys::registry::RegKey;
-use crate::utils::vx_error::Result;
+use crate::utils::vx_error::{Result, VxApoError};
 use windows::Win32::System::Registry::{HKEY, HKEY_LOCAL_MACHINE};
 
 /// 注册表路径：HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio。
@@ -77,6 +77,157 @@ pub fn ensure_can_load() -> Result<()> {
         return Ok(());
     }
     disable()
+}
+
+/// 停止 Windows 音频服务（只停不启，uninstall 前置用）。
+///
+/// audiodg 持有点端锁 MMDevices 槽位句柄时，删除槽位值会失败——必须先停服务。
+/// 与 `restart_audio_service` 共用停服逻辑，但**不开起**（uninstall 删槽位后由
+/// CLI 层调 `restart_audio_service` 恢复）。
+pub fn stop_audio_service() -> Result<()> {
+    use windows::Win32::System::Services::{
+        OpenSCManagerW, OpenServiceW, ControlService, QueryServiceStatus,
+        CloseServiceHandle, SC_HANDLE, SERVICE_STATUS,
+        SC_MANAGER_ALL_ACCESS, SERVICE_ALL_ACCESS, SERVICE_CONTROL_STOP,
+        SERVICE_STOPPED, SERVICE_RUNNING,
+    };
+    use windows::core::{PCWSTR, HSTRING};
+
+    // SAFETY: 本函数在非 RT 控制线程调用（install/CLI），无实时约束。
+    let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+
+    struct ScmGuard(SC_HANDLE);
+    impl Drop for ScmGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _scm_guard = ScmGuard(scm);
+
+    let service_name = HSTRING::from("AudioSrv");
+    let svc = unsafe { OpenServiceW(scm, &service_name, SERVICE_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+
+    struct SvcGuard(SC_HANDLE);
+    impl Drop for SvcGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _svc_guard = SvcGuard(svc);
+
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    unsafe { QueryServiceStatus(svc, &mut status) }
+        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+
+    if status.dwCurrentState == SERVICE_RUNNING {
+        unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
+            .map_err(|e| VxApoError::internal(&format!("ControlService(AudioSrv STOP) failed: {e}")))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while status.dwCurrentState != SERVICE_STOPPED {
+            if std::time::Instant::now() > deadline {
+                return Err(VxApoError::internal("AudioSrv stop timed out (30s)"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            unsafe { QueryServiceStatus(svc, &mut status) }
+                .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+        }
+    }
+    log::info!("AudioSrv stopped");
+    Ok(())
+}
+
+/// 重启 Windows 音频服务（AudioSrv）——EAPO 安装收尾对齐（Setup.nsi / DeviceSelector /i）。
+///
+/// **为什么必须**（2026-08-05 实证根因）：EAPO 安装器装完调用
+/// `DeviceSelector.exe /i` → `ServiceHelper::restartService(L"AudioSrv")`
+/// （DeviceTestThread.cpp:74/254）——**重启音频服务触发引擎重枚举端点建图**，
+/// 装完 DLL 立即进 audiodg（用户实测 47 模块含 EqualizerAPO.dll）。
+/// VxAPO 之前安装只写注册表不重启服务 → audiodg 保持旧图 → 新装 DLL 不被加载。
+///
+/// 实现（对齐 EAPO ServiceHelper.cpp restartService）：
+/// 1. OpenSCManagerW(SC_MANAGER_ALL_ACCESS)
+/// 2. 停 AudioSrv（ControlService SERVICE_CONTROL_STOP）+ 轮询等 SERVICE_STOPPED
+///    （30 秒超时，EAPO 同款）
+/// 3. StartServiceW 启动 AudioSrv
+///
+/// 失败不阻塞安装（best-effort，仅日志——注册表已写入，服务下次重启自然生效）。
+pub fn restart_audio_service() -> Result<()> {
+    use windows::Win32::System::Services::{
+        OpenSCManagerW, OpenServiceW, ControlService, StartServiceW, QueryServiceStatus,
+        CloseServiceHandle, SC_HANDLE, SERVICE_STATUS,
+        SC_MANAGER_ALL_ACCESS, SERVICE_ALL_ACCESS, SERVICE_CONTROL_STOP,
+        SERVICE_STOPPED, SERVICE_RUNNING,
+    };
+    use windows::core::{PCWSTR, HSTRING};
+
+    // SAFETY: 本函数在非 RT 控制线程调用（install/CLI），无实时约束。
+    let scm = unsafe {
+        OpenSCManagerW(
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SC_MANAGER_ALL_ACCESS,
+        )
+    }
+    .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+
+    // RAII：SC 句柄必须关闭（即使中途失败）。
+    struct ScmGuard(SC_HANDLE);
+    impl Drop for ScmGuard {
+        fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenSCManagerW 创建且仍有效。
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _scm_guard = ScmGuard(scm);
+
+    let service_name = HSTRING::from("AudioSrv");
+    // SAFETY: scm 有效；serviceName 为静态 "AudioSrv"。
+    let svc = unsafe { OpenServiceW(scm, &service_name, SERVICE_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+
+    struct SvcGuard(SC_HANDLE);
+    impl Drop for SvcGuard {
+        fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenServiceW 创建且仍有效。
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _svc_guard = SvcGuard(svc);
+
+    // 当前状态。
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    // SAFETY: status 可变缓冲区由 SCM 填充。
+    unsafe { QueryServiceStatus(svc, &mut status) }
+        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+
+    // 已在运行才停（EAPO：state==SERVICE_RUNNING 才 stop；否则直接启动）。
+    if status.dwCurrentState == SERVICE_RUNNING {
+        // SAFETY: 停服务。
+        unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
+            .map_err(|e| VxApoError::internal(&format!("ControlService(AudioSrv STOP) failed: {e}")))?;
+
+        // 轮询等 STOPPED（30 秒超时，EAPO 同款）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while status.dwCurrentState != SERVICE_STOPPED {
+            if std::time::Instant::now() > deadline {
+                return Err(VxApoError::internal("AudioSrv stop timed out (30s)"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // SAFETY: status 可变缓冲区由 SCM 填充。
+            unsafe { QueryServiceStatus(svc, &mut status) }
+                .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+        }
+    }
+
+    // 启动 AudioSrv。
+    // SAFETY: 启动服务。
+    unsafe { StartServiceW(svc, None) }
+        .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
+
+    log::info!("AudioSrv restarted (EAPO install 对齐)");
+    Ok(())
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

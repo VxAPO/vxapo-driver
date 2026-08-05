@@ -74,9 +74,36 @@ impl Filter for GraphicEqFilter {
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
+        #[cfg(debug_assertions)]
+        {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static CALLS: AtomicU32 = AtomicU32::new(0);
+            let n = CALLS.fetch_add(1, Ordering::Relaxed);
+            if n % 200 == 0 {
+                let in_first = samples.first().and_then(|ch| ch.first()).copied().unwrap_or(0.0);
+                let _ = std::fs::write(
+                    r"C:\ProgramData\VxAPO\graphiceq_process_probe.txt",
+                    format!(
+                        "graphiceq process biquads={} frame_count={frame_count} in_first={in_first} ",
+                        self.biquads.len()
+                    ),
+                );
+            }
+        }
         // 级联处理：每段依次处理
         for bq in self.biquads.iter_mut() {
             bq.process(samples, frame_count);
+        }
+        #[cfg(debug_assertions)]
+        {
+            let out_first = samples.first().and_then(|ch| ch.first()).copied().unwrap_or(0.0);
+            let buf_ptr = samples.as_ptr() as usize;
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+                r"C:\ProgramData\VxAPO\graphiceq_process_probe.txt",
+            ) {
+                let _ = writeln!(f, "buf=0x{buf_ptr:x} out_first={out_first}");
+            }
         }
     }
 
@@ -251,5 +278,28 @@ mod tests {
             let energy: f32 = samples[ch].iter().map(|x| x * x).sum();
             assert!(energy > 0.0, "channel {} should have output", ch);
         }
+    }
+
+    #[test]
+    fn cut_at_1000_changes_440_sine() {
+        let bands = parse_graphic_eq_params("1000.4 -24").unwrap();
+        let mut filter = GraphicEqFilter::new(bands);
+        filter.initialize(48000, &stereo_names());
+
+        let mut samples = vec![vec![0.0f32; 480]; 2];
+        for f in 0..480 {
+            samples[0][f] = (2.0 * std::f32::consts::PI * 440.0 * f as f32 / 48000.0).sin();
+        }
+        let before = samples[0].clone();
+        filter.process(&mut samples, 480);
+
+        let mut max_diff = 0.0f32;
+        for f in 0..480 {
+            max_diff = max_diff.max((samples[0][f] - before[f]).abs());
+        }
+        assert!(
+            max_diff > 0.001,
+            "GraphicEQ -24dB @1kHz should affect 440Hz sine, max_diff={max_diff}"
+        );
     }
 }

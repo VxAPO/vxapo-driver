@@ -5,21 +5,10 @@
 # 均属排查 P0-7 audiodg 不加载时使用的验证工具，不属源码，一律忽略
 *.ps1
 *.bat
-audiodg_check_out.txt
-audiodg_check_err.txt
-audioengine_keys_out.txt
-activate_all_out.txt
-default_endpoint_out.txt
-dumpbin_deps.ps1
-edifier_out.txt
-events_out.txt
-final_out.txt
-now_modules_out.txt
-procmon_*.pml
-procmon_*.csv
-procmon_out.txt
-procmon_cap_out.txt
-procmon_test_out.txt
+*.txt
+*.cmd
+*.csv
+*.pml
 
 # 系统生成
 .DS_Store
