@@ -101,6 +101,16 @@ unsafe fn inner_addref(inner: *mut c_void) -> u32 {
 
 // ── NonDelegatingQI（EAPO:519-538）───────────────────────────
 unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+    // ---- 探针 7：记录引擎对 NApo 的每个 QI（2026-08-05，debug 门控，排查完删除）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\qi_probe.txt",
+        ) {
+            let _ = writeln!(f, "NApo QI riid={:?} this={:p}", unsafe { *riid }, this);
+        }
+    }
     if riid.is_null() || ppv.is_null() {
         return E_POINTER;
     }
@@ -115,23 +125,24 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
         return S_OK;
     }
 
-    // 其余接口 → 内部 ApoObject 对应接口（NonDelegatingQI 暴露），AddRef inner。
+    // 其余接口 → 返回 **NApo 自身的接口指针**（EAPO NonDelegatingQI 返回 *this 的语义，
+    // EqualizerAPO.cpp:523-530）——引擎对返回指针调方法必须落回 NApo vtable（转发器），
+    // 而非内部 ApoObject 的独立接口（身份不一致 + 绕过聚合层）。AddRef 自维护。
     let target = if iid == windows::Win32::Media::Audio::Apo::IAudioProcessingObject::IID {
-        apo.i_apo
+        // IAPO = NApo 对象首字段（vtable 指针地址）。
+        this
     } else if iid == windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT::IID {
-        apo.i_apo_rt
+        // 后续接口指针：NApo 对象尾部追加的 vtable 槽位（仍以 this 为基址，见 NApo 布局）。
+        this
     } else if iid == windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration::IID {
-        apo.i_cfg
+        this
     } else if iid == windows::Win32::Media::Audio::Apo::IAudioSystemEffects::IID {
-        apo.i_ase
+        this
     } else {
         return E_NOINTERFACE;
     };
-    if target.is_null() {
-        return E_NOINTERFACE;
-    }
     unsafe { *ppv = target };
-    unsafe { inner_addref(target) };
+    unsafe { na_addref(this) };
     S_OK
 }
 
@@ -165,6 +176,16 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
 
 // IAudioProcessingObject 方法转发（全部手工——避免 vtable 槽位错位风险）。
 unsafe extern "system" fn na_reset(this: *mut c_void) -> HRESULT {
+    // ---- 探针 9：Reset（2026-08-05）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\method_probe.txt",
+        ) {
+            let _ = writeln!(f, "Reset called this={:p}", this);
+        }
+    }
     let apo = as_apo(this);
     let vtbl = unsafe { *(apo.i_apo as *const *const usize) };
     let f: unsafe extern "system" fn(*mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(3)) };
@@ -172,6 +193,16 @@ unsafe extern "system" fn na_reset(this: *mut c_void) -> HRESULT {
 }
 
 unsafe extern "system" fn na_get_latency(this: *mut c_void, out: *mut i64) -> HRESULT {
+    // ---- 探针 9：GetLatency（2026-08-05）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\method_probe.txt",
+        ) {
+            let _ = writeln!(f, "GetLatency called this={:p}", this);
+        }
+    }
     let apo = as_apo(this);
     let vtbl = unsafe { *(apo.i_apo as *const *const usize) };
     let f: unsafe extern "system" fn(*mut c_void, *mut i64) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(4)) };
@@ -179,6 +210,16 @@ unsafe extern "system" fn na_get_latency(this: *mut c_void, out: *mut i64) -> HR
 }
 
 unsafe extern "system" fn na_get_reg_props(this: *mut c_void, out: *mut *mut c_void) -> HRESULT {
+    // ---- 探针 9：GetRegistrationProperties（引擎 QI 后第一步验证，2026-08-05）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\method_probe.txt",
+        ) {
+            let _ = writeln!(f, "GetRegistrationProperties called this={:p}", this);
+        }
+    }
     let apo = as_apo(this);
     let vtbl = unsafe { *(apo.i_apo as *const *const usize) };
     let f: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(5)) };
@@ -193,6 +234,16 @@ unsafe extern "system" fn na_initialize(this: *mut c_void, cb: u32, data: *const
 }
 
 unsafe extern "system" fn na_is_input_fmt(this: *mut c_void, a: *mut c_void, b: *mut c_void, out: *mut *mut c_void) -> HRESULT {
+    // ---- 探针 8：引擎格式协商（2026-08-05，debug 门控，排查完删除）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\fmt_probe.txt",
+        ) {
+            let _ = writeln!(f, "IsInputFormatSupported called this={:p}", this);
+        }
+    }
     let apo = as_apo(this);
     let vtbl = unsafe { *(apo.i_apo as *const *const usize) };
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(7)) };
@@ -200,6 +251,16 @@ unsafe extern "system" fn na_is_input_fmt(this: *mut c_void, a: *mut c_void, b: 
 }
 
 unsafe extern "system" fn na_is_output_fmt(this: *mut c_void, a: *mut c_void, b: *mut c_void, out: *mut *mut c_void) -> HRESULT {
+    // ---- 探针 8：引擎输出格式协商（2026-08-05，debug 门控，排查完删除）----
+    #[cfg(debug_assertions)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"C:\ProgramData\VxAPO\fmt_probe.txt",
+        ) {
+            let _ = writeln!(f, "IsOutputFormatSupported called this={:p}", this);
+        }
+    }
     let apo = as_apo(this);
     let vtbl = unsafe { *(apo.i_apo as *const *const usize) };
     let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT = unsafe { std::mem::transmute(*vtbl.add(8)) };
