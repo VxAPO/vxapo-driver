@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::core::{GUID, HRESULT, IUnknown, Ref, BOOL, implement, Error};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 
+#[allow(unused_imports)]
 use crate::object::apo::ApoObject;
 use crate::object::vx_reg_props::is_vxapo_clsid;
 use crate::sys::com::prelude::*;
@@ -87,72 +88,65 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // ── Step 3: 聚合支持（P0-7 无声根因修复）────────────
         // EAPO `EqualizerAPO(IUnknown* pUnkOuter)` 明确支持聚合（引擎以 pUnkOuter 非空
         // 创建 APO）——之前拒绝聚合 → 引擎静默放弃 → 无声（探针实证 punkouter_null=false）。
-        // 聚合语义：riid 必须是 IUnknown，返回 inner IUnknown；其余接口由外层层路由。
-        // 简化实现（对齐 EAPO 实际行为）：接受聚合，返回 inner 并对目标接口直接 QI。
+        //
+        // COM 聚合规范：CreateInstance 聚合时必须返回 **inner 的 IUnknown**（引擎外壳
+        // 通过它 QI 非委托接口），并非返回 outer 指针（返回 outer/不建 inner = 空壳）。
+        // 引擎外壳 QI(IAPO) 需要 inner 提供 NonDelegatingQI——windows-rs #[implement]
+        // 的自包含 IUnknown 没有该机制（探针 selfQI_IAPO_hr=0 只证明 inner 自 QI 可行，
+        // 不代表引擎经外壳链能拿到）。
+        //
+        // 本分支保持「接受聚合 + 创建 inner 返回」（探针可观察引擎下一步动作）；
+        // 完整 NonDelegating 委托需手写 vtable（08 文档 §6），本阶段先锁定行为。
         if !punkouter.is_null() {
-            // 聚合时 riid 必须为 IUnknown（COM 规范），否则 E_NOINTERFACE。
             let iid_unknown = IUnknown::IID;
             if unsafe { *riid } != iid_unknown {
                 return Err(Error::from(windows::core::HRESULT(0x8000_4002u32 as i32))); // E_NOINTERFACE
             }
+            // 探针记录聚合被接受（不拦，走下去创建 inner）。
         }
 
-        // ── Step 4: 创建 ApoObject ─────────────────────────
-        let apo = ApoObject::new(self.target_clsid);
+        // ── Step 4: 创建聚合外壳（NApo，P0-7 手写 vtable）──
+        // 聚合与非聚合统一走 create_aggregate——NApo 动态转发到内部 ApoObject，
+        // 且实现 EAPO 聚合语义（QI(IUnknown)→outer、QI(接口)→inner、AddRef/Release→outer）。
+        // windows-rs #[implement] 无 NonDelegating 分离，引擎聚合 QI(IAPO) 走不到 inner
+        // → 弃用对象 → 无声；NApo 手写 vtable 补上该委托（08-P0-7-audiodg-analysis §6）。
+        // SAFETY: pUnkOuter 从 COM Ref 转裸指针（非空时引擎外壳有效）。
+        // Ref<IUnknown> Deref 到接口，.as_ref() 得 Option<&IUnknown>，接口 .abi() 取裸指针。
+        let outer_raw: *mut c_void = punkouter
+            .as_ref()
+            .map(|u| windows::core::Interface::as_raw(u) as *mut c_void)
+            .unwrap_or(std::ptr::null_mut());
+        // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
+        let na = unsafe { crate::object::aggregate::create_aggregate(outer_raw, self.target_clsid) };
+        if na.is_null() {
+            return Err(Error::from(windows::core::HRESULT(0x8007_000Eu32 as i32))); // ERROR_OUTOFMEMORY
+        }
 
-        // ── Step 5: 转为 IUnknown 并 QI ────────────────────
-        let unknown: IUnknown = apo.into();
-
-        // 通过 vtable 调用 QueryInterface（index 0）
-        // windows-interface 0.59.3 生成的方法跨模块不可见，使用原始 vtable
-        let raw_ptr: *mut c_void = unsafe { std::mem::transmute_copy(&unknown) };
-        let vtbl = unsafe { *(raw_ptr as *const *const usize) };
-        type QIFn = unsafe extern "system" fn(
-            *mut c_void, *const GUID, *mut *mut c_void,
-        ) -> HRESULT;
-        let qi: QIFn = unsafe { std::mem::transmute(*vtbl.add(0)) };
-
-        let hr = unsafe { qi(raw_ptr, &*riid, ppvobject as *mut *mut c_void) };
+        // ── Step 5: 对 NApo QI 请求接口并返回 ─────────────
+        // 聚合时 riid==IUnknown → NApo 返回 outer 身份；非聚合 → NApo 返回自身。
+        // 其余接口（IAPO/RT/Config/IAudioSystemEffects）→ NApo NonDelegating 返回 inner 指针。
+        let vtbl = unsafe { *(na as *const *const usize) };
+        type QIFn2 = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
+        let qi2: QIFn2 = unsafe { std::mem::transmute(*vtbl.add(0)) };
+        // SAFETY: riid/ppvobject 由 COM 契约保证有效；na 是刚创建的有效 COM 对象。
+        let hr = unsafe { qi2(na, &*riid, ppvobject) };
         if hr.is_err() {
-            // ---- 探针 4b：QI 失败记录（2026-08-04，debug 门控，排查完删除）----
-            #[cfg(debug_assertions)]
-            {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\createinstance_probe.txt",
-                    format!("CreateInstance FAILED QI hr={:08X} clsid={:?} riid={:?}\n", hr.0 as u32, self.target_clsid, unsafe { *riid }),
-                );
-            }
-            drop(unknown);
+            // QI 失败 → 释放 NApo（其 Release 会释放内部 ApoObject/接口）。
+            unsafe { crate::object::aggregate::release_aggregate(na) };
             return Err(Error::from(hr));
         }
 
-        // ---- 探针 4b：成功记录 + 自检 QI IAudioProcessingObject（2026-08-04，debug 门控，删）----
+        // ---- 探针 4b：CreateInstance 结果（2026-08-04，debug 门控，排查完删除）----
         #[cfg(debug_assertions)]
         {
-            // 自检：inner 对象能否 QI 到 IAudioProcessingObject（IID fd7f2b29...）
-            let iapoid = windows::core::GUID::from_values(
-                0xfd7f2b29, 0x24d0, 0x4b5c, [0xb1, 0x77, 0x59, 0x2c, 0x39, 0xf9, 0xca, 0x10],
-            );
-            let mut iapopt: *mut c_void = std::ptr::null_mut();
-            let hr_self = unsafe { qi(raw_ptr, &iapoid, &mut iapopt as *mut *mut c_void) };
-            // 释放自检引用（若成功）
-            if hr_self.is_ok() {
-                let vtbl_self = unsafe { *(iapopt as *const *const usize) };
-                type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
-                let release: ReleaseFn = unsafe { std::mem::transmute(*vtbl_self.add(2)) };
-                unsafe { release(iapopt) };
-            }
             let _ = std::fs::write(
                 r"C:\ProgramData\VxAPO\createinstance_probe.txt",
                 format!(
-                    "CreateInstance SUCCESS clsid={:?} selfQI_IAPO_hr={:08X} returned_riid={:?}\n",
-                    self.target_clsid, hr_self.0 as u32, unsafe { *riid }
+                    "CreateInstance SUCCESS clsid={:?} aggregate_na=1 returned_riid={:?}\n",
+                    self.target_clsid, unsafe { *riid }
                 ),
             );
         }
-
-        // ── Step 6: 释放临时引用 ───────────────────────────
-        drop(unknown);
 
         Ok(())
     }
