@@ -25,7 +25,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::AtomicPtr;
 
-use windows::core::{BOOL, GUID, HRESULT};
+use windows::core::{BOOL, GUID};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::Registry::HKEY_CLASSES_ROOT;
@@ -200,9 +200,6 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
         S_FALSE
     }
 }
-
-/// SELFREG_E_CLASS = 0x80040201（windows crate 未导出该常量，本地定义）。
-const SELFREG_E_CLASS: HRESULT = HRESULT(0x8004_0201u32 as i32);
 
 // ── AudioEngine APO 注册键常量（对齐 EAPO 注册树，2026-08-04 reg query 实证）──
 const AE_FLAGS: u32 = 0x0000_000D; // FRAMESPERSECOND_MUST_MATCH | BITSPERSAMPLE_MUST_MATCH | INPLACE

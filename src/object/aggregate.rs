@@ -16,14 +16,13 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::core::{GUID, HRESULT, IUnknown, Interface};
+use windows::core::{GUID, IUnknown, Interface};
 
 use crate::object::apo::ApoObject;
-
-// HRESULT 常量。
-const S_OK: HRESULT = HRESULT(0);
-const E_NOINTERFACE: HRESULT = HRESULT(0x8000_4002u32 as i32);
-const E_POINTER: HRESULT = HRESULT(0x8000_4003u32 as i32);
+use crate::sys::com::apo_interfaces::{
+    IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, IID_IAUDIO_SYSTEM_EFFECTS,
+};
+use crate::sys::com::prelude::{E_NOINTERFACE, E_POINTER, HRESULT, S_OK};
 
 // ── vtable 槽位类型 ─────────────────────────────────────────────
 type QiFn = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
@@ -245,13 +244,13 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
     }
 
     // 其余接口 → 返回 NApo 对应 vtable 字段地址（多接口 offset）。
-    let target: *mut c_void = if iid == windows::Win32::Media::Audio::Apo::IAudioProcessingObject::IID {
+    let target: *mut c_void = if iid == IID_IAPO {
         &raw const apo.vtbl_apo as *const IapoVtbl as *mut c_void
-    } else if iid == windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT::IID {
+    } else if iid == IID_IAPO_RT {
         &raw const apo.vtbl_rt as *const IapoRtVtbl as *mut c_void
-    } else if iid == windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration::IID {
+    } else if iid == IID_IAPO_CONFIG {
         &raw const apo.vtbl_cfg as *const IapoCfgVtbl as *mut c_void
-    } else if iid == windows::Win32::Media::Audio::Apo::IAudioSystemEffects::IID {
+    } else if iid == IID_IAUDIO_SYSTEM_EFFECTS {
         &raw const apo.vtbl_ase as *const IapoAseVtbl as *mut c_void
     } else {
         return E_NOINTERFACE;
@@ -388,10 +387,10 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
     let vtbl = *(raw as *const *const usize);
     let qi: QiFn = std::mem::transmute(*vtbl);
 
-    let iapoid = windows::Win32::Media::Audio::Apo::IAudioProcessingObject::IID;
-    let rtid = windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT::IID;
-    let cfgid = windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration::IID;
-    let aseid = windows::Win32::Media::Audio::Apo::IAudioSystemEffects::IID;
+    let iapoid = IID_IAPO;
+    let rtid = IID_IAPO_RT;
+    let cfgid = IID_IAPO_CONFIG;
+    let aseid = IID_IAUDIO_SYSTEM_EFFECTS;
 
     let mut i_apo: *mut c_void = std::ptr::null_mut();
     let hr_apo = qi(raw, &iapoid, &mut i_apo);
@@ -482,7 +481,7 @@ mod tests {
 
         let vtbl = unsafe { *(obj as *const *const usize) };
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
-        let rtid = windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT::IID;
+        let rtid = IID_IAPO_RT;
         let mut rt: *mut c_void = std::ptr::null_mut();
         let hr = unsafe { qi(obj, &rtid, &mut rt) };
         assert_eq!(hr.0, 0);
@@ -500,7 +499,7 @@ mod tests {
 
         let vtbl = unsafe { *(obj as *const *const usize) };
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
-        let cfgid = windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration::IID;
+        let cfgid = IID_IAPO_CONFIG;
         let mut cfg: *mut c_void = std::ptr::null_mut();
         let hr = unsafe { qi(obj, &cfgid, &mut cfg) };
         assert_eq!(hr.0, 0);
@@ -517,7 +516,7 @@ mod tests {
 
         let vtbl = unsafe { *(obj as *const *const usize) };
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
-        let aseid = windows::Win32::Media::Audio::Apo::IAudioSystemEffects::IID;
+        let aseid = IID_IAUDIO_SYSTEM_EFFECTS;
         let mut ase: *mut c_void = std::ptr::null_mut();
         let hr = unsafe { qi(obj, &aseid, &mut ase) };
         assert_eq!(hr.0, 0);
@@ -614,7 +613,7 @@ mod tests {
         let nd_qi: QiFn = unsafe { std::mem::transmute(*nd_vtbl) };
 
         // 引擎对返回的 inner 调 QI(IAPO)：NonDQI 返回 IAPO 视图，AddRef 应委托 outer。
-        let iapoid = windows::Win32::Media::Audio::Apo::IAudioProcessingObject::IID;
+        let iapoid = IID_IAPO;
         let mut iao: *mut c_void = std::ptr::null_mut();
         let hr = unsafe { nd_qi(obj, &iapoid, &mut iao) };
         assert_eq!(hr.0, 0);

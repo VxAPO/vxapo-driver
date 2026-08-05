@@ -1,9 +1,9 @@
 ﻿//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（v6.3 规范 4.3）
 
 use crate::sys::com::apo_interfaces::IAudioMediaType;
+use crate::sys::com::apo_types::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE};
+use crate::sys::com::prelude::GUID;
 use crate::utils::vx_error::{Result, VxApoError};
-use windows::core::GUID;
-use windows::Win32::Media::Audio::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE};
 
 /// 提取的音频格式。
 #[derive(Debug, Clone)]

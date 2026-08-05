@@ -31,13 +31,13 @@ use crate::sys::com::apo_types::{
     APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
 };
 use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
-use crate::sys::com::prelude::guid_to_string;
-use windows::Win32::Media::Audio::Apo::{APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES};
+use crate::sys::com::prelude::{E_FAIL, E_OUTOFMEMORY, HRESULT, guid_to_string};
 use windows::Win32::System::Com::CoTaskMemAlloc;
 
 use crate::sys::com::apo_types::{
-    APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT, APOERR_NOT_INITIALIZED,
-    APOERR_NUM_CONNECTIONS_INVALID, BUFFER_SILENT, BUFFER_VALID,
+    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES,
+    APOERR_ALREADY_INITIALIZED, APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT,
+    APOERR_NOT_INITIALIZED, APOERR_NUM_CONNECTIONS_INVALID, BUFFER_SILENT, BUFFER_VALID,
 };
 
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
@@ -256,9 +256,9 @@ impl std::fmt::Display for TransitionError {
 }
 
 /// TransitionError → HRESULT（O2）：统一映射为 APOERR_ALREADY_INITIALIZED。
-impl From<TransitionError> for windows::core::HRESULT {
+impl From<TransitionError> for HRESULT {
     fn from(_: TransitionError) -> Self {
-        windows::core::HRESULT(0x887D_0001u32 as i32) // APOERR_ALREADY_INITIALIZED
+        APOERR_ALREADY_INITIALIZED
     }
 }
 
@@ -961,7 +961,7 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         // 分配并对齐（alignment_of<APO_REG_PROPERTIES>）。
         let alloc = unsafe { CoTaskMemAlloc(size) };
         if alloc.is_null() {
-            return Err(windows::core::Error::from(windows::core::HRESULT(0x8007_000Eu32 as i32))); // ERROR_OUTOFMEMORY
+            return Err(windows::core::Error::from(E_OUTOFMEMORY));
         }
         unsafe {
             std::ptr::write(alloc as *mut APO_REG_PROPERTIES, *prop);
@@ -989,7 +989,7 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
         // 2. 状态转换 Created → Initialized，失败 → 对应 HRESULT。
         self.state_cell
             .transition(ApoState::Created, ApoState::Initialized)
-            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+            .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
         // 3. 解析 APOInitSystemEffects → 端点 GUID + 子 APO（object 7.1.8 v8.4）。
         //    Safety: pby_data 已验证非空 + 尺寸足够；APOInitSystemEffects 为 repr(C) 结构。
@@ -1164,7 +1164,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         // Step 0: 状态机 Initialized → Locked，失败自动回退。
         self.state_cell
             .transition(ApoState::Initialized, ApoState::Locked)
-            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+            .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
         let _guard = LockGuard::new(&self.state_cell);
 
         if num_input == 0 || pp_inputs.is_null() {
@@ -1186,7 +1186,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
                         let mt_ptr: *mut IAudioMediaType =
                             media_type as *const IAudioMediaType as *mut IAudioMediaType;
                         unsafe { extract_format(mt_ptr) }
-                            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))
+                            .map_err(|e| windows::core::Error::from(HRESULT::from(e)))
                     }
                     None => Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT)),
                 }
@@ -1233,7 +1233,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         let parser = ConfigParser::new(registry);
         let config_path = self.config_path.lock().unwrap().clone();
         let (filters, spec_chain) = parser.parse_file_with_spec(&config_path, &dsp_ctx)
-            .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
+            .map_err(|_| windows::core::Error::from(E_FAIL))?;
 
         // 配置解析落地探针（debug 门控，验证 Lock 时确实读到了 per-device config）。
         #[cfg(debug_assertions)]
@@ -1253,7 +1253,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         let mut chain = Chain::new();
         for f in filters {
             chain.add_filter(f)
-                .map_err(|_| windows::core::Error::from(windows::core::HRESULT(0x8000_0001u32 as i32)))?;
+                .map_err(|_| windows::core::Error::from(E_FAIL))?;
         }
         // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
         chain.initialize(format.sample_rate, &channel_names);
@@ -1312,7 +1312,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
 
         // Step 7: 确保第三方 APO 可加载（DisableProtectedAudioDG）。
         crate::install::audiodg::ensure_can_load()
-            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+            .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
         // Step 8 (v7.10)：Lock 末尾启动 watcher（config_path 已确定 + active_spec 基线就绪）。
         // 启动失败降级（仅日志），不阻塞锁定。
@@ -1331,7 +1331,7 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         { let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "UnlockForProcess called\n"); }
         self.state_cell
             .transition(ApoState::Locked, ApoState::Initialized)
-            .map_err(|e| windows::core::Error::from(windows::core::HRESULT::from(e)))?;
+            .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
         // Stop watcher：SetEvent → join → close（v7.10 stop_watcher）。先释放锁（join 可能等待）。
         // P0-6（object 7.1.10）：子 APO UnlockForProcess 委托——失败不阻塞父解锁
         // （UnlockForProcess 无重试语义，子可能已部分解锁，父继续自身流程 + 日志）。

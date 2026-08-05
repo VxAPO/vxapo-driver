@@ -100,7 +100,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         if !punkouter.is_null() {
             let iid_unknown = IUnknown::IID;
             if unsafe { *riid } != iid_unknown {
-                return Err(Error::from(windows::core::HRESULT(0x8000_4002u32 as i32))); // E_NOINTERFACE
+                return Err(Error::from(E_NOINTERFACE));
             }
             // 探针记录聚合被接受（不拦，走下去创建 inner）。
         }
@@ -119,7 +119,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
         let na = unsafe { crate::object::aggregate::create_aggregate(outer_raw, self.target_clsid) };
         if na.is_null() {
-            return Err(Error::from(windows::core::HRESULT(0x8007_000Eu32 as i32))); // ERROR_OUTOFMEMORY
+            return Err(Error::from(E_OUTOFMEMORY));
         }
 
         // ── Step 5: 对 NApo QI 请求接口并返回 ─────────────
@@ -350,7 +350,7 @@ mod tests {
         let before = outer.refs.load(Ordering::SeqCst);
         let nd_vtbl = unsafe { *(outer.inner as *const *const usize) };
         let nd_qi: QiFn = unsafe { std::mem::transmute(*nd_vtbl) };
-        let iapoid = windows::Win32::Media::Audio::Apo::IAudioProcessingObject::IID;
+        let iapoid = crate::sys::com::apo_interfaces::IID_IAPO;
         let mut iao: *mut c_void = std::ptr::null_mut();
         let hr2 = unsafe { nd_qi(outer.inner, &iapoid, &mut iao) };
         assert_eq!(hr2.0, 0);

@@ -29,8 +29,10 @@ use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration,
     IAudioProcessingObjectRT,
 };
-use crate::sys::com::apo_types::{APO_CONNECTION_DESCRIPTOR, APO_REG_PROPERTIES, REFERENCE_TIME};
-use crate::sys::com::prelude::E_POINTER;
+use crate::sys::com::apo_types::{
+    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES, REFERENCE_TIME,
+};
+use crate::sys::com::prelude::{E_POINTER, S_OK};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ChildApo
@@ -116,7 +118,7 @@ impl ChildApo {
     pub fn reset(&self) -> HRESULT {
         // windows-rs: Reset() -> Result<()>。
         unsafe { self.iapo.Reset() }
-            .map(|_| HRESULT(0))
+            .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
     }
 
@@ -136,7 +138,7 @@ impl ChildApo {
         match unsafe { self.iapo.GetRegistrationProperties() } {
             Ok(ptr) => {
                 unsafe { *pp_props = ptr };
-                HRESULT(0)
+                S_OK
             }
             Err(e) => e.into(),
         }
@@ -159,7 +161,7 @@ impl ChildApo {
             unsafe { std::slice::from_raw_parts(pby_data, cb_data_size as usize) }
         };
         unsafe { self.iapo.Initialize(data) }
-            .map(|_| HRESULT(0))
+            .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
     }
 
@@ -227,7 +229,7 @@ impl ChildApo {
                 // （调用方负责最终 Release）。
                 let leaked = std::mem::ManuallyDrop::new(supported);
                 unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };
-                HRESULT(0)
+                S_OK
             }
             Err(e) => e.into(),
         }
@@ -241,7 +243,7 @@ impl ChildApo {
         match unsafe { self.iapo.GetInputChannelCount() } {
             Ok(count) => {
                 unsafe { *p_count = count };
-                HRESULT(0)
+                S_OK
             }
             Err(e) => e.into(),
         }
@@ -270,9 +272,9 @@ impl ChildApo {
     pub unsafe fn apo_process(
         &self,
         num_input: u32,
-        pp_inputs: *const *const windows::Win32::Media::Audio::Apo::APO_CONNECTION_PROPERTY,
+        pp_inputs: *const *const APO_CONNECTION_PROPERTY,
         num_output: u32,
-        pp_outputs: *mut *mut windows::Win32::Media::Audio::Apo::APO_CONNECTION_PROPERTY,
+        pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
         unsafe { self.iapo_rt.APOProcess(num_input, pp_inputs, num_output, pp_outputs) }
     }
@@ -305,7 +307,7 @@ impl ChildApo {
             std::slice::from_raw_parts(pp_outputs as *const *const APO_CONNECTION_DESCRIPTOR, num_output as usize)
         };
         unsafe { self.iapo_cfg.LockForProcess(inputs, outputs) }
-            .map(|_| HRESULT(0))
+            .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
     }
 
@@ -315,7 +317,7 @@ impl ChildApo {
     /// 子 APO 可能已部分解锁，父继续自身流程 + 日志；child 标记需重置，下次 Lock 前 reset）。
     pub fn unlock_for_process(&self) -> HRESULT {
         unsafe { self.iapo_cfg.UnlockForProcess() }
-            .map(|_| HRESULT(0))
+            .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
     }
 }
