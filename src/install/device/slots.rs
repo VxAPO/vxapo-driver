@@ -34,6 +34,7 @@
 
 use crate::sys::com::prelude::guid_to_string;
 use crate::sys::registry::RegKey;
+use crate::utils::guid::{guid_from_bytes, is_zero_guid, parse_guid_string};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 常量
@@ -208,25 +209,6 @@ impl SlotValue {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GUID 辅助（GUID→字符串统一走 sys::com::prelude；字节按 Windows 小端存储）
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 16 字节小端（data1/data2/data3）+ data4 原始 → GUID。
-fn guid_from_bytes(bytes: &[u8]) -> Option<windows::core::GUID> {
-    if bytes.len() < 16 {
-        return None;
-    }
-    Some(windows::core::GUID {
-        data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        data2: u16::from_le_bytes([bytes[4], bytes[5]]),
-        data3: u16::from_le_bytes([bytes[6], bytes[7]]),
-        data4: [
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ],
-    })
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
 // 公开 API — 槽位读取
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -270,11 +252,6 @@ pub fn read_slot_value(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
             SlotValue::NoValue
         }
     }
-}
-
-/// GUID 是否为全零（Windows「无 APO」占位）。
-fn is_zero_guid(g: &windows::core::GUID) -> bool {
-    g == &windows::core::GUID::zeroed()
 }
 
 /// EAPO 三档安装模式探测（DeviceAPOInfo.cpp 396-413，C41-C44）。
@@ -509,47 +486,6 @@ fn split_path(path: &str) -> Option<(windows::Win32::System::Registry::HKEY, &st
         "HKLM" => Some((windows::Win32::System::Registry::HKEY_LOCAL_MACHINE, rest)),
         _ => None,
     }
-}
-
-/// 单个 ASCII hex 字符 → 数值（0-15）。
-fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// 解析 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式 GUID 字符串（guid_to_string 输出）。
-fn parse_guid_string(s: &str) -> Option<windows::core::GUID> {
-    let s = s.trim();
-    if !s.starts_with('{') || !s.ends_with('}') {
-        return None;
-    }
-    let inner = &s[1..s.len() - 1];
-    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx = 8-4-4-4-12
-    let parts: Vec<&str> = inner.split('-').collect();
-    if parts.len() != 5 {
-        return None;
-    }
-    let data1 = u32::from_str_radix(parts[0], 16).ok()?;
-    let data2 = u16::from_str_radix(parts[1], 16).ok()?;
-    let data3 = u16::from_str_radix(parts[2], 16).ok()?;
-    if parts[3].len() != 4 || parts[4].len() != 12 {
-        return None;
-    }
-    // data4 共 16 个 hex 字符 = 8 字节：parts[3](4 字符) + parts[4](12 字符)。
-    // 每 2 个 hex 字符 = 1 字节；旧实现按每字符 1 字节写 data4[i+4] 越界
-    // （data4 仅 [u8; 8]）——EAPO REG_SZ 真实 GUID 解析触发后 panic，已修正。
-    let hex4 = format!("{}{}", parts[3], parts[4]);
-    let mut data4 = [0u8; 8];
-    for i in 0..8 {
-        let hi = hex4.as_bytes()[i * 2];
-        let lo = hex4.as_bytes()[i * 2 + 1];
-        data4[i] = (hex_val(hi)? << 4) | hex_val(lo)?;
-    }
-    Some(windows::core::GUID { data1, data2, data3, data4 })
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
