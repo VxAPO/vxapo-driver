@@ -464,6 +464,27 @@ mod tests {
     }
 
     #[test]
+    fn per_sample_advance_completes_in_length_samples() {
+        // 热重载过渡按采样推进：480 次 advance 内完成（10ms @ 48k），单调无跳变。
+        let length = 480u32;
+        let mut sp = SmoothingProvider::new(length);
+        sp.begin();
+
+        let mut steps = 0u32;
+        let mut last = 0.0f32;
+        while sp.is_active() {
+            let factor = sp.advance().unwrap_or(1.0);
+            assert!(factor >= last, "factor 必须单调递增");
+            last = factor;
+            steps += 1;
+            assert!(steps <= length + 1, "过渡超过 length+1 步");
+        }
+
+        assert_eq!(steps, length + 1);
+        assert!((last - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn smoothing_progress() {
         let mut sp = SmoothingProvider::new(100);
         sp.begin();

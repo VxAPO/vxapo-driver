@@ -16,8 +16,8 @@
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{
-    FILTER_FREQ_MAX_RATIO, FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN, clamp_gain_db, is_stable_biquad,
-    warn_rate_limited,
+    FILTER_CUT_FLOOR_DB, FILTER_FREQ_MAX_RATIO, FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN, clamp_gain_db,
+    is_stable_biquad, warn_rate_limited,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -124,8 +124,36 @@ pub fn compute_coeffs(
     let sr = sample_rate as f64;
     let f = fc as f64;
     let qq = q as f64;
-    let g = gain_db as f64;
+    let mut g = gain_db as f64;
 
+    // 深切地板回退：负增益（如 -120 dB）极点贴单位圆不稳定时，不整段直通，
+    // 而是回退到 -60 dB 的稳定深切（该频段几乎静音但确有切除效果）。
+    let mut floor_tried = false;
+    loop {
+        if let Some(coeffs) = normalize_checked(compute_raw(filter_type, f, qq, g, sr)) {
+            return coeffs;
+        }
+        if !floor_tried && g < FILTER_CUT_FLOOR_DB as f64 {
+            g = FILTER_CUT_FLOOR_DB as f64;
+            floor_tried = true;
+            continue;
+        }
+        warn_rate_limited(
+            "biquad_unstable",
+            "biquad 系数超出稳定范围，已回退直通（含深切地板 -60 dB 仍不稳定）",
+        );
+        return BiquadCoeffs::BYPASS;
+    }
+}
+
+/// RBJ 公式原始系数（f64，未归一化）。
+fn compute_raw(
+    filter_type: BiquadType,
+    f: f64,
+    qq: f64,
+    g: f64,
+    sr: f64,
+) -> (f64, f64, f64, f64, f64, f64) {
     let w0 = 2.0 * std::f64::consts::PI * f / sr;
     let cos_w0 = w0.cos();
     let sin_w0 = w0.sin();
@@ -135,7 +163,7 @@ pub fn compute_coeffs(
     let sqrt_a = 10.0_f64.powf(g / 80.0);
     let a = sqrt_a * sqrt_a;
 
-    let (b0, b1, b2, a0, a1, a2) = match filter_type {
+    match filter_type {
         BiquadType::Peaking => {
             let b0 = 1.0 + alpha * a;
             let b1 = -2.0 * cos_w0;
@@ -210,23 +238,17 @@ pub fn compute_coeffs(
             let a2 = 1.0 - alpha;
             (b0, b1, b2, a0, a1, a2)
         }
-    };
-
-    normalize_checked(b0, b1, b2, a0, a1, a2)
+    }
 }
 
 /// 归一化系数（除以 a0），带有限性 + 稳定性护栏。
+///
+/// `None` = 非法/不稳定（调用方决定回退策略）。
 fn normalize_checked(
-    b0: f64,
-    b1: f64,
-    b2: f64,
-    a0: f64,
-    a1: f64,
-    a2: f64,
-) -> BiquadCoeffs {
+    (b0, b1, b2, a0, a1, a2): (f64, f64, f64, f64, f64, f64),
+) -> Option<BiquadCoeffs> {
     if !a0.is_finite() || a0.abs() < 1e-30 {
-        warn_rate_limited("biquad_invalid_a0", "biquad 系数 a0 非法，已回退直通");
-        return BiquadCoeffs::BYPASS;
+        return None;
     }
 
     let inv_a0 = 1.0 / a0;
@@ -239,14 +261,10 @@ fn normalize_checked(
     };
 
     if !coeffs.is_valid() || !is_stable_biquad(coeffs.a1, coeffs.a2) {
-        warn_rate_limited(
-            "biquad_unstable",
-            "biquad 系数超出稳定范围，已回退直通（参数被 clamp 后仍贴单位圆）",
-        );
-        return BiquadCoeffs::BYPASS;
+        return None;
     }
 
-    coeffs
+    Some(coeffs)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -772,10 +790,14 @@ mod tests {
     }
 
     #[test]
-    fn extreme_cut_falls_back_to_bypass() {
-        // -1000 dB → clamp 到 -120 dB：极点贴单位圆 → 回退直通。
+    fn extreme_cut_uses_stable_floor_not_bypass() {
+        // -1000 dB → clamp 到 -120 dB → 极点贴单位圆不稳定 → 回退 -60 dB 稳定深切。
+        // 不再整段直通（修复「拉低 -120 dB 跟没拉一样」）。
         let c = compute_coeffs(BiquadType::Peaking, 1000.0, -1000.0, 1.0, 48000);
-        assert_eq!(c, BiquadCoeffs::BYPASS);
+        assert_ne!(c, BiquadCoeffs::BYPASS);
+        assert!(c.is_valid());
+        assert!(is_stable_biquad(c.a1, c.a2));
+        assert!(c.a2.abs() < 0.99, "深切地板后极点不应再贴单位圆，a2={}", c.a2);
     }
 
     #[test]

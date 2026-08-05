@@ -16,6 +16,9 @@
 > `process_cascade_dynamic` match dispatch + 防御回退循环）；单线程全量 484 通过。
 > 再完成：**分块 FFT 卷积**（引入 `rustfft 6.4.1`；uniform partitioned overlap-add，
 > 块 128 / FFT 256，IR >128 走 FFT、>65536 跳过；算法延迟 = 块大小）；单线程全量 485 通过。
+> 修复：**热重载过渡按采样推进**（原按 APOProcess 调用次数推进，10ms 过渡实际耗时数秒且整块
+> 常量 factor 不平滑）；**深切地板 -60 dB**（-120 dB 原被整段直通 → 现在回退稳定深切，
+> “拉低没效果”修复）；单线程全量 491 通过。
 >
 > 本版整合自 `D:/APO_Project/dsp.md` 与初版方案，并对两处表述做了修正：
 > 1. `GAIN_DB_MAX = +48 dB` 时 biquad 幅度因子是 `a = 10^(48/40) ≈ 15.8`（线性增益 `10^(48/20) ≈ 251`，两者不可混用）。
@@ -94,6 +97,7 @@ pub fn init_audio_thread() {
 | --- | --- | --- |
 | `GAIN_DB_MIN` | `-120.0` | 低于 -120 dB 已不可闻，且避免 `1/a` 爆掉 |
 | `GAIN_DB_MAX` | `48.0` | 滤波器因子 `a = 10^(48/40) ≈ 15.8`，极点余量充足；线性增益 `≈ 251` |
+| `FILTER_CUT_FLOOR_DB` | `-60.0` | 滤波深切地板：负增益不稳定时回退该值，仍为有效切除（不再整段直通） |
 | `FILTER_FREQ_MIN_HZ` | `10.0` | 避免 DC 附近数值病态 |
 | `FILTER_FREQ_MAX_RATIO` | `0.45` | fc 不得超过 0.45 × sample_rate（Nyquist 以内） |
 | `Q_MIN` | `0.05` | alpha = sin(w0)/(2q) 不爆炸 |
@@ -179,7 +183,9 @@ pub fn warn_rate_limited(key: &str, msg: std::fmt::Arguments<'_>);
    ```
    f64 中间计算从根源解决 `cos(w0) ≈ 1` 的精度丢失，统一走 sin/cos 路径，不需要 `tan(w0/2)` 替代。
 2. `normalize` 前检查 `a0.is_finite() && a0.abs() > 1e-30`，否则返回 `BYPASS`。
-3. 归一化后调用 `math::is_stable_biquad(a1, a2)`；不稳定则按 clamp 后的增益重算一次，仍不稳定回退 `BYPASS`。
+3. 归一化后调用 `math::is_stable_biquad(a1, a2)`；负增益不稳定时**回退到
+   `FILTER_CUT_FLOOR_DB`（-60 dB）重算一次**（稳定深切，修复 -120 dB 整段直通），
+   仍不稳定才回退 `BYPASS`。
 4. **生产路径统一 `repr(C)` f64 状态**（DF2T）：
    ```rust
    #[repr(C)] // 16 字节固定布局：无 tag、无 padding
@@ -276,7 +282,12 @@ pub fn warn_rate_limited(key: &str, msg: std::fmt::Arguments<'_>);
        }
    }
    ```
-4. **到达时间修正（实现版）**：
+4. **热重载过渡（实现版修正）**：`apo_process` 的过渡混合**逐采样推进 factor**
+   （`SmoothingProvider::advance()` 每采样一次），过渡长度按采样数计
+   （10ms = 480 采样 @48k），而非按 APOProcess 调用次数——修复前每次调用只推进 1 步，
+   实际过渡被放大到调用周期 × 步数（约 2~5s）且整块常量 factor 不平滑。
+
+5. **到达时间修正**：
    - `remaining` 设下限 `GAIN_SMOOTH_RERATE (32)`：否则 `counter ≥ steps` 后“单步到位”控制器
      会被 ±5% clamp 反复振荡（实测 0.684 → 1.23 → 0.98 → … 永不收敛）；下限 32 保证收缩收敛。
    - `MAX_GAIN_STEP_RATIO = 0.05` 时单步最大 ×1.05，128 步最多到 ×518（≈54 dB）；
@@ -463,7 +474,7 @@ pub fn warn_rate_limited(key: &str, msg: std::fmt::Arguments<'_>);
 | 场景 | 断言 |
 | --- | --- |
 | `Gain ±1000 / NaN / inf` | 输出有限；10 s 后无振荡 |
-| biquad 极端增益 ±1000 | 系数有限且稳定，或回退 BYPASS；脉冲响应 0.5 s 内衰减到 < 1e-3 |
+| biquad 极端增益 ±1000 | 系数有限且稳定；负增益走 -60 dB 深切地板（非 BYPASS）；脉冲响应 0.5 s 内衰减到 < 1e-3 |
 | biquad `fc > Nyquist`、`q = 0 / inf` | 回退 BYPASS |
 | biquad f64 中间计算精度 | 10 Hz @ 192 kHz / Q=1 系数与参考值误差 < 1e-6 |
 | biquad f64 状态漂移 | 100 Hz / Q=10 连续 10 s ±1 交替信号，状态无漂移 |
@@ -497,6 +508,8 @@ pub fn warn_rate_limited(key: &str, msg: std::fmt::Arguments<'_>);
 | 项 | 决定 |
 | --- | --- |
 | `GAIN_DB_MAX` | `+48 dB`（biquad 因子 `a ≈ 15.8`，线性增益 `≈ 251`，极点余量与实用性平衡） |
+| 滤波深切地板 | `-60 dB`：负增益不稳定时回退该值重算，不再整段直通 |
+| 热重载过渡 | 逐采样推进 factor（10ms = 480 采样 @48k），整块不再用常量 factor |
 | 越界配置策略 | clamp + warn（裸系数 Biquad 例外：不稳定 → NoMatch） |
 | RT 出口有限性检查 | 所有构建启用（`is_finite()` = 一次整数比较） |
 | Denormal 处理 | 硬件 FTZ/DAZ（`init_audio_thread`，thread_local 幂等） |

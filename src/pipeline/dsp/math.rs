@@ -22,6 +22,9 @@ use once_cell::sync::Lazy;
 pub const GAIN_DB_MIN: f32 = -120.0;
 /// 增益上限（dB）。+48 dB 时 biquad 幅度因子 `a ≈ 15.8`，极点余量充足。
 pub const GAIN_DB_MAX: f32 = 48.0;
+/// 滤波增益深切地板（dB）：负增益不稳定时回退到该值，避免整段直通（-120 dB 失效问题）。
+/// -60 dB 在所有 fc/Q 范围内极点半径 < 0.999，仍是“该频段几乎静音”的有效切除。
+pub const FILTER_CUT_FLOOR_DB: f32 = -60.0;
 /// 滤波器频率下限（Hz）。
 pub const FILTER_FREQ_MIN_HZ: f32 = 10.0;
 /// 滤波器频率上限比例（× sample_rate，Nyquist 以内）。

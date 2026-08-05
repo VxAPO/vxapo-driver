@@ -514,27 +514,27 @@ impl ApoObject {
                 tbufs.as_mut_slice(),
             );
 
-            // 混合 → 输出。factor 从 0.0（旧）→ 1.0（新）。
+            // 混合 → 输出。factor 从 0.0（旧）→ 1.0（新），**逐采样推进**：
+            // 过渡长度按采样数计（10ms = 480 采样 @48k），不是按 APOProcess 调用次数。
             // 用户风险②：advance() 返回 None（已达上限）时**也必须写输出**——
             // 按 factor=1.0（纯新链）输出，APO 契约要求每帧写出。
-            let factor = transition
-                .as_mut()
-                .and_then(|p| p.advance())
-                .unwrap_or(1.0);
-            {
-                let out_slice = unsafe {
-                    std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
-                };
-                for f in 0..frames {
-                    for c in 0..out_ch {
-                        let idx = f * out_ch + c;
-                        let old_v = if old_ready { tbuf_old[idx] } else { 0.0 };
-                        out_slice[idx] = old_v * (1.0 - factor) + tbuf_new[idx] * factor;
-                    }
+            let out_slice = unsafe {
+                std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+            };
+            for f in 0..frames {
+                let factor = transition
+                    .as_mut()
+                    .and_then(|p| p.advance())
+                    .unwrap_or(1.0);
+                let inv_factor = 1.0 - factor;
+                for c in 0..out_ch {
+                    let idx = f * out_ch + c;
+                    let old_v = if old_ready { tbuf_old[idx] } else { 0.0 };
+                    out_slice[idx] = old_v * inv_factor + tbuf_new[idx] * factor;
                 }
-                output_prop.u32ValidFrameCount = frames as u32;
-                output_prop.u32BufferFlags = BUFFER_VALID;
             }
+            output_prop.u32ValidFrameCount = frames as u32;
+            output_prop.u32BufferFlags = BUFFER_VALID;
 
             // 当前过渡结束条件：advance 到达上限或过渡原本未激活。
             let finished = transition.as_ref().map_or(true, |p| p.counter() >= p.length());
