@@ -14,8 +14,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::core::{GUID, HRESULT, IUnknown, Ref, BOOL, implement, Error};
-use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+use windows::core::{BOOL, Error, Ref};
 
 #[allow(unused_imports)]
 use crate::object::apo::ApoObject;
@@ -114,7 +113,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // Ref<IUnknown> Deref 到接口，.as_ref() 得 Option<&IUnknown>，接口 .abi() 取裸指针。
         let outer_raw: *mut c_void = punkouter
             .as_ref()
-            .map(|u| windows::core::Interface::as_raw(u) as *mut c_void)
+            .map(|u| Interface::as_raw(u) as *mut c_void)
             .unwrap_or(std::ptr::null_mut());
         // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
         let na = unsafe { crate::object::aggregate::create_aggregate(outer_raw, self.target_clsid) };
@@ -275,7 +274,7 @@ mod tests {
     fn create_instance_aggregated_matches_eapo_ref_semantics() {
         use std::ffi::c_void;
         use std::sync::atomic::{AtomicU32, Ordering};
-        use windows::core::Interface;
+        use crate::sys::com::prelude::Interface;
 
         type QiFn = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
         type RefFn = unsafe extern "system" fn(*mut c_void) -> u32;
@@ -343,7 +342,7 @@ mod tests {
             factory.CreateInstance(Some(&outer_unknown))
         }
         .expect("aggregated CreateInstance failed");
-        outer.inner = windows::core::Interface::as_raw(&inner) as *mut c_void;
+        outer.inner = Interface::as_raw(&inner) as *mut c_void;
 
         // 引擎拿到返回的非委托 IUnknown 视图后 QI(IAPO)：
         // QI 成功应让 outer 引用 +1（接口视图 AddRef 委托 outer）。

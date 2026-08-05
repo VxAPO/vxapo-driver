@@ -335,17 +335,18 @@ fn read_install_version(endpoint_key: &RegKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::com::prelude::GUID;
     use crate::install::device::endpoint::{EndpointState, Flow};
 
     fn empty_slots() -> [SlotValue; 5] {
         [SlotValue::NoKey; 5]
     }
 
-    fn vxapo_pre_guid() -> windows::core::GUID {
+    fn vxapo_pre_guid() -> GUID {
         CLSID_VXAPO_PRE_MIX
     }
 
-    fn vxapo_post_guid() -> windows::core::GUID {
+    fn vxapo_post_guid() -> GUID {
         CLSID_VXAPO_POST_MIX
     }
 
@@ -431,7 +432,7 @@ mod tests {
     #[test]
     fn not_installed_when_no_vxapo_guid() {
         let mut slots = empty_slots();
-        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(windows::core::GUID::zeroed());
+        slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(GUID::zeroed());
         let info = make_device_info(slots, InstallMode::SfxEfx, "2");
         assert!(!info.is_installed());
     }

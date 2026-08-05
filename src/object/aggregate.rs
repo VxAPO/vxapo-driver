@@ -16,13 +16,11 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::core::{GUID, IUnknown, Interface};
-
 use crate::object::apo::ApoObject;
 use crate::sys::com::apo_interfaces::{
     IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, IID_IAUDIO_SYSTEM_EFFECTS,
 };
-use crate::sys::com::prelude::{E_NOINTERFACE, E_POINTER, HRESULT, S_OK};
+use crate::sys::com::prelude::{E_NOINTERFACE, E_POINTER, GUID, HRESULT, Interface, IUnknown, S_OK};
 
 // ── vtable 槽位类型 ─────────────────────────────────────────────
 type QiFn = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;

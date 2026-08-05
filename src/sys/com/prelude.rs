@@ -41,8 +41,14 @@ pub use windows::core::implement;
 /// `interface` 宏：为 Rust trait 自动生成 COM vtable。
 pub use windows::core::interface;
 
-/// COM 类工厂接口。
-pub use windows::Win32::System::Com::IClassFactory;
+/// COM 类工厂接口及其 `_Impl` trait。
+pub use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+
+/// COM 创建/初始化/内存分配相关入口（统一经 prelude 收口）。
+pub use windows::Win32::System::Com::{
+    CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+    CoTaskMemAlloc, CoTaskMemFree,
+};
 
 /// GUID → 字符串（标准 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式，带花括号）。
 pub use windows::Win32::System::Com::StringFromGUID2;

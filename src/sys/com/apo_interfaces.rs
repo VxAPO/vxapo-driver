@@ -13,7 +13,7 @@
 //!
 //! 禁止：不包含任何实现逻辑。
 
-use windows::core::Interface;
+use crate::sys::com::prelude::{GUID, Interface};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 4 个 APO 接口结构体 re-export（windows-rs 提供，非自定义 trait）
@@ -49,16 +49,16 @@ pub use windows::Win32::Media::Audio::Apo::IAudioSystemEffects_Impl;
 // ── 4 个 APO 接口 IID（通过 Interface trait 取 ::IID）────────────────────────
 
 /// `IAudioProcessingObject` IID。
-pub const IID_IAPO: windows::core::GUID = IAudioProcessingObject::IID;
+pub const IID_IAPO: GUID = IAudioProcessingObject::IID;
 
 /// `IAudioProcessingObjectRT` IID。
-pub const IID_IAPO_RT: windows::core::GUID = IAudioProcessingObjectRT::IID;
+pub const IID_IAPO_RT: GUID = IAudioProcessingObjectRT::IID;
 
 /// `IAudioProcessingObjectConfiguration` IID。
-pub const IID_IAPO_CONFIG: windows::core::GUID = IAudioProcessingObjectConfiguration::IID;
+pub const IID_IAPO_CONFIG: GUID = IAudioProcessingObjectConfiguration::IID;
 
 /// `IAudioMediaType` IID。
-pub const IID_IAUDIO_MEDIA_TYPE: windows::core::GUID = IAudioMediaType::IID;
+pub const IID_IAUDIO_MEDIA_TYPE: GUID = IAudioMediaType::IID;
 
 // ── 3 个系统接口 IID（从 windows-rs 直接引用）────────────────────────────────
 
@@ -69,13 +69,13 @@ use windows::Win32::Media::Audio::Apo::{
 };
 
 /// `IAudioSystemEffects` IID。
-pub const IID_IAUDIO_SYSTEM_EFFECTS: windows::core::GUID = IAudioSystemEffects::IID;
+pub const IID_IAUDIO_SYSTEM_EFFECTS: GUID = IAudioSystemEffects::IID;
 
 /// `IAudioSystemEffects2` IID。
-pub const IID_IAUDIO_SYSTEM_EFFECTS2: windows::core::GUID = IAudioSystemEffects2::IID;
+pub const IID_IAUDIO_SYSTEM_EFFECTS2: GUID = IAudioSystemEffects2::IID;
 
 /// `IAudioProcessingObjectNotifications` IID。
-pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: windows::core::GUID =
+pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: GUID =
     IAudioProcessingObjectNotifications::IID;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -95,17 +95,17 @@ pub use windows::Win32::Media::Audio::Apo::{
 
 /// `IApoAcousticEchoCancellation` IID（仅 `feature = "aec"` 时存在）。
 #[cfg(feature = "aec")]
-pub const IID_IAPO_ACOUSTIC_ECHO_CANCELLATION: windows::core::GUID =
+pub const IID_IAPO_ACOUSTIC_ECHO_CANCELLATION: GUID =
     IApoAcousticEchoCancellation::IID;
 
 /// `IApoAuxiliaryInputConfiguration` IID（仅 `feature = "aec"` 时存在）。
 #[cfg(feature = "aec")]
-pub const IID_IAPO_AUXILIARY_INPUT_CONFIGURATION: windows::core::GUID =
+pub const IID_IAPO_AUXILIARY_INPUT_CONFIGURATION: GUID =
     IApoAuxiliaryInputConfiguration::IID;
 
 /// `IApoAuxiliaryInputRT` IID（仅 `feature = "aec"` 时存在）。
 #[cfg(feature = "aec")]
-pub const IID_IAPO_AUXILIARY_INPUT_RT: windows::core::GUID = IApoAuxiliaryInputRT::IID;
+pub const IID_IAPO_AUXILIARY_INPUT_RT: GUID = IApoAuxiliaryInputRT::IID;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 测试
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn all_guids_are_non_null() {
-        let null_guid = windows::core::GUID::zeroed();
+        let null_guid = GUID::zeroed();
         assert_ne!(IID_IAPO, null_guid);
         assert_ne!(IID_IAPO_RT, null_guid);
         assert_ne!(IID_IAPO_CONFIG, null_guid);

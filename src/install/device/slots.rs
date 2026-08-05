@@ -32,7 +32,7 @@
 //!
 //! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `install/install`。
 
-use crate::sys::com::prelude::guid_to_string;
+use crate::sys::com::prelude::{GUID, guid_to_string};
 use crate::sys::registry::RegKey;
 use crate::utils::guid::{guid_from_bytes, is_zero_guid, parse_guid_string};
 
@@ -192,7 +192,7 @@ pub enum SlotValue {
     /// 对应 Note 6 中的 `APOGUID_NOVALUE`。
     NoValue,
     /// 具体的 APO CLSID。
-    Guid(windows::core::GUID),
+    Guid(GUID),
 }
 
 impl SlotValue {
@@ -207,7 +207,7 @@ impl SlotValue {
     }
 
     /// 提取 GUID，NoKey/NoValue 时返回 None。
-    pub fn as_guid(&self) -> Option<windows::core::GUID> {
+    pub fn as_guid(&self) -> Option<GUID> {
         match self {
             SlotValue::Guid(g) => Some(*g),
             _ => None,
@@ -474,7 +474,7 @@ pub fn child_apo_key_exists(device_guid: &str) -> bool {
 ///
 /// *注意*：与 FxProperties 槽位无关——这是 VxAPO 独立安装信息区
 /// （install 5.3 v8.4），非 `{d04e05a6-...},{index}` 槽位值。
-pub fn read_child_apo_guid(device_guid: &str, kind: ChildApoKind) -> Option<windows::core::GUID> {
+pub fn read_child_apo_guid(device_guid: &str, kind: ChildApoKind) -> Option<GUID> {
     let key_path = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
     let (root, sub_key) = split_path(&key_path)?;
     let key = RegKey::open(root, sub_key).ok()?;
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn slot_value_is_guid() {
-        let g = windows::core::GUID::zeroed();
+        let g = GUID::zeroed();
         assert!(SlotValue::Guid(g).is_guid());
         assert!(!SlotValue::NoKey.is_guid());
         assert!(!SlotValue::NoValue.is_guid());
@@ -648,12 +648,12 @@ mod tests {
     fn slot_value_is_empty() {
         assert!(SlotValue::NoKey.is_empty());
         assert!(SlotValue::NoValue.is_empty());
-        assert!(!SlotValue::Guid(windows::core::GUID::zeroed()).is_empty());
+        assert!(!SlotValue::Guid(GUID::zeroed()).is_empty());
     }
 
     #[test]
     fn slot_value_as_guid() {
-        let g = windows::core::GUID::zeroed();
+        let g = GUID::zeroed();
         assert_eq!(SlotValue::Guid(g).as_guid(), Some(g));
         assert_eq!(SlotValue::NoKey.as_guid(), None);
         assert_eq!(SlotValue::NoValue.as_guid(), None);
@@ -663,13 +663,13 @@ mod tests {
     fn slot_value_debug() {
         assert_eq!(format!("{:?}", SlotValue::NoKey), "NoKey");
         assert_eq!(format!("{:?}", SlotValue::NoValue), "NoValue");
-        let dbg = format!("{:?}", SlotValue::Guid(windows::core::GUID::zeroed()));
+        let dbg = format!("{:?}", SlotValue::Guid(GUID::zeroed()));
         assert!(dbg.starts_with("Guid("));
     }
 
     #[test]
     fn slot_value_clone() {
-        let v = SlotValue::Guid(windows::core::GUID::zeroed());
+        let v = SlotValue::Guid(GUID::zeroed());
         let v2 = v.clone();
         assert_eq!(v, v2);
     }
@@ -678,13 +678,13 @@ mod tests {
 
     #[test]
     fn guid_to_string_zeroed() {
-        let g = windows::core::GUID { data1: 0, data2: 0, data3: 0, data4: [0; 8] };
+        let g = GUID { data1: 0, data2: 0, data3: 0, data4: [0; 8] };
         assert_eq!(guid_to_string(&g), "{00000000-0000-0000-0000-000000000000}");
     }
 
     #[test]
     fn guid_to_string_max_values() {
-        let g = windows::core::GUID {
+        let g = GUID {
             data1: 0xFFFFFFFF,
             data2: 0xFFFF,
             data3: 0xFFFF,
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn guid_to_string_has_braces() {
-        let g = windows::core::GUID::zeroed();
+        let g = GUID::zeroed();
         let s = guid_to_string(&g);
         assert!(s.starts_with('{'));
         assert!(s.ends_with('}'));
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn guid_from_bytes_roundtrip() {
-        let original = windows::core::GUID {
+        let original = GUID {
             data1: 0xC18E2F7E,
             data2: 0x933D,
             data3: 0x4965,
@@ -726,7 +726,7 @@ mod tests {
     fn guid_from_bytes_zeroed() {
         let bytes = [0u8; 16];
         let g = guid_from_bytes(&bytes).unwrap();
-        assert_eq!(g, windows::core::GUID::zeroed());
+        assert_eq!(g, GUID::zeroed());
     }
 
     #[test]
@@ -996,8 +996,8 @@ mod tests {
     }
 
     /// 创建测试用 GUID，不同编号产生不同的 GUID。
-    fn test_guid(n: u32) -> windows::core::GUID {
-        windows::core::GUID {
+    fn test_guid(n: u32) -> GUID {
+        GUID {
             data1: 0xA000_0000 + n,
             data2: 0xB000 + n as u16,
             data3: 0xC000 + n as u16,

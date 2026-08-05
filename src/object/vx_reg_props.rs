@@ -12,7 +12,7 @@
 //!
 //! 此模块仅提供常量与结构体定义，不包含注册逻辑。
 
-use windows::core::GUID;
+use crate::sys::com::prelude::GUID;
 
 use crate::sys::com::apo_interfaces::IID_IAPO;
 use crate::sys::com::apo_types::{APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, APO_FLAG_FRAMESPERSECOND_MUST_MATCH, APO_FLAG_INPLACE, APO_REG_PROPERTIES};
@@ -272,7 +272,7 @@ mod tests {
 /// 单个 CLSID 的注册信息（v6.3 规范 7.5）。
 #[derive(Debug)]
 pub struct ClsidEntry {
-    pub clsid: windows::core::GUID,
+    pub clsid: GUID,
     pub clsid_str: String,
     /// CLSID 父键 (Default) 友好名（EAPO 对齐：EAPO 注册树父键有
     /// (Default)="EqualizerAPO Pre-Mix Class"，VxAPO 之前缺失——补上供引擎辨识）。
@@ -280,7 +280,7 @@ pub struct ClsidEntry {
 }
 
 impl ClsidEntry {
-    pub fn new(clsid: windows::core::GUID) -> Self {
+    pub fn new(clsid: GUID) -> Self {
         Self {
             clsid,
             clsid_str: crate::sys::com::prelude::guid_to_string(&clsid),

@@ -22,8 +22,6 @@
 //! - **委托失败降级**：Initialize/LockForProcess/UnlockForProcess 失败不阻塞父（Note 57）
 //! - **重置防御**：Unlock 失败后下次 Lock 前 child.reset()/重建
 
-use windows::core::{GUID, HRESULT, Interface, IUnknown};
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration,
@@ -32,7 +30,9 @@ use crate::sys::com::apo_interfaces::{
 use crate::sys::com::apo_types::{
     APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES, REFERENCE_TIME,
 };
-use crate::sys::com::prelude::{E_POINTER, S_OK};
+use crate::sys::com::prelude::{
+    CLSCTX_ALL, CoCreateInstance, E_POINTER, GUID, HRESULT, Interface, IUnknown, S_OK,
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ChildApo

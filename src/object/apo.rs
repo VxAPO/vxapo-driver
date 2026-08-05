@@ -3,8 +3,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use windows::core::implement;
-use windows::core::{GUID, Result};
+use windows::core::Result;
 
 use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
@@ -31,8 +30,9 @@ use crate::sys::com::apo_types::{
     APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
 };
 use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
-use crate::sys::com::prelude::{E_FAIL, E_OUTOFMEMORY, HRESULT, guid_to_string};
-use windows::Win32::System::Com::CoTaskMemAlloc;
+use crate::sys::com::prelude::{
+    CoTaskMemAlloc, E_FAIL, E_OUTOFMEMORY, GUID, HRESULT, guid_to_string, implement,
+};
 
 use crate::sys::com::apo_types::{
     APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES,
@@ -90,7 +90,7 @@ fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID> {
                 } else {
                     let s = str_ptr.to_string().ok()?;
                     let s = s.trim().trim_start_matches('{').trim_end_matches('}');
-                    windows::core::GUID::try_from(s).ok()
+                    GUID::try_from(s).ok()
                 }
             }
             _ => None,
@@ -362,7 +362,7 @@ struct WatcherState {
 fn hot_reload_impl(
     config_path: &Arc<Mutex<String>>,
     inner: &Arc<Mutex<ApoObjectInner>>,
-    clsid: windows::core::GUID,
+    clsid: GUID,
     obj_ptr: usize,
 ) {
     // 1. R2 阻塞式（短锁检查，不构建新链）。
@@ -500,7 +500,7 @@ fn hot_reload_impl(
 )]
 #[allow(dead_code)]
 pub struct ApoObject {
-    pub(crate) clsid: windows::core::GUID,
+    pub(crate) clsid: GUID,
     pub(crate) state_cell: StateCell,
     /// 内部状态（双链过渡）。Arc<Mutex>：spawn 线程可 clone（hot_reload 独立访问）。
     pub(crate) mutex: Arc<Mutex<ApoObjectInner>>,
@@ -521,7 +521,7 @@ pub struct ApoObject {
 }
 
 impl ApoObject {
-    pub fn new(clsid: windows::core::GUID) -> Self {
+    pub fn new(clsid: GUID) -> Self {
         ref_count::increment();
         Self {
             clsid,

@@ -17,7 +17,10 @@ use crate::install::device::slots::{
     FX_PROPERTIES_KEY, INSTALL_VERSION,
 };
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
-use crate::sys::com::prelude::guid_to_string;
+use crate::sys::com::prelude::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, GUID, IUnknown,
+    guid_to_string,
+};
 use crate::sys::registry::RegKey;
 use crate::utils::vx_error::{Result, VxApoError};
 
@@ -256,9 +259,9 @@ pub fn install_endpoint(
         // S_OK(0)=本次初始化成功；S_FALSE(1)=已由宿主初始化（合法）。
         // 其他值=COM 初始化失败，verify 不可靠 → 报错。
         let co_init = unsafe {
-            windows::Win32::System::Com::CoInitializeEx(
+            CoInitializeEx(
                 None,
-                windows::Win32::System::Com::COINIT_MULTITHREADED,
+                COINIT_MULTITHREADED,
             )
         };
         let co_init_hr = co_init.0;
@@ -272,10 +275,10 @@ pub fn install_endpoint(
             // 实例化验证：CoCreateInstance 成功即 DLL 可加载（不深究接口）。
             // SAFETY: windows-rs 3 参泛型（rclsid, punkouter, dwclscontext）返回 IUnknown。
             let hr = unsafe {
-                windows::Win32::System::Com::CoCreateInstance::<_, windows::core::IUnknown>(
+                CoCreateInstance::<_, IUnknown>(
                     &clsid,
                     None,
-                    windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+                    CLSCTX_INPROC_SERVER,
                 )
             };
             if hr.is_err() {
@@ -466,7 +469,7 @@ fn record_slot_backups(
 fn read_original_apo_guids(
     fx_key: &RegKey,
     config: &InstallConfig,
-) -> (Option<windows::core::GUID>, Option<windows::core::GUID>) {
+) -> (Option<GUID>, Option<GUID>) {
     let premix = if config.use_original_apo_premix {
         let g = read_slot_value(fx_key, config.install_mode.premix_slot()).as_guid();
         match g {
@@ -510,8 +513,8 @@ fn write_child_apo_config(
     device_guid: &str,
     fx_key: &RegKey,
     config: &InstallConfig,
-    original_premix: Option<windows::core::GUID>,
-    original_postmix: Option<windows::core::GUID>,
+    original_premix: Option<GUID>,
+    original_postmix: Option<GUID>,
 ) -> Result<()> {
     // 独立安装信息区：HKLM\SOFTWARE\VxAPO\Child APOs\{device_guid}
     // （HKLM\SOFTWARE 管理员可建子键；require_admin 探测键同区已验证）。
@@ -618,7 +621,7 @@ fn delete_other_mode_slots(fx_key: &RegKey, mode: InstallMode) {
 /// 音频枚举器读此槽位期望 REG_SZ；写 REG_BINARY 会报
 /// 「Registry value ... has wrong type」导致 EAPO 无法枚举设备（2026-08-04 实证）。
 /// 与 `slots::read_slot_value` 的 REG_SZ 解析分支一致。
-fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: windows::core::GUID) -> Result<()> {
+fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: GUID) -> Result<()> {
     fx_key.write_sz(&slot.value_name(), &guid_to_string(&guid))?;
     Ok(())
 }
@@ -707,14 +710,14 @@ mod tests {
     #[test]
     fn guid_to_string_zeroed() {
         assert_eq!(
-            guid_to_string(&windows::core::GUID::zeroed()),
+            guid_to_string(&GUID::zeroed()),
             "{00000000-0000-0000-0000-000000000000}"
         );
     }
 
     #[test]
     fn guid_to_string_max_values() {
-        let g = windows::core::GUID {
+        let g = GUID {
             data1: 0xFFFFFFFF,
             data2: 0xFFFF,
             data3: 0xFFFF,

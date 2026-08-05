@@ -25,9 +25,8 @@
 use std::ffi::c_void;
 use std::sync::atomic::AtomicPtr;
 
-use windows::core::{BOOL, GUID};
+use windows::core::BOOL;
 use windows::Win32::Foundation::HMODULE;
-use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::Registry::HKEY_CLASSES_ROOT;
 
 use crate::sys::com::prelude::*;
@@ -388,7 +387,7 @@ fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT>
 
 #[cfg(test)]
 mod tests {
-    use windows::core::{GUID, IUnknown, Interface};
+    use crate::sys::com::prelude::{GUID, Interface, IUnknown};
     use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
     use super::*;
 
