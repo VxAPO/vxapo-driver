@@ -364,6 +364,7 @@ mod tests {
             device_type: crate::pipeline::dsp::filter::DeviceType::Render,
             stage: crate::pipeline::dsp::filter::ProcessingStage::None,
             variables: HashMap::new(),
+            loudness_enabled: std::cell::Cell::new(true),
             rt_marker: std::marker::PhantomData,
         }));
         let registry: &'static FilterRegistry = Box::leak(Box::new(FilterRegistry::new()));

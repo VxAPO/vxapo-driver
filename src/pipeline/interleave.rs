@@ -33,6 +33,24 @@ pub fn interleave_from(input: &[Vec<f32>], output: &mut [f32], channels: usize, 
     }
 }
 
+/// 去交织平面缓冲区 → 交织格式（零分配），非有限值写 0（链级防线）。
+///
+/// 在 `is_finite()` 编译为一次整数比较（x86_64），正常路径几乎不命中；
+/// 命中即表示上游 bug 或极端配置——静音优于啸叫。
+pub fn interleave_from_guarded(
+    input: &[Vec<f32>],
+    output: &mut [f32],
+    channels: usize,
+    frames: usize,
+) {
+    for f in 0..frames {
+        for ch in 0..channels {
+            let v = input[ch][f];
+            output[f * channels + ch] = if v.is_finite() { v } else { 0.0 };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +88,13 @@ mod tests {
         let mut back = vec![0.0; 3];
         interleave_from(&planar, &mut back, 1, 3);
         assert_eq!(input, back);
+    }
+
+    #[test]
+    fn guarded_interleave_replaces_non_finite() {
+        let planar = vec![vec![1.0f32, f32::NAN, f32::INFINITY], vec![2.0, -2.0, 0.5]];
+        let mut out = vec![0.0f32; 6];
+        interleave_from_guarded(&planar, &mut out, 2, 3);
+        assert_eq!(out, vec![1.0, 2.0, 0.0, -2.0, 0.0, 0.5]);
     }
 }

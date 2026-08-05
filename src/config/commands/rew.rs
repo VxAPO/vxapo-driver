@@ -100,6 +100,7 @@ mod tests {
             device_type: crate::pipeline::dsp::filter::DeviceType::Render,
             stage: crate::pipeline::dsp::filter::ProcessingStage::None,
             variables: HashMap::new(),
+            loudness_enabled: std::cell::Cell::new(true),
             rt_marker: std::marker::PhantomData,
         }));
         // 需要注册 DSP 工厂才能 try_create 成功。

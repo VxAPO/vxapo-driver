@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::pipeline::buffer::{evaluate_buffer, BufferAction, BufferInfo, is_silent};
 use crate::pipeline::chain::Chain;
-use crate::pipeline::interleave::{deinterleave_into, interleave_from};
+use crate::pipeline::interleave::{deinterleave_into, interleave_from_guarded};
 use crate::sys::com::apo_types::{APO_CONNECTION_PROPERTY, BUFFER_SILENT, BUFFER_VALID};
 use crate::utils::vx_error::Result;
 
@@ -84,7 +84,7 @@ pub fn process_chain_interleaved(
 ) -> Result<()> {
     deinterleave_into(input, temp, channels, frame_count);
     chain.process(temp, frame_count)?;
-    interleave_from(temp, output, channels, frame_count);
+    interleave_from_guarded(temp, output, channels, frame_count);
     Ok(())
 }
 
@@ -173,7 +173,12 @@ pub fn process_audio(
         }
 
         // Step 7: 去交织 → 交织
-        interleave_from(&temp_buffers[..out_ch.min(temp_buffers.len())], output_slice, out_ch.min(temp_buffers.len()), frames);
+        interleave_from_guarded(
+            &temp_buffers[..out_ch.min(temp_buffers.len())],
+            output_slice,
+            out_ch.min(temp_buffers.len()),
+            frames,
+        );
         output_prop.u32BufferFlags = output_flags;
         // EAPO:482 对齐：显式设置输出帧数（APO 契约要求 APO 写回）——
         // 缺失 → 引擎判输出无效 → 完全无声（2026-08-04 实测 audiodg 加载但无声根因）。

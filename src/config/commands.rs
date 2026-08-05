@@ -14,6 +14,7 @@ pub mod expr;
 pub mod filter;
 pub mod graphic;
 pub mod include;
+pub mod loudness;
 pub mod preamp;
 pub mod rew;
 pub mod stage;

@@ -1,64 +1,74 @@
-﻿//! dsp/filters/gain.rs — 增益滤波器（含内部平滑插值）
+//! dsp/filters/gain.rs — 增益滤波器（含内部平滑插值）
 //!
 //! 实现 `Preamp:` 命令。
 //!
 //! 平滑过渡（Note 15）：
-//! 增益变化时使用线性插值避免 click/pop。
-//! 平滑长度默认 128 采样（约 2.7ms @ 48kHz）。
+//! 增益变化时使用**比例平滑**（等效对数域）避免 click/pop；带到达步数与跳转阈值。
 //!
-//! `process` 方法遵守 RT-safety 约束（Note 12）。
+//! 数值护栏（P0）：
+//! - dB 经 `math::clamp_gain_db`（[-120, +48]），线性因子保证有限；
+//! - 非有限目标直接忽略；
+//! - `process` 遵守 RT-safety 约束（Note 12），零分配。
 
 use crate::pipeline::dsp::filter::Filter;
-
-/// 默认平滑长度（采样数）。
-const DEFAULT_SMOOTHING_SAMPLES: usize = 128;
+use crate::pipeline::dsp::math::{
+    GAIN_DB_MAX, GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT, GAIN_SNAP_THRESHOLD,
+    MAX_GAIN_STEP_RATIO, db_to_linear as math_db_to_linear,
+    linear_to_db as math_linear_to_db,
+};
 
 /// 增益滤波器。
 ///
 /// 支持：
 /// - 固定增益（dB → linear）
-/// - 线性插值平滑过渡
+/// - 比例平滑过渡（无 click，极端跳变有界）
 #[derive(Debug)]
 pub struct GainFilter {
     /// 目标增益（线性因子）。
     target_gain: f32,
     /// 当前增益（线性因子，平滑插值中）。
     current_gain: f32,
-    /// 增益步进（每采样增量）。
-    gain_step: f32,
-    /// 剩余平滑采样数。
-    smoothing_remaining: usize,
-    /// 平滑总长度。
-    smoothing_length: usize,
+    /// 每采样比例步进（重算间隔内复用）。
+    ratio: f32,
+    /// 平滑步数计数。
+    step_counter: u32,
+    /// 目标步数（到达时间保证；受 `MAX_GAIN_STEP_RATIO` 上限约束）。
+    steps_to_reach: u32,
+    /// 本滤波器作用的平面通道槽位（`Channel:` 选择，空 = 顺序 0..N）。
+    channel_indices: Vec<usize>,
 }
 
 impl GainFilter {
     /// 创建增益滤波器。
     ///
-    /// - `gain_db`：增益（dB）
-    /// - `sample_rate`：采样率（初始化时设置）
+    /// - `gain_db`：增益（dB），经 clamp 保证有限
     pub fn new(gain_db: f32) -> Self {
-        let linear = db_to_linear(gain_db);
+        let linear = math_db_to_linear(gain_db);
         Self {
             target_gain: linear,
             current_gain: linear,
-            gain_step: 0.0,
-            smoothing_remaining: 0,
-            smoothing_length: DEFAULT_SMOOTHING_SAMPLES,
+            ratio: 1.0,
+            step_counter: 0,
+            steps_to_reach: GAIN_SMOOTH_STEPS_DEFAULT,
+            channel_indices: Vec::new(),
         }
     }
 
     /// 设置新增益（dB），触发平滑过渡。
     pub fn set_gain_db(&mut self, gain_db: f32) {
-        self.set_gain_linear(db_to_linear(gain_db));
+        self.set_gain_linear(math_db_to_linear(gain_db));
     }
 
     /// 设置新增益（线性），触发平滑过渡。
     pub fn set_gain_linear(&mut self, target: f32) {
+        if !target.is_finite() {
+            return; // 非有限目标：忽略，保持当前值。
+        }
+        let target = target.clamp(0.0, math_db_to_linear(GAIN_DB_MAX));
         self.target_gain = target;
-        let diff = target - self.current_gain;
-        self.gain_step = diff / self.smoothing_length as f32;
-        self.smoothing_remaining = self.smoothing_length;
+        self.ratio = 1.0;
+        self.step_counter = 0;
+        self.steps_to_reach = GAIN_SMOOTH_STEPS_DEFAULT;
     }
 
     /// 当前增益（线性）。
@@ -68,47 +78,77 @@ impl GainFilter {
 
     /// 当前增益（dB）。
     pub fn current_gain_db(&self) -> f32 {
-        linear_to_db(self.current_gain)
+        math_linear_to_db(self.current_gain)
+    }
+
+    /// 比例平滑推进一采样。
+    ///
+    /// - 足够接近目标 → 直接跳转（`GAIN_SNAP_THRESHOLD` 相对误差）；
+    /// - 每 `GAIN_SMOOTH_RERATE` 采样重算一次理想比例，并 clamp 到
+    ///   `[1-MAX_GAIN_STEP_RATIO, 1+MAX_GAIN_STEP_RATIO]`，避免每采样 powf；
+    /// - 从极小值（≈0）恢复时先给一个可数的起点。
+    #[inline]
+    fn advance(&mut self) {
+        if (self.current_gain - self.target_gain).abs()
+            < GAIN_SNAP_THRESHOLD * self.target_gain.abs().max(1.0)
+        {
+            self.current_gain = self.target_gain;
+            return;
+        }
+
+        if self.current_gain.abs() < GAIN_SNAP_THRESHOLD {
+            self.current_gain = self.target_gain * 1e-4;
+        }
+
+        if self.step_counter.is_multiple_of(GAIN_SMOOTH_RERATE) {
+            // remaining 下限 = GAIN_SMOOTH_RERATE：避免 counter 超过目标步数后
+            // “单步到位”控制器被 ±5% clamp 来回振荡，改为 ≥32 步的收缩控制器。
+            let remaining = (self.steps_to_reach.saturating_sub(self.step_counter))
+                .max(GAIN_SMOOTH_RERATE);
+            let ideal = (self.target_gain / self.current_gain).powf(1.0 / remaining as f32);
+            self.ratio = ideal.clamp(1.0 - MAX_GAIN_STEP_RATIO, 1.0 + MAX_GAIN_STEP_RATIO);
+        }
+        self.current_gain *= self.ratio;
+        self.step_counter += 1;
     }
 }
 
 impl Filter for GainFilter {
     fn initialize(&mut self, _sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>> {
-        let _ = channel_names;
+        if self.channel_indices.is_empty() {
+            self.channel_indices = (0..channel_names.len()).collect();
+        }
         None
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
         for f in 0..frame_count {
-            // 平滑插值
-            if self.smoothing_remaining > 0 {
-                self.current_gain += self.gain_step;
-                self.smoothing_remaining -= 1;
-                if self.smoothing_remaining == 0 {
-                    self.current_gain = self.target_gain;
-                }
+            if self.current_gain != self.target_gain {
+                self.advance();
             }
 
             let gain = self.current_gain;
-            for ch in samples.iter_mut() {
-                ch[f] *= gain;
+            for &ch in &self.channel_indices {
+                if let Some(buf) = samples.get_mut(ch) {
+                    buf[f] *= gain;
+                }
             }
         }
     }
-}
 
-/// dB 转线性因子。
-pub fn db_to_linear(db: f32) -> f32 {
-    10.0_f32.powf(db / 20.0)
-}
-
-/// 线性因子转 dB。
-pub fn linear_to_db(linear: f32) -> f32 {
-    if linear <= 0.0 {
-        f32::NEG_INFINITY
-    } else {
-        20.0 * linear.log10()
+    fn set_channel_indices(&mut self, indices: &[usize]) {
+        self.channel_indices = indices.to_vec();
     }
+}
+
+/// dB 转线性因子（薄转发到 `math::db_to_linear`，保持既有公开 API）。
+pub fn db_to_linear(db: f32) -> f32 {
+    math_db_to_linear(db)
+}
+
+/// 线性因子转 dB（薄转发到 `math::linear_to_db`）。
+pub fn linear_to_db(linear: f32) -> f32 {
+    math_linear_to_db(linear)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -160,11 +200,21 @@ mod tests {
         assert_eq!(linear_to_db(-1.0), f32::NEG_INFINITY);
     }
 
+    #[test]
+    fn extreme_db_clamped_finite() {
+        let hi = GainFilter::new(1000.0);
+        assert!(hi.current_gain_linear().is_finite());
+        assert!((hi.current_gain_linear() - db_to_linear(GAIN_DB_MAX)).abs() < 1e-3);
+
+        let lo = GainFilter::new(-1000.0);
+        assert!(lo.current_gain_linear().is_finite());
+    }
+
     // ── GainFilter 基础 ─────────────────────────────────────────────────────
 
     #[test]
     fn unity_gain_passthrough() {
-        let mut filter = GainFilter::new(0.0); // 0 dB = unity
+        let mut filter = GainFilter::new(0.0);
         filter.initialize(48000, &stereo_names());
 
         let mut samples = vec![
@@ -180,8 +230,6 @@ mod tests {
     #[test]
     fn gain_plus_6db_doubles() {
         let mut filter = GainFilter::new(6.0206);
-        // smoothing_length = 128, but we set gain at creation so
-        // current_gain already equals target → no smoothing
         filter.initialize(48000, &stereo_names());
 
         let mut samples = vec![vec![1.0, 2.0], vec![0.5, 1.0]];
@@ -193,7 +241,7 @@ mod tests {
 
     #[test]
     fn gain_minus_inf_is_silent() {
-        let mut filter = GainFilter::new(-100.0); // ≈ -inf dB
+        let mut filter = GainFilter::new(-100.0); // clamp 到 -120 dB ≈ 1e-6
         filter.initialize(48000, &stereo_names());
 
         let mut samples = vec![vec![1.0; 10]; 2];
@@ -208,18 +256,14 @@ mod tests {
 
     #[test]
     fn gain_change_smooths() {
-        let mut filter = GainFilter::new(0.0); // unity
+        let mut filter = GainFilter::new(0.0);
         filter.initialize(48000, &stereo_names());
 
-        // 设置新增益 → 触发平滑
         filter.set_gain_db(6.0);
 
-        // 处理几帧，输出应在过渡中
         let mut samples = vec![vec![1.0; 200]; 2];
         filter.process(&mut samples, 200);
 
-        // 前 128 帧是过渡区
-        // 过渡完成后应接近 2.0
         let final_val = samples[0][199];
         assert!((final_val - db_to_linear(6.0)).abs() < 0.01);
     }
@@ -231,11 +275,9 @@ mod tests {
 
         filter.set_gain_linear(0.0); // 突变到静音
 
-        // 过渡期间不应有突变
         let mut samples = vec![vec![1.0; 200]; 2];
         filter.process(&mut samples, 200);
 
-        // 检查相邻采样差值不超过步进大小
         for f in 1..200 {
             let diff = (samples[0][f] - samples[0][f - 1]).abs();
             assert!(
@@ -244,6 +286,58 @@ mod tests {
                 f, diff
             );
         }
+    }
+
+    #[test]
+    fn extreme_jump_smooths_without_click() {
+        let mut filter = GainFilter::new(0.0);
+        filter.initialize(48000, &stereo_names());
+
+        // +1000 dB → clamp 到 +48 dB（线性 ≈ 251）。
+        filter.set_gain_db(1000.0);
+
+        let mut samples = vec![vec![0.25; 600]; 2];
+        filter.process(&mut samples, 600);
+
+        // 输出全程有限，峰值有界（无 inf / 爆音）。
+        for ch in samples.iter() {
+            for &v in ch.iter() {
+                assert!(v.is_finite());
+                assert!(v < 300.0, "peak too high: {v}");
+            }
+        }
+        // 600 采样后应到达目标（113 步 ≈ 到达，远小于 600）。
+        let target = db_to_linear(GAIN_DB_MAX);
+        assert!((samples[0][599] - target * 0.25).abs() < 0.01 * target);
+    }
+
+    #[test]
+    fn deep_cut_recovers_within_bounded_steps() {
+        let mut filter = GainFilter::new(-120.0); // 1e-6
+        filter.initialize(48000, &stereo_names());
+
+        filter.set_gain_db(0.0); // 恢复到 1.0
+
+        let mut samples = vec![vec![1.0; 400]; 2];
+        filter.process(&mut samples, 400);
+
+        // 120 dB 恢复需要 ≈ 283 步（×1.05/步），400 采样内必须到位。
+        assert!(
+            (samples[0][399] - 1.0).abs() < 0.01,
+            "deep cut recovery too slow, got {}",
+            samples[0][399]
+        );
+    }
+
+    #[test]
+    fn non_finite_target_ignored() {
+        let mut filter = GainFilter::new(0.0);
+        filter.initialize(48000, &stereo_names());
+
+        filter.set_gain_linear(f32::NAN);
+        filter.set_gain_linear(f32::INFINITY);
+        assert_eq!(filter.current_gain_linear(), 1.0);
+        assert_eq!(filter.target_gain, 1.0);
     }
 
     #[test]

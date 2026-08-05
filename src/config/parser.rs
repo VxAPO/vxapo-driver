@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::config::commands::cond::{CondState, Variables};
 use crate::config::commands::{
-    channel, cond, copy, delay, device, expr, filter as filter_cmd, graphic, include, preamp,
-    rew, stage,
+    channel, cond, copy, delay, device, expr, filter as filter_cmd, graphic, include, loudness,
+    preamp, rew, stage,
 };
 use crate::config::ConfigError;
 use crate::pipeline::dsp::factory::{FilterRegistry, OutcomeKind};
@@ -314,6 +314,13 @@ pub(crate) fn parse_lines_impl(
                 "channel" => channel::handle(value, ctx),
                 "eval" => expr::handle(value, ctx),
                 "include" => include::handle(value, ctx),
+                "loudness" => {
+                    let r = loudness::handle(value, ctx);
+                    if r.is_ok() {
+                        ctx.specs.push(produce_spec(cmd, value));
+                    }
+                    r
+                }
                 // DSP 命令：spec 产出 = filters 数量增长（含 OFF→Passthrough）时 push。
                 "filter" => {
                     let before = ctx.filters.len();
@@ -515,6 +522,7 @@ mod tests {
             device_type: DeviceType::Render,
             stage: ProcessingStage::None,
             variables: HashMap::new(),
+            loudness_enabled: std::cell::Cell::new(true),
             rt_marker: std::marker::PhantomData,
         }
     }

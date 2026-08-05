@@ -15,6 +15,7 @@ pub mod gain;
 pub mod graphic_eq;
 pub mod hp_lp;
 pub mod loudness;
+pub mod math;
 pub mod peq;
 pub mod transition;
 pub mod vst;

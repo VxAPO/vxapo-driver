@@ -22,6 +22,7 @@
 //! `process` 方法遵守 RT-safety 约束（Note 12）。
 
 use crate::pipeline::dsp::filter::Filter;
+use crate::pipeline::dsp::math::{COPY_COEFF_MAX, MAX_FRAME_COUNT};
 
 /// 单个源通道及其系数。
 #[derive(Debug, Clone)]
@@ -64,41 +65,62 @@ impl CopyFilter {
 
 impl Filter for CopyFilter {
     fn initialize(&mut self, _sample_rate: u32, _channel_names: &[String]) -> Option<Vec<String>> {
-        let max_frames = 480; // 预分配大小
-        self.temp_buf.resize(max_frames, 0.0);
+        // RT 安全：一次性预分配到上限，process 内不再 resize。
+        self.temp_buf.resize(MAX_FRAME_COUNT, 0.0);
         None
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
-        // 确保临时缓冲区足够大
-        if self.temp_buf.len() < frame_count {
-            self.temp_buf.resize(frame_count, 0.0);
-        }
+        debug_assert!(
+            frame_count <= MAX_FRAME_COUNT,
+            "CopyFilter frame_count 超过预分配上限"
+        );
 
         for op in &self.ops {
             if op.target_index >= samples.len() {
                 continue;
             }
 
-            // 清零临时缓冲区
-            for f in 0..frame_count {
-                self.temp_buf[f] = 0.0;
+            // 零拷贝快速路径：单源且系数 == 1.0。
+            if op.sources.len() == 1 && op.sources[0].coefficient == 1.0 {
+                let src_idx = op.sources[0].channel_index;
+                if src_idx >= samples.len() {
+                    continue;
+                }
+                if src_idx == op.target_index {
+                    continue; // 目标 == 源：零拷贝，直接跳过。
+                }
+                // 两个不同槽位 → split_at_mut 取两个可变通道，避免借用冲突。
+                let (a, b) = if src_idx < op.target_index {
+                    let (front, back) = samples.split_at_mut(op.target_index);
+                    (&front[src_idx], &mut back[0])
+                } else {
+                    let (front, back) = samples.split_at_mut(src_idx);
+                    (&back[0], &mut front[op.target_index])
+                };
+                b[..frame_count].copy_from_slice(&a[..frame_count]);
+                continue;
             }
 
-            // 累加所有源通道
+            // 通用路径（多源 / 带系数）：temp_buf 累加。
+            self.temp_buf[..frame_count].fill(0.0);
             for src in &op.sources {
                 if src.channel_index < samples.len() {
+                    let coeff = src.coefficient;
+                    let src_buf = &samples[src.channel_index];
                     for f in 0..frame_count {
-                        self.temp_buf[f] += src.coefficient * samples[src.channel_index][f];
+                        self.temp_buf[f] = coeff.mul_add(src_buf[f], self.temp_buf[f]);
                     }
                 }
             }
 
             // 写入目标通道
-            for f in 0..frame_count {
-                samples[op.target_index][f] = self.temp_buf[f];
-            }
+            samples[op.target_index][..frame_count].copy_from_slice(&self.temp_buf[..frame_count]);
         }
+    }
+
+    fn max_frame_count(&self) -> Option<usize> {
+        Some(MAX_FRAME_COUNT)
     }
 }
 
@@ -134,7 +156,7 @@ pub fn parse_copy_ops(params: &str, channel_names: &[String]) -> Option<Vec<Copy
                 continue;
             }
 
-            let (coeff, name) = parse_coeff_and_name(src_part);
+            let (coeff, name) = parse_coeff_and_name(src_part)?;
             let channel_index = channel_names
                 .iter()
                 .position(|n| n == name)?;
@@ -165,14 +187,17 @@ pub fn parse_copy_ops(params: &str, channel_names: &[String]) -> Option<Vec<Copy
 /// 解析 `0.5*L` 或 `L` 格式。
 ///
 /// 返回 (coefficient, channel_name)。
-fn parse_coeff_and_name(s: &str) -> (f32, &str) {
+fn parse_coeff_and_name(s: &str) -> Option<(f32, &str)> {
     if let Some(star_pos) = s.find('*') {
         let coeff_str = s[..star_pos].trim();
         let name = s[star_pos + 1..].trim();
-        let coeff = coeff_str.parse::<f32>().unwrap_or(1.0);
-        (coeff, name)
+        let coeff = coeff_str.parse::<f32>().ok()?;
+        if !coeff.is_finite() {
+            return None;
+        }
+        Some((coeff.clamp(-COPY_COEFF_MAX, COPY_COEFF_MAX), name))
     } else {
-        (1.0, s)
+        Some((1.0, s))
     }
 }
 
@@ -199,23 +224,34 @@ mod tests {
 
     #[test]
     fn parse_simple_name() {
-        let (coeff, name) = parse_coeff_and_name("L");
+        let (coeff, name) = parse_coeff_and_name("L").unwrap();
         assert_eq!(coeff, 1.0);
         assert_eq!(name, "L");
     }
 
     #[test]
     fn parse_coeff_name() {
-        let (coeff, name) = parse_coeff_and_name("0.5*R");
+        let (coeff, name) = parse_coeff_and_name("0.5*R").unwrap();
         assert!((coeff - 0.5).abs() < 1e-6);
         assert_eq!(name, "R");
     }
 
     #[test]
     fn parse_int_coeff() {
-        let (coeff, name) = parse_coeff_and_name("2*L");
+        let (coeff, name) = parse_coeff_and_name("2*L").unwrap();
         assert_eq!(coeff, 2.0);
         assert_eq!(name, "L");
+    }
+
+    #[test]
+    fn parse_coeff_rejects_nan_and_clamps_extreme() {
+        assert!(parse_coeff_and_name("NaN*L").is_none());
+        assert!(parse_coeff_and_name("inf*L").is_none());
+        let (coeff, name) = parse_coeff_and_name("1000*L").unwrap();
+        assert_eq!(coeff, COPY_COEFF_MAX);
+        assert_eq!(name, "L");
+        let (coeff, _) = parse_coeff_and_name("-1000*L").unwrap();
+        assert_eq!(coeff, -COPY_COEFF_MAX);
     }
 
     // ── parse_copy_ops ──────────────────────────────────────────────────────
@@ -281,6 +317,25 @@ mod tests {
 
         assert_eq!(samples[0], vec![1.0, 2.0, 3.0]);
         assert_eq!(samples[1], vec![1.0, 2.0, 3.0]); // R unchanged
+    }
+
+    #[test]
+    fn copy_same_slot_is_noop() {
+        // L=L：单源 coeff=1.0 且目标==源 → 零拷贝直接跳过，逐位不变。
+        let ops = vec![CopyOp {
+            target_index: 0,
+            sources: vec![CopySource {
+                channel_index: 0,
+                coefficient: 1.0,
+            }],
+        }];
+        let mut filter = CopyFilter::new(ops);
+        filter.initialize(48000, &stereo_names());
+
+        let mut samples = vec![vec![1.0, -2.0, 3.5], vec![9.0, 9.0, 9.0]];
+        let orig = samples.clone();
+        filter.process(&mut samples, 3);
+        assert_eq!(samples, orig);
     }
 
     #[test]

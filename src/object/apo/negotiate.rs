@@ -51,3 +51,43 @@ pub(crate) fn check_format_supported(
     }
     Ok(())
 }
+
+/// `IsInputFormatSupported`：EAPO 对齐（EqualizerAPO.cpp:228-306）。
+///
+/// 读输入+输出双格式后仅拒绝「降混」（in > 2ch 且 in > out）。
+/// EAPO 返回 S_FALSE + 设备输出格式；windows-rs Result 无法表达 S_FALSE
+/// （Ok→S_OK / Err→错误码），降混拒绝退化为 Err(APOERR_FORMAT_NOT_SUPPORTED)
+/// （宁拒不错）。
+pub(crate) fn is_input_format_supported(
+    p_opposite_format: &Ref<IAudioMediaType>,
+    p_requested: &Ref<IAudioMediaType>,
+) -> Result<IAudioMediaType> {
+    let input = extract_format_ref(p_requested)?;
+    check_format_supported(p_requested)?;
+    // opposite 缺失/解析失败时跳过降混检查（保守接受，宁多勿误拒）。
+    if let Ok(output) = extract_format_ref(p_opposite_format) {
+        if input.channels > 2 && input.channels > output.channels {
+            return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+        }
+    }
+    // 通过检查：返回请求格式（INPLACE 模式输入输出同格式）。
+    let req = p_requested.as_ref().expect("checked above");
+    Ok(req.clone())
+}
+
+/// `IsOutputFormatSupported`：与 IsInputFormatSupported 对称，拒绝「上混」
+/// （out > 2ch 且 out > in）。
+pub(crate) fn is_output_format_supported(
+    p_opposite_format: &Ref<IAudioMediaType>,
+    p_requested: &Ref<IAudioMediaType>,
+) -> Result<IAudioMediaType> {
+    let output = extract_format_ref(p_requested)?;
+    check_format_supported(p_requested)?;
+    if let Ok(input) = extract_format_ref(p_opposite_format) {
+        if output.channels > 2 && output.channels > input.channels {
+            return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
+        }
+    }
+    let req = p_requested.as_ref().expect("checked above");
+    Ok(req.clone())
+}

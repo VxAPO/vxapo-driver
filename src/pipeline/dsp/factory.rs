@@ -19,6 +19,10 @@ use crate::pipeline::dsp::filter::{
 use crate::pipeline::dsp::graphic_eq::{parse_graphic_eq_params, GraphicEqFilter};
 use crate::pipeline::dsp::hp_lp::HighLowPassFilter;
 use crate::pipeline::dsp::loudness::{parse_loudness_params, LoudnessFilter};
+use crate::pipeline::dsp::math::{
+    DELAY_MS_MAX, FILTER_FREQ_MAX_RATIO, FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN, clamp_gain_db,
+    is_stable_biquad, warn_rate_limited,
+};
 use crate::pipeline::dsp::peq::PeakingFilter;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -184,7 +188,7 @@ pub struct IirFactory;
 /// 解析 `Fc <val> Hz` / `Gain <val> dB` / `Q <val>` 键值流。
 ///
 /// 返回 `(fc, gain_db, q)`。任一必需参数缺失或非法时返回 `None`。
-fn parse_iir_params(tokens: &[&str]) -> Option<(f32, f32, f32)> {
+fn parse_iir_params(tokens: &[&str], sample_rate: u32) -> Option<(f32, f32, f32)> {
     let mut fc: Option<f32> = None;
     let mut gain_db: f32 = 0.0;
     let mut q: Option<f32> = None;
@@ -223,6 +227,11 @@ fn parse_iir_params(tokens: &[&str]) -> Option<(f32, f32, f32)> {
     if !fc.is_finite() || fc <= 0.0 || !q.is_finite() || q <= 0.0 || !gain_db.is_finite() {
         return None;
     }
+    // P0：数字合法但离谱 → clamp（非 RT）。
+    let max_fc = (sample_rate as f32 * FILTER_FREQ_MAX_RATIO).max(FILTER_FREQ_MIN_HZ);
+    let fc = fc.clamp(FILTER_FREQ_MIN_HZ, max_fc);
+    let q = q.clamp(Q_MIN, Q_MAX);
+    let gain_db = clamp_gain_db(gain_db);
     Some((fc, gain_db, q))
 }
 
@@ -251,7 +260,7 @@ impl FilterFactory for IirFactory {
             _ => return FilterCreateResult::NoMatch,
         };
 
-        let (fc, gain_db, q) = match parse_iir_params(&tokens[1..]) {
+        let (fc, gain_db, q) = match parse_iir_params(&tokens[1..], ctx.sample_rate) {
             Some(v) => v,
             None => return FilterCreateResult::NoMatch,
         };
@@ -320,6 +329,11 @@ impl FilterFactory for BiquadFactory {
         };
 
         let coeffs = BiquadCoeffs { b0, b1, b2, a1, a2 };
+        // P0：裸系数路径——有限性已保证，稳定性失败拒绝创建。
+        if !is_stable_biquad(coeffs.a1, coeffs.a2) {
+            warn_rate_limited("biquad_raw_unstable", "Biquad 裸系数不稳定，拒绝创建");
+            return FilterCreateResult::NoMatch;
+        }
         FilterCreateResult::Filter(Box::new(BiquadFilter::new(
             coeffs,
             BiquadStructure::DirectFormIITransposed,
@@ -352,7 +366,16 @@ impl FilterFactory for PreampFactory {
             .unwrap_or(trimmed);
         match num.parse::<f32>() {
             Ok(db) if db.is_finite() => {
-                FilterCreateResult::Filter(Box::new(crate::pipeline::dsp::gain::GainFilter::new(db)))
+                let clamped = clamp_gain_db(db);
+                if clamped != db {
+                    warn_rate_limited(
+                        "preamp_clamp",
+                        "Preamp 增益超出 [-120, +48] dB，已 clamp 到边界",
+                    );
+                }
+                FilterCreateResult::Filter(Box::new(crate::pipeline::dsp::gain::GainFilter::new(
+                    clamped,
+                )))
             }
             _ => FilterCreateResult::NoMatch,
         }
@@ -383,7 +406,14 @@ impl FilterFactory for DelayFactory {
             .map(str::trim)
             .unwrap_or(trimmed);
         match num.parse::<f32>() {
-            Ok(ms) if ms.is_finite() => FilterCreateResult::Filter(Box::new(DelayFilter::new(ms))),
+            Ok(ms) if ms.is_finite() => {
+                let abs_ms = ms.abs();
+                let clamped = abs_ms.clamp(0.0, DELAY_MS_MAX);
+                if clamped != abs_ms {
+                    warn_rate_limited("delay_clamp", "Delay 超出 [0, 1000] ms，已 clamp 到边界");
+                }
+                FilterCreateResult::Filter(Box::new(DelayFilter::new(clamped)))
+            }
             _ => FilterCreateResult::NoMatch,
         }
     }
@@ -434,7 +464,14 @@ impl FilterFactory for ConvolutionFactory {
         // 由 parser 层将「未知命令」包装为 SyntaxError（config 6.1 Unmatched → SyntaxError）。
         match parse_convolution_params(params) {
             Ok((path, gain_db)) => {
-                FilterCreateResult::Filter(Box::new(ConvolutionFilter::new(&path, gain_db)))
+                let clamped = clamp_gain_db(gain_db);
+                if clamped != gain_db {
+                    warn_rate_limited(
+                        "convolution_gain_clamp",
+                        "Convolution 增益超出 [-120, +48] dB，已 clamp 到边界",
+                    );
+                }
+                FilterCreateResult::Filter(Box::new(ConvolutionFilter::new(&path, clamped)))
             }
             // v7.11：参数严格化（≥3 tokens / 第 2 个非数值）→ NoMatch，
             // 由 parser 层将 Unmatched 包装为 SyntaxError（config 6.1 Unmatched → SyntaxError）。
@@ -506,12 +543,14 @@ impl FilterFactory for LoudnessFactory {
     fn create_filter(
         &self,
         params: &str,
-        _ctx: &DspContext,
+        ctx: &DspContext,
         _loader: &dyn ConfigLoader,
     ) -> FilterCreateResult {
         match parse_loudness_params(params) {
             Some((phon, reference_phon)) => {
-                FilterCreateResult::Filter(Box::new(LoudnessFilter::new(phon, reference_phon)))
+                let mut filter = LoudnessFilter::new(phon, reference_phon);
+                filter.set_enabled(ctx.loudness_enabled.get());
+                FilterCreateResult::Filter(Box::new(filter))
             }
             None => FilterCreateResult::NoMatch,
         }
@@ -563,6 +602,7 @@ mod tests {
             device_type: DeviceType::Render,
             stage: ProcessingStage::None,
             variables: HashMap::new(),
+            loudness_enabled: std::cell::Cell::new(true),
             rt_marker: std::marker::PhantomData,
         }
     }

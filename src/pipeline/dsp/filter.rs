@@ -35,6 +35,13 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
         false
     }
 
+    /// 设置本滤波器作用的平面通道槽位（`Channel:` 选择后由 Chain 在 `initialize` 前调用）。
+    ///
+    /// `indices` 是选中通道在**原始平面缓冲**中的槽位号（如 `Channel: R` → `[1]`）。
+    /// 按“前 N 个槽位”处理的滤波器（biquad/gain/delay/convolution 等）必须存储该列表，
+    /// 并在 `process` 中只处理对应槽位；无通道语义的滤波器（Copy 等）保持默认忽略。
+    fn set_channel_indices(&mut self, _indices: &[usize]) {}
+
     /// 是否就地处理（in-place，E1/v6.7）。
     ///
     /// 默认 true：滤波器直接修改传入的 `samples` 缓冲，无需额外中间副本。
@@ -147,6 +154,8 @@ pub struct DspContext {
     pub stage: ProcessingStage,
     /// 变量存储（`Eval:` 命令变量）。
     pub variables: HashMap<String, f64>,
+    /// 响度补偿开关（默认开；`Loudness: off` 由 config 层关闭，APP 未来接口）。
+    pub loudness_enabled: std::cell::Cell<bool>,
     /// RT 编译期见证（O1/v6.6）：标记此配置服务于实时路径。
     pub rt_marker: PhantomData<RealtimeContext>,
 }
@@ -200,6 +209,7 @@ mod tests {
             device_type: DeviceType::Render,
             stage: ProcessingStage::None,
             variables: HashMap::new(),
+            loudness_enabled: std::cell::Cell::new(true),
             rt_marker: std::marker::PhantomData,
         }
     }

@@ -58,6 +58,7 @@ pub(crate) fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> 
         device_type: DeviceType::Render,
         stage: ProcessingStage::None,
         variables: std::collections::HashMap::new(),
+        loudness_enabled: std::cell::Cell::new(true),
         rt_marker: std::marker::PhantomData,
     }
 }

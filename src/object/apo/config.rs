@@ -5,8 +5,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use windows::core::Result;
+
 use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
+use crate::config::watcher::ConfigWatcher;
 use crate::pipeline::chain::Chain;
 use crate::pipeline::dsp::factory::FilterRegistry;
 use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
@@ -15,6 +18,7 @@ use crate::sys::com::apo_types::{
 };
 use crate::sys::com::prelude::{GUID, guid_to_string};
 
+use super::ApoObject_Impl;
 use super::inner::{ApoObjectInner, build_dsp_context};
 
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
@@ -117,6 +121,108 @@ pub(crate) struct WatcherState {
 impl Default for WatcherState {
     fn default() -> Self {
         Self { thread: None, shutdown_event: None }
+    }
+}
+
+/// 启动配置监控线程（object 7.1.9，v7.10 外部驱动模型）。
+///
+/// 流程：CreateEventW(shutdown_event) → ConfigWatcher::new(watch_dir, shutdown_event)
+/// → spawn 线程循环 `wait_and_handle` → `hot_reload_impl`（DirectoryChanged → 重载）。
+/// 失败降级（watcher 未启动，仅日志）——不阻塞锁定（配置热重载失效但音频链路正常）。
+///
+/// `#[implement]` 只暴露 `&self`（gen.rs：不向安全代码暴露所有权实例）——因此用
+/// `Arc<Mutex<WatcherState>>` 内部可变性（用户方案 A）；spawn 线程 clone `config_path`/
+/// `mutex` 的 Arc 移入（'static），线程内调 `hot_reload_impl`（无需持有 apo）。
+pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{CreateEventW, SetEvent};
+
+    // 幂等：已有 watcher 线程则不重复。
+    let mut st = apo.watcher_state.lock().unwrap();
+    if st.thread.is_some() {
+        return Ok(());
+    }
+
+    // 1. 创建退出事件（manual-reset，初始 non-signaled）。
+    // Safety: CreateEventW 无安全属性、无名字；返回句柄由 watcher_state 持有，stop_watcher 释放。
+    let shutdown_event = unsafe { CreateEventW(None, true, false, None)? };
+
+    // 2. 目录级监控器（不自启线程，v7.10）。watch_dir = config_path 父目录。
+    let config_path = apo.config_path.lock().unwrap().clone();
+    let watch_dir = std::path::Path::new(&config_path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::Path::new(&config_path).to_path_buf());
+    let mut watcher = ConfigWatcher::new(watch_dir, shutdown_event);
+    if watcher.notify_handle().is_invalid() {
+        // 目录不存在（FindFirstChangeNotificationW 失败）→ 释放事件，降级。
+        let _ = unsafe { SetEvent(shutdown_event) };
+        let _ = unsafe { CloseHandle(shutdown_event) };
+        log::warn!("start_watcher: watch dir unavailable — config hot-reload disabled");
+        return Ok(());
+    }
+
+    // 3. spawn 线程：wait_and_handle → hot_reload_impl；shutdown 事件置位 → 退出。
+    let cfg = apo.config_path.clone();
+    let inner = apo.mutex.clone();
+    let clsid = apo.clsid;
+    let obj_ptr = apo as *const _ as usize;
+    let handle = std::thread::spawn(move || loop {
+        if !watcher.wait_and_handle() {
+            break; // shutdown 或句柄失效。
+        }
+        // watcher 事件探针（debug 门控，验证目录变更是否到达线程）。
+        #[cfg(debug_assertions)]
+        {
+            let _ = std::fs::write(
+                r"C:\ProgramData\VxAPO\watcher_probe.txt",
+                format!(
+                    "dir change at {:?} clsid={clsid:?} obj=0x{obj_ptr:x} thread={:?}\n",
+                    std::time::SystemTime::now(),
+                    std::thread::current().id()
+                ),
+            );
+        }
+        // 目录级变更 → 热重载（spec 短路 + 128KB 闸门内部处理）。
+        hot_reload_impl(&cfg, &inner, clsid, obj_ptr);
+    });
+
+    // 4. 记录 watcher 运行时状态（&self 可写：Arc<Mutex> 内部可变性）。
+    //    watcher 已 move 进线程（循环消费）；线程退出时 watcher Drop 自动关闭
+    //    notify_handle（FindCloseChangeNotification）——stop 只需 SetEvent + join。
+    st.shutdown_event = Some(shutdown_event);
+    st.thread = Some(handle);
+    Ok(())
+}
+
+/// 停止配置监控线程（object 7.1.10，v7.10 外部驱动模型）。
+///
+/// 1. SetEvent(shutdown_event) → wait_and_handle 返回 false → 线程循环退出
+/// 2. join(watcher_thread) → 确保线程已退出（无泄漏）
+/// 3. watcher.shutdown() → FindCloseChangeNotification + CloseHandle
+/// 幂等：watcher 为 None（未启动/启动失败）时直接返回。
+pub(crate) fn stop_watcher(apo: &ApoObject_Impl) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::SetEvent;
+
+    let mut st = apo.watcher_state.lock().unwrap();
+
+    // 1. 置位退出事件（唤醒等待中的 wait_and_handle）。
+    if let Some(evt) = st.shutdown_event {
+        // Safety: 事件句柄由 start_watcher 创建且有效。
+        let _ = unsafe { SetEvent(evt) };
+    }
+
+    // 2. join 线程（确保已退出）。watcher 在线程内（move 消费），线程退出时
+    //    watcher Drop 已关闭 notify_handle（FindCloseChangeNotification）。
+    if let Some(handle) = st.thread.take() {
+        let _ = handle.join();
+    }
+
+    // 3. 释放事件句柄。
+    if let Some(evt) = st.shutdown_event.take() {
+        // Safety: 事件句柄由 start_watcher 创建且有效（此处唯一持有者，关闭后不再使用）。
+        let _ = unsafe { CloseHandle(evt) };
     }
 }
 

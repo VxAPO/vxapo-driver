@@ -34,6 +34,8 @@ pub struct DelayFilter {
     buf_mask: usize,
     /// 采样率（用于 ms ↔ samples 转换）。
     sample_rate: u32,
+    /// 本滤波器作用的平面通道槽位（`Channel:` 选择，空 = 顺序 0..N）。
+    channel_indices: Vec<usize>,
 }
 
 impl DelayFilter {
@@ -51,6 +53,7 @@ impl DelayFilter {
             buf_size: 0,
             buf_mask: 0,
             sample_rate: 0,
+            channel_indices: Vec::new(),
         }
     }
 
@@ -63,10 +66,17 @@ impl DelayFilter {
 impl Filter for DelayFilter {
     fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>> {
         self.sample_rate = sample_rate;
-        let num_channels = channel_names.len().max(1);
+        if self.channel_indices.is_empty() {
+            self.channel_indices = (0..channel_names.len()).collect();
+        }
+        let num_channels = self.channel_indices.len().max(1);
 
-        // 计算延迟采样数
-        let delay_abs = self.delay_ms.abs();
+        // P0 护栏：非有限 / 非法采样率 → 0 ms（直通），避免 NaN 传染。
+        let delay_abs = if self.delay_ms.is_finite() && sample_rate > 0 {
+            self.delay_ms.abs()
+        } else {
+            0.0
+        };
         self.delay_samples_f = delay_abs * sample_rate as f32 / 1000.0;
         self.delay_samples = self.delay_samples_f as usize;
         self.frac = self.delay_samples_f - self.delay_samples as f32;
@@ -84,25 +94,27 @@ impl Filter for DelayFilter {
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
-        let num_ch = self.buffer.len().min(samples.len());
         let delay = self.delay_samples;
         let frac = self.frac;
         let mask = self.buf_mask;
         let buf_size = self.buf_size;
 
         for f in 0..frame_count {
-            for ch in 0..num_ch {
+            for (k, &slot) in self.channel_indices.iter().enumerate() {
+                if slot >= samples.len() || k >= self.buffer.len() {
+                    continue;
+                }
                 // 写入当前采样到环形缓冲区
-                self.buffer[ch][self.write_pos] = samples[ch][f];
+                self.buffer[k][self.write_pos] = samples[slot][f];
 
                 // 读取延迟后的采样
                 let read_pos = (self.write_pos + buf_size - delay) & mask;
                 let read_pos_next = (read_pos + 1) & mask;
 
                 // 线性插值（亚采样精度）
-                let s0 = self.buffer[ch][read_pos];
-                let s1 = self.buffer[ch][read_pos_next];
-                samples[ch][f] = s0 + frac * (s1 - s0);
+                let s0 = self.buffer[k][read_pos];
+                let s1 = self.buffer[k][read_pos_next];
+                samples[slot][f] = s0 + frac * (s1 - s0);
             }
 
             self.write_pos = (self.write_pos + 1) & mask;
@@ -111,6 +123,10 @@ impl Filter for DelayFilter {
 
     fn latency(&self) -> u32 {
         self.delay_samples as u32
+    }
+
+    fn set_channel_indices(&mut self, indices: &[usize]) {
+        self.channel_indices = indices.to_vec();
     }
 }
 

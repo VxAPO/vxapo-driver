@@ -15,6 +15,7 @@
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::biquad::{BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
+use crate::pipeline::dsp::math::{PHON_MAX, PHON_MIN, clamp_gain_db};
 
 /// 等响曲线滤波器。
 #[derive(Debug)]
@@ -25,6 +26,10 @@ pub struct LoudnessFilter {
     reference_phon: f32,
     /// 各频段 biquad。
     biquads: Vec<BiquadFilter>,
+    /// 本滤波器作用的平面通道槽位（`Channel:` 选择，空 = 顺序 0..N）。
+    channel_indices: Vec<usize>,
+    /// 补偿开关（默认开；关 = 无补偿，直通）。
+    enabled: bool,
 }
 
 /// ISO 226 标准 1/3 倍频程中心频率。
@@ -45,13 +50,30 @@ impl LoudnessFilter {
             phon,
             reference_phon,
             biquads: Vec::new(),
+            channel_indices: Vec::new(),
+            enabled: true,
         }
+    }
+
+    /// 设置补偿开关（`Loudness: on|off` / APP 未来接口）。
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// 当前开关状态。
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
 impl Filter for LoudnessFilter {
     fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>> {
         self.biquads.clear();
+
+        // 开关关 → 无补偿（直通，不建任何 biquad）。
+        if !self.enabled {
+            return None;
+        }
 
         let diff = self.phon - self.reference_phon;
         if diff.abs() < 0.1 {
@@ -73,6 +95,7 @@ impl Filter for LoudnessFilter {
                     sample_rate,
                 );
                 let mut bq = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
+                bq.set_channel_indices(&self.channel_indices);
                 bq.initialize(sample_rate, channel_names);
                 self.biquads.push(bq);
             }
@@ -89,6 +112,10 @@ impl Filter for LoudnessFilter {
 
     fn latency(&self) -> u32 {
         0
+    }
+
+    fn set_channel_indices(&mut self, indices: &[usize]) {
+        self.channel_indices = indices.to_vec();
     }
 }
 
@@ -113,7 +140,7 @@ fn iso_226_approx(freq: f32, phon_diff: f32) -> f32 {
         0.05
     };
 
-    phon_diff * freq_factor
+    clamp_gain_db(phon_diff * freq_factor)
 }
 
 /// 解析 `LoudnessCorrection:` 参数。
@@ -127,12 +154,18 @@ pub fn parse_loudness_params(params: &str) -> Option<(f32, f32)> {
 
     let phon = parts[0].parse::<f32>().ok()?;
     let reference = if parts.len() >= 2 {
-        parts[1].parse::<f32>().unwrap_or(80.0)
+        parts[1].parse::<f32>().ok()?
     } else {
         80.0
     };
+    if !phon.is_finite() || !reference.is_finite() {
+        return None;
+    }
 
-    Some((phon, reference))
+    Some((
+        phon.clamp(PHON_MIN, PHON_MAX),
+        reference.clamp(PHON_MIN, PHON_MAX),
+    ))
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -211,5 +244,26 @@ mod tests {
     fn latency_zero() {
         let filter = LoudnessFilter::new(40.0, 80.0);
         assert_eq!(filter.latency(), 0);
+    }
+
+    #[test]
+    fn enabled_by_default() {
+        let filter = LoudnessFilter::new(40.0, 80.0);
+        assert!(filter.enabled());
+    }
+
+    #[test]
+    fn disabled_switch_is_passthrough() {
+        let mut filter = LoudnessFilter::new(40.0, 80.0);
+        filter.set_enabled(false);
+        assert!(!filter.enabled());
+        filter.initialize(48000, &stereo_names());
+
+        // 关 → 无 biquad、逐位直通。
+        assert!(filter.biquads.is_empty());
+        let mut samples = vec![vec![1.0, 2.0, 3.0], vec![0.5, 1.0, 1.5]];
+        let input = samples.clone();
+        filter.process(&mut samples, 3);
+        assert_eq!(samples, input);
     }
 }

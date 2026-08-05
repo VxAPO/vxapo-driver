@@ -32,8 +32,17 @@ impl Chain {
     /// 预计算系数/分配状态；不调用会变成空处理（声音不变）。
     /// `Channel:` 类滤波器可能返回新的通道名列表，后续滤波器按更新后的名字初始化。
     pub fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) {
-        let mut names = channel_names.to_vec();
+        // 通道选择语义：`Channel:` 可能把作用域缩到任意子集（如只选 R）。
+        // 这里按当前选中名字计算它们在原始平面缓冲中的槽位号，下发给每个滤波器，
+        // 避免滤波器按“前 N 个槽位”误处理（如 `Channel: R` 处理成 L）。
+        let base_names = channel_names.to_vec();
+        let mut names = base_names.clone();
         for filter in self.filters.iter_mut() {
+            let indices: Vec<usize> = names
+                .iter()
+                .filter_map(|name| base_names.iter().position(|base| base == name))
+                .collect();
+            filter.set_channel_indices(&indices);
             if let Some(next) = filter.initialize(sample_rate, &names) {
                 names = next;
             }
@@ -111,6 +120,28 @@ mod tests {
         initialized: bool,
     }
 
+    /// 模拟 `Channel:` 选择的测试滤波器（不处理采样，只改作用域）。
+    #[derive(Debug)]
+    struct TestSelectFilter {
+        channels: Vec<String>,
+    }
+
+    impl Filter for TestSelectFilter {
+        fn process(&mut self, _samples: &mut [Vec<f32>], _frame_count: usize) {}
+
+        fn initialize(
+            &mut self,
+            _sample_rate: u32,
+            _channel_names: &[String],
+        ) -> Option<Vec<String>> {
+            Some(self.channels.clone())
+        }
+
+        fn is_channel_select(&self) -> bool {
+            true
+        }
+    }
+
     impl Filter for InitTrackingFilter {
         fn process(&mut self, _samples: &mut [Vec<f32>], _frame_count: usize) {
             assert!(self.initialized, "filter process called before initialize");
@@ -167,6 +198,38 @@ mod tests {
         c.process(&mut samples, 3).unwrap();
         // 2.0 × 0.5 = 1.0
         assert_eq!(samples[0], vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn channel_selection_applies_to_selected_slot_only() {
+        use crate::pipeline::dsp::gain::{GainFilter, db_to_linear};
+
+        let mut chain = Chain::new();
+        chain
+            .add_filter(Box::new(TestSelectFilter {
+                channels: vec!["R".into()],
+            }))
+            .unwrap();
+        let mut gain = GainFilter::new(0.0);
+        gain.set_gain_db(6.0);
+        chain.add_filter(Box::new(gain)).unwrap();
+
+        chain.initialize(48000, &["L".into(), "R".into()]);
+
+        let mut samples = vec![vec![1.0f32; 200], vec![1.0f32; 200]];
+        chain.process(&mut samples, 200).unwrap();
+
+        // 平滑 128 步后到达 +6 dB；L（槽位 0）必须保持原样。
+        assert!(
+            (samples[0][199] - 1.0).abs() < 1e-6,
+            "L 不应被增益，got {}",
+            samples[0][199]
+        );
+        assert!(
+            (samples[1][199] - db_to_linear(6.0)).abs() < 0.01,
+            "R 应被 +6 dB，got {}",
+            samples[1][199]
+        );
     }
 
     #[test]

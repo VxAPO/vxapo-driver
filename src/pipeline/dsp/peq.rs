@@ -20,6 +20,8 @@ pub struct PeakingFilter {
     fc: f32,
     gain_db: f32,
     q: f32,
+    /// 本滤波器作用的平面通道槽位（`Channel:` 选择，空 = 顺序 0..N）。
+    channel_indices: Vec<usize>,
 }
 
 impl PeakingFilter {
@@ -37,6 +39,7 @@ impl PeakingFilter {
             fc,
             gain_db,
             q,
+            channel_indices: Vec::new(),
         }
     }
 }
@@ -45,6 +48,7 @@ impl Filter for PeakingFilter {
     fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>> {
         let coeffs = compute_coeffs(BiquadType::Peaking, self.fc, self.gain_db, self.q, sample_rate);
         self.inner.set_coeffs(coeffs);
+        self.inner.set_channel_indices(&self.channel_indices);
         self.inner.initialize(sample_rate, channel_names)
     }
 
@@ -54,6 +58,10 @@ impl Filter for PeakingFilter {
 
     fn latency(&self) -> u32 {
         0
+    }
+
+    fn set_channel_indices(&mut self, indices: &[usize]) {
+        self.channel_indices = indices.to_vec();
     }
 }
 
