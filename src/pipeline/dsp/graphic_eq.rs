@@ -23,12 +23,11 @@ use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{MAX_GRAPHIC_EQ_BANDS, clamp_gain_db, db_to_linear, warn_rate_limited};
 
 /// 生成的 FIR 长度（EqualizerAPO 用 16384）。
-/// v9.6 改回 512 点直接时域 FIR：
-/// - 分块 FFT（v9.5）在流停止时会把最后 ≤128 采样压在块缓冲里被引擎硬停丢弃，
-///   等于硬切尾音 → 切换设备时“嗡”声（空链无此问题，实测定位）；
-/// - 直接 FIR 无块缓冲：每个输入采样立即产生输出，停止时不丢尾音；
-/// - CPU 约分块 FFT 的 2 倍、旧 1024 点直接 FIR 的一半，单流仍可接受。
-const GRAPHIC_EQ_IR_LEN: usize = 512;
+/// v9.7 定为 1024 点直接时域 FIR + AVX2/FMA 向量化：
+/// - 1024 点保证 200Hz 以下低频段也有足够分辨率（≈46.9Hz bin @48k）；
+/// - 直接 FIR 无块缓冲：流停止时不丢尾音（分块 FFT 的“切换嗡声”问题不复现）；
+/// - 分段点积 + SIMD（8 路 FMA）后，1024 点 CPU 反而低于旧 512 点标量实现。
+const GRAPHIC_EQ_IR_LEN: usize = 1024;
 /// 频响幅值下限，避免 log(0)。
 const GRAPHIC_EQ_MIN_MAG: f32 = 1e-5;
 

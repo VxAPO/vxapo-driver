@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
@@ -85,14 +86,78 @@ impl std::fmt::Debug for ConvMode {
 /// 直接时域 FIR 状态。
 #[derive(Debug)]
 struct DirectConv {
-    /// 每通道 IR 系数（已应用增益）。
-    ir_data: Vec<Vec<f32>>,
+    /// 逆序 IR（`ir_rev[j] = ir[ir_len-1-j]`），与“旧→新”连续样本段点积（v9.7）。
+    ir_rev: Vec<f32>,
     /// 每通道延迟线（历史输入，2 的幂环形 buffer）。
     delay_lines: Vec<Vec<f32>>,
     /// 延迟线写头。
     write_positions: Vec<usize>,
     /// IR 长度（延迟 = ir_len - 1）。
     ir_len: usize,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 向量化 FIR（v9.7）
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// AVX2+FMA 可用标志（运行时探测一次，build_direct 初始化）。
+#[cfg(target_arch = "x86_64")]
+static USE_AVX2_FMA: AtomicBool = AtomicBool::new(false);
+
+/// 运行时探测 AVX2+FMA（非 RT，build_direct 调用；幂等）。
+#[cfg(target_arch = "x86_64")]
+fn init_fir_simd() {
+    if std::arch::is_x86_feature_detected!("avx2")
+        && std::arch::is_x86_feature_detected!("fma")
+    {
+        USE_AVX2_FMA.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 连续段点积 `Σ a[i]·b[i]`（等长）。AVX2+FMA 8 路 FMA；回退标量 mul_add
+/// （release 下编译器按 SSE2 自动向量化 4 路）。
+#[inline]
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if USE_AVX2_FMA.load(Ordering::Relaxed) {
+            // SAFETY: 标志仅在 CPU 探测通过后置位；dot_avx2_fma 带 target_feature。
+            return unsafe { dot_avx2_fma(a, b) };
+        }
+    }
+    let mut acc = 0.0f32;
+    for (&x, &y) in a.iter().zip(b) {
+        acc = x.mul_add(y, acc);
+    }
+    acc
+}
+
+/// AVX2 + FMA 点积（8 路 FMA + SSE2 水平求和 + 标量尾）。
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn dot_avx2_fma(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut acc = _mm256_setzero_ps();
+    let mut i = 0;
+    while i + 8 <= n {
+        let va = _mm256_loadu_ps(a.as_ptr().add(i));
+        let vb = _mm256_loadu_ps(b.as_ptr().add(i));
+        acc = _mm256_fmadd_ps(va, vb, acc);
+        i += 8;
+    }
+    // SSE2 水平求和（不依赖 SSE3 hadd）。
+    let lo = _mm256_castps256_ps128(acc);
+    let hi = _mm256_extractf128_ps(acc, 1);
+    let s0 = _mm_add_ps(lo, hi);
+    let s1 = _mm_add_ps(s0, _mm_movehl_ps(s0, s0));
+    let s2 = _mm_add_ss(s1, _mm_shuffle_ps(s1, s1, 0b0000_0001));
+    let mut s = _mm_cvtss_f32(s2);
+    while i < n {
+        s = a.get_unchecked(i).mul_add(*b.get_unchecked(i), s);
+        i += 1;
+    }
+    s
 }
 
 /// 分块 FFT overlap-add 状态（uniform partitioned convolution）。
@@ -278,10 +343,11 @@ impl Filter for ConvolutionFilter {
             ConvMode::Direct(direct) => {
                 for k in 0..num_ch {
                     let slot = self.channel_indices[k];
-                    if slot >= samples.len() || k >= direct.ir_data.len() {
+                    if slot >= samples.len() || k >= direct.delay_lines.len() {
                         continue;
                     }
-                    let ir = &direct.ir_data[k];
+                    let ir_rev = &direct.ir_rev;
+                    let ir_len = direct.ir_len;
                     let delay_len = direct.delay_lines[k].len();
                     let mask = delay_len - 1;
                     let pos = &mut direct.write_positions[k];
@@ -289,17 +355,24 @@ impl Filter for ConvolutionFilter {
 
                     for frame in 0..frame_count {
                         let input = samples[slot][frame];
-                        // 写入当前输入到延迟线。
                         delay[*pos] = input;
                         *pos = (*pos + 1) & mask;
 
-                        // 直接 FIR：从最新样本（pos-1）回读 IR 长度。
-                        let mut acc = 0.0f32;
-                        let mut read = (*pos).wrapping_sub(1) & mask;
-                        for &coef in ir.iter() {
-                            acc = coef.mul_add(delay[read], acc);
-                            read = read.wrapping_sub(1) & mask;
-                        }
+                        // 直接 FIR（v9.7 分段点积 + SIMD）：样本按“旧→新”
+                        // 切成最多两段连续切片，与逆序系数点积——编译器可向量化，
+                        // 避免逐系数环形回读的标量路径。
+                        let start = (*pos).wrapping_sub(1) & mask; // 最新样本索引
+                        let oldest = (*pos + delay_len - ir_len) & mask; // 最旧样本索引
+                        let acc = if oldest <= start {
+                            // 无回绕：一段连续切片。
+                            dot(ir_rev, &delay[oldest..=start])
+                        } else {
+                            // 回绕：旧段 [oldest..len] + 新段 [0..=start]。
+                            let len_old = delay_len - oldest;
+                            let len_new = start + 1;
+                            dot(&ir_rev[..len_old], &delay[oldest..])
+                                + dot(&ir_rev[len_old..], &delay[0..=start])
+                        };
                         samples[slot][frame] = acc;
                     }
                 }
@@ -399,9 +472,11 @@ impl Filter for ConvolutionFilter {
 
 /// 构建直接时域 FIR 状态。
 fn build_direct(ir: &[f32], channels: usize) -> DirectConv {
+    #[cfg(target_arch = "x86_64")]
+    init_fir_simd();
     let delay_len = ir.len().next_power_of_two();
     DirectConv {
-        ir_data: vec![ir.to_vec(); channels],
+        ir_rev: ir.iter().rev().copied().collect(),
         delay_lines: vec![vec![0.0; delay_len]; channels],
         write_positions: vec![0; channels],
         ir_len: ir.len(),
@@ -985,5 +1060,45 @@ mod tests {
     fn latency_zero_when_unloaded() {
         let filter = ConvolutionFilter::new("ir.wav", 0.0);
         assert_eq!(filter.latency(), 0);
+    }
+
+    #[test]
+    fn dot_matches_naive_sum() {
+        // v9.7：分段点积（AVX2/标量两路径共用同一断言）。
+        let a: Vec<f32> = (0..1000)
+            .map(|i| ((i as f32 * 0.7).sin() * 0.5) as f32)
+            .collect();
+        let b: Vec<f32> = (0..1000)
+            .map(|i| ((i as f32 * 0.3).cos() * 0.25) as f32)
+            .collect();
+        let naive: f32 = a.iter().zip(&b).map(|(&x, &y)| x * y).sum();
+        let got = dot(&a, &b);
+        assert!((got - naive).abs() < 1e-3, "dot mismatch {got} vs {naive}");
+    }
+
+    #[test]
+    fn direct_fir_segmented_matches_naive_convolution() {
+        // v9.7：IR 长度 4（延迟线补到 4）→ 强制回绕分支；与朴素卷积逐点比对。
+        let ir: Vec<f32> = vec![0.5, -0.25, 1.0, 0.125];
+        let x: Vec<f32> = vec![0.3, -0.7, 1.2, 0.9, -0.4, 0.6, 0.1, -1.0, 0.55];
+        let naive: Vec<f32> = (0..x.len())
+            .map(|n| {
+                (0..ir.len())
+                    .map(|i| if n >= i { ir[i] * x[n - i] } else { 0.0 })
+                    .sum::<f32>()
+            })
+            .collect();
+        let mut filter = ConvolutionFilter::with_ir_direct(ir, 0.0);
+        filter.initialize(48000, &["M".to_owned()]);
+        let mut samples = vec![x.clone()];
+        filter.process(&mut samples, x.len());
+        for n in 0..x.len() {
+            assert!(
+                (samples[0][n] - naive[n]).abs() < 1e-4,
+                "n={n} got={} want={}",
+                samples[0][n],
+                naive[n]
+            );
+        }
     }
 }

@@ -352,15 +352,10 @@ pub(crate) fn lock_for_process(
         // v7.9：active_spec 建立基线（当前生效链的配置指纹）。
         // 此后 hot_reload 与此基线比较决定是否真正切换。
         inner.active_spec = spec_chain;
-        // v9.6：流启动静音（PreMix + PostMix 都应用）。实测确认：切换设备嗡声
-        // 来自分块 FFT 块缓冲丢尾音，已改回 512 点直接 FIR；此处静音只负责
-        // 掩盖切回 M16+ 开头引擎加载的轻微断续（用户定稿：100ms）。
-        let sr = format.sample_rate.max(1) as usize;
-        inner.startup_fade_total = sr
-            * (super::inner::STARTUP_FADE_HOLD_MS + super::inner::STARTUP_FADE_RAMP_MS)
-                as usize
-            / 1000;
-        inner.startup_fade_remaining = inner.startup_fade_total;
+        // v9.7：启动静音停用（用户实测：切回开头轻微断续是 Windows 自带行为，
+        // 不需要静音）。保留字段与机制，置 0 即直通。
+        inner.startup_fade_total = 0;
+        inner.startup_fade_remaining = 0;
     }
     apo.latency_samples.store(0, Ordering::SeqCst);
     apo.latency_frames_atomic.store(0, Ordering::SeqCst);
