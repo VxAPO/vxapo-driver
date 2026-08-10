@@ -2,9 +2,9 @@
 //!
 //! 移植自 FxSound（AGPL-3.0-or-later）：
 //! - `Auralp.c` → Aural Enhancer
-//! - `Lex16.c` → Lexicon 风格 Reverb
 //! - `Maxi16.c` → Maximizer
 //! - `Wide32.c` → Wide（立体声加宽 / Surround）
+//! - Reverb → Dattorro 板式混响（v9.3 起按论文独立实现，不再来自 FxSound）
 //!
 //! 每个模块提供：
 //! - 参数结构体与 EAPO 风格 `Key Value` 解析；
