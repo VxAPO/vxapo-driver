@@ -401,9 +401,13 @@ pub(crate) fn parse_lines_impl(
                             });
                         }
 
-                        // 已知命令 → try_create(value)。裸命令已由 split_command_value
-                        // 冒号检查拒绝（value 恒为参数体）。
-                        let outcome = ctx.registry.try_create(value, ctx.dsp_ctx, &NullConfigLoader);
+                        // 已知命令 → 按命令名精确分派（v9.1）。裸命令已由
+                        // split_command_value 冒号检查拒绝（value 恒为参数体）。
+                        // 精确分派避免 Convolution 等宽容工厂吞掉
+                        // 已知命令的非法参数（v7.12「命令无效」契约）。
+                        let outcome = ctx
+                            .registry
+                            .try_create_named(&cmd, value, ctx.dsp_ctx, &NullConfigLoader);
                         match outcome.result {
                             OutcomeKind::FilterAdded(f) => {
                                 ctx.filters.push(f);
@@ -702,6 +706,45 @@ Channel: *
         let (_f, s1) = parse_str_spec("Preamp: -6.0 dB\n", &test_ctx());
         let (_f, s2) = parse_str_spec("Preamp: -7.5 dB\n", &test_ctx());
         assert_ne!(s1, s2);
+    }
+
+    // ── v9.1 FxSound 效果器命令（AuralEnhancer/Reverb/Maximizer） ────────
+
+    #[test]
+    fn fxsound_commands_parse_and_produce_filters() {
+        let content = "\
+AuralEnhancer: TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0
+Reverb: RoomSize 1.0 Decay 0.566 Damping 0.408 Bandwidth 0.350 PreDelay 0 ms MotionRate 0.11 MotionDepth 0.63 ms Wet 0.3 Dry 0.9
+Maximizer: GainBoost 6 dB MaxOutput -0.3 dB Release 100 ms Target 0.32 Lookahead 0.75 ms Dither Shaped
+";
+        let (filters, specs) = parse_str_spec(content, &test_ctx());
+        assert_eq!(filters.len(), 3);
+        assert_eq!(specs.len(), 3);
+        assert!(specs[0].starts_with("auralenhancer"));
+        assert!(specs[1].starts_with("reverb"));
+        assert!(specs[2].starts_with("maximizer"));
+    }
+
+    #[test]
+    fn fxsound_spec_changes_with_params() {
+        let (_f, s1) = parse_str_spec("AuralEnhancer: Drive 1.0\n", &test_ctx());
+        let (_f, s2) = parse_str_spec("AuralEnhancer: Drive 2.0\n", &test_ctx());
+        assert_ne!(s1, s2);
+        let (_f, s3) = parse_str_spec("Reverb: RoomSize 0.8\n", &test_ctx());
+        let (_f, s4) = parse_str_spec("Reverb: RoomSize 1.2\n", &test_ctx());
+        assert_ne!(s3, s4);
+        let (_f, s5) = parse_str_spec("Maximizer: GainBoost 3 dB\n", &test_ctx());
+        let (_f, s6) = parse_str_spec("Maximizer: GainBoost 9 dB\n", &test_ctx());
+        assert_ne!(s5, s6);
+    }
+
+    #[test]
+    fn fxsound_invalid_params_reject() {
+        // 已知命令但参数非法 → SyntaxError（不是静默跳过）。
+        let err = parse_str_spec_result("AuralEnhancer: Bogus 1\n", &test_ctx()).unwrap_err();
+        assert!(matches!(err, ConfigError::SyntaxError { .. }));
+        let err = parse_str_spec_result("Maximizer: Dither Pink\n", &test_ctx()).unwrap_err();
+        assert!(matches!(err, ConfigError::SyntaxError { .. }));
     }
 
     // ── v7.9 三类 config 复杂度覆盖（用户反馈） ──────────────────────────

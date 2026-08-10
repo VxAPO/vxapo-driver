@@ -10,8 +10,8 @@
 //! # 为何预留
 //!
 //! 项目评估当前不需要 VST 插件加载。保留 `VSTPlugin` 工厂槽位与
-//! `index::VST_PLUGIN` 常量（`FACTORY_COUNT = 15` 不变），
-//! 未来需要时无需调整注册表/索引结构，只需：
+//! `index::VST_PLUGIN` 常量（v9.1 起 `FACTORY_COUNT = 18`，
+//! VST 槽位固定为 13），未来需要时无需调整注册表/索引结构，只需：
 //!
 //! 1. 在本模块实现 `VstFilter`（实现 `Filter` trait）
 //! 2. 在 `factory.rs` 的 `VstFactory::create_filter` 恢复参数解析并创建

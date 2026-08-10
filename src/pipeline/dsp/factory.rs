@@ -16,6 +16,9 @@ use crate::pipeline::dsp::delay::DelayFilter;
 use crate::pipeline::dsp::filter::{
     ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory,
 };
+use crate::pipeline::dsp::fxsound::aural::AuralEnhancerFactory;
+use crate::pipeline::dsp::fxsound::maximizer::MaximizerFactory;
+use crate::pipeline::dsp::fxsound::reverb::ReverbFactory;
 use crate::pipeline::dsp::graphic_eq::{parse_graphic_eq_params, GraphicEqFilter};
 use crate::pipeline::dsp::hp_lp::HighLowPassFilter;
 use crate::pipeline::dsp::loudness::{parse_loudness_params, LoudnessFilter};
@@ -112,6 +115,56 @@ impl FilterRegistry {
             factory_name: None,
         }
     }
+
+    /// 按命令名精确分派（v9.1）。
+    ///
+    /// 只尝试 `command_name()` 与给定命令（不区分大小写）一致的工厂；
+    /// 无工厂命中时返回 `Unmatched`。用于 parser 默认分支，避免宽容工厂
+    /// （如 `Convolution:`）把已知命令的非法参数当作自己的参数吞掉。
+    pub fn try_create_named(
+        &self,
+        command: &str,
+        params: &str,
+        ctx: &DspContext,
+        loader: &dyn ConfigLoader,
+    ) -> TryCreateOutcome {
+        for (index, factory) in self.factories.iter().enumerate() {
+            if !factory.command_name().eq_ignore_ascii_case(command) {
+                continue;
+            }
+            match factory.create_filter(params, ctx, loader) {
+                FilterCreateResult::Filter(f) => {
+                    return TryCreateOutcome {
+                        result: OutcomeKind::FilterAdded(f),
+                        factory_index: Some(index),
+                        factory_name: Some(factory.command_name().to_owned()),
+                    };
+                }
+                FilterCreateResult::NoFilter => {
+                    return TryCreateOutcome {
+                        result: OutcomeKind::MatchedNoFilter,
+                        factory_index: Some(index),
+                        factory_name: Some(factory.command_name().to_owned()),
+                    };
+                }
+                FilterCreateResult::AbortFile => {
+                    return TryCreateOutcome {
+                        result: OutcomeKind::Aborted,
+                        factory_index: Some(index),
+                        factory_name: Some(factory.command_name().to_owned()),
+                    };
+                }
+                FilterCreateResult::NoMatch => {
+                    // 该命令自己的工厂不匹配 → 继续（同名工厂可能多个）。
+                }
+            }
+        }
+        TryCreateOutcome {
+            result: OutcomeKind::Unmatched,
+            factory_index: None,
+            factory_name: Some(command.to_owned()),
+        }
+    }
 }
 
 impl Default for FilterRegistry {
@@ -145,8 +198,8 @@ pub enum OutcomeKind {
 // 工厂索引常量（v6.3 规范 4.10）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 内置工厂总数（15）。
-pub const FACTORY_COUNT: usize = 15;
+/// 内置工厂总数（18，v9.1 新增 AuralEnhancer/Reverb/Maximizer）。
+pub const FACTORY_COUNT: usize = 18;
 
 /// 工厂索引常量表。
 pub mod index {
@@ -165,6 +218,9 @@ pub mod index {
     pub const GRAPHIC_EQ: usize = 12;
     pub const VST_PLUGIN: usize = 13;
     pub const LOUDNESS_CORRECTION: usize = 14;
+    pub const AURAL_ENHANCER: usize = 15;
+    pub const REVERB: usize = 16;
+    pub const MAXIMIZER: usize = 17;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -568,7 +624,8 @@ impl FilterFactory for LoudnessFactory {
 /// 注册所有内置 Filter 工厂到 FilterRegistry（v6.3 规范 4.10）。
 ///
 /// 注册顺序与 `index` 常量保持一致（优先级从高到低）：
-/// IIR → BIQUAD → PREAMP → DELAY → COPY → CONVOLUTION → GRAPHIC_EQ → VST_PLUGIN → LOUDNESS_CORRECTION
+/// IIR → BIQUAD → PREAMP → DELAY → COPY → CONVOLUTION → GRAPHIC_EQ → VST_PLUGIN
+/// → LOUDNESS_CORRECTION → AURAL_ENHANCER → REVERB → MAXIMIZER
 pub fn register_builtin_filters(registry: &mut FilterRegistry) {
     registry.register(Box::new(IirFactory));
     registry.register(Box::new(BiquadFactory));
@@ -579,6 +636,9 @@ pub fn register_builtin_filters(registry: &mut FilterRegistry) {
     registry.register(Box::new(GraphicEqFactory));
     registry.register(Box::new(VstFactory));
     registry.register(Box::new(LoudnessFactory));
+    registry.register(Box::new(AuralEnhancerFactory));
+    registry.register(Box::new(ReverbFactory));
+    registry.register(Box::new(MaximizerFactory));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -787,6 +847,65 @@ mod tests {
         assert!(matches!(result, FilterCreateResult::NoMatch));
     }
 
+    // ── FxSound 工厂（v9.1） ───────────────────────────────────────────────
+
+    #[test]
+    fn aural_factory_parses_params() {
+        let factory = AuralEnhancerFactory;
+        let result = factory.create_filter(
+            "TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(result, FilterCreateResult::Filter(_)));
+        assert_eq!(factory.command_name(), "AuralEnhancer");
+    }
+
+    #[test]
+    fn aural_factory_invalid_no_match() {
+        let factory = AuralEnhancerFactory;
+        let result = factory.create_filter("", &test_ctx(), &NullLoader);
+        assert!(matches!(result, FilterCreateResult::NoMatch));
+    }
+
+    #[test]
+    fn reverb_factory_parses_params() {
+        let factory = ReverbFactory;
+        let result = factory.create_filter(
+            "RoomSize 1.2 Decay 0.5 Damping 0.4 Bandwidth 0.3 PreDelay 20 ms Wet 0.4 Dry 0.8",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(result, FilterCreateResult::Filter(_)));
+        assert_eq!(factory.command_name(), "Reverb");
+    }
+
+    #[test]
+    fn reverb_factory_invalid_no_match() {
+        let factory = ReverbFactory;
+        let result = factory.create_filter("", &test_ctx(), &NullLoader);
+        assert!(matches!(result, FilterCreateResult::NoMatch));
+    }
+
+    #[test]
+    fn maximizer_factory_parses_params() {
+        let factory = MaximizerFactory;
+        let result = factory.create_filter(
+            "GainBoost 6 dB MaxOutput -0.3 dB Release 100 ms Target 0.32 Lookahead 0.75 ms Dither Shaped",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(result, FilterCreateResult::Filter(_)));
+        assert_eq!(factory.command_name(), "Maximizer");
+    }
+
+    #[test]
+    fn maximizer_factory_invalid_no_match() {
+        let factory = MaximizerFactory;
+        let result = factory.create_filter("Bogus 1", &test_ctx(), &NullLoader);
+        assert!(matches!(result, FilterCreateResult::NoMatch));
+    }
+
     // ── Preamp / Copy 工厂 ──────────────────────────────────────────────────
 
     #[test]
@@ -833,7 +952,10 @@ mod tests {
         assert!(names.contains(&"GraphicEQ"));
         assert!(names.contains(&"VSTPlugin"));
         assert!(names.contains(&"LoudnessCorrection"));
-        assert_eq!(registry.len(), 9);
+        assert!(names.contains(&"AuralEnhancer"));
+        assert!(names.contains(&"Reverb"));
+        assert!(names.contains(&"Maximizer"));
+        assert_eq!(registry.len(), 12);
     }
 
     #[test]
@@ -842,7 +964,7 @@ mod tests {
         register_builtin_filters(&mut registry);
         let names = registry.factory_names();
 
-        // 与 index 常量顺序一致：IIR → BIQUAD → PREAMP → DELAY → COPY → CONVOLUTION → GRAPHIC_EQ → VST_PLUGIN → LOUDNESS_CORRECTION
+        // 与 index 常量顺序一致：IIR → ... → LOUDNESS_CORRECTION → AURAL_ENHANCER → REVERB → MAXIMIZER
         let expected = [
             index::IIR,
             index::BIQUAD,
@@ -853,6 +975,9 @@ mod tests {
             index::GRAPHIC_EQ,
             index::VST_PLUGIN,
             index::LOUDNESS_CORRECTION,
+            index::AURAL_ENHANCER,
+            index::REVERB,
+            index::MAXIMIZER,
         ];
 
         for (i, &idx) in expected.iter().enumerate() {
@@ -876,6 +1001,9 @@ mod tests {
             index::GRAPHIC_EQ => "GraphicEQ",
             index::VST_PLUGIN => "VSTPlugin",
             index::LOUDNESS_CORRECTION => "LoudnessCorrection",
+            index::AURAL_ENHANCER => "AuralEnhancer",
+            index::REVERB => "Reverb",
+            index::MAXIMIZER => "Maximizer",
             _ => "<unregistered>",
         }
     }
@@ -945,6 +1073,40 @@ mod tests {
     }
 
     #[test]
+    fn try_create_named_dispatches_exact_command() {
+        let mut registry = FilterRegistry::new();
+        register_builtin_filters(&mut registry);
+
+        // 同名工厂才被尝试。
+        let outcome = registry.try_create_named(
+            "AuralEnhancer",
+            "Drive 1.77",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+        assert_eq!(outcome.factory_name.as_deref(), Some("AuralEnhancer"));
+
+        // 非法参数不会落给 Convolution（宽容解析）→ Unmatched。
+        let outcome = registry.try_create_named(
+            "AuralEnhancer",
+            "Bogus 1",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(outcome.result, OutcomeKind::Unmatched));
+
+        // 大小写不敏感。
+        let outcome = registry.try_create_named(
+            "maximizer",
+            "GainBoost 6 dB",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+    }
+
+    #[test]
     fn index_constants_order() {
         assert!(index::DEVICE < index::IF);
         assert!(index::IF < index::EVAL);
@@ -960,6 +1122,9 @@ mod tests {
         assert!(index::CONVOLUTION < index::GRAPHIC_EQ);
         assert!(index::GRAPHIC_EQ < index::VST_PLUGIN);
         assert!(index::VST_PLUGIN < index::LOUDNESS_CORRECTION);
-        assert!(index::LOUDNESS_CORRECTION + 1 == FACTORY_COUNT);
+        assert!(index::LOUDNESS_CORRECTION < index::AURAL_ENHANCER);
+        assert!(index::AURAL_ENHANCER < index::REVERB);
+        assert!(index::REVERB < index::MAXIMIZER);
+        assert!(index::MAXIMIZER + 1 == FACTORY_COUNT);
     }
 }

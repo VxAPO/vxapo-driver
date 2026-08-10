@@ -11,6 +11,7 @@ pub mod copy;
 pub mod delay;
 pub mod factory;
 pub mod filter;
+pub mod fxsound;
 pub mod gain;
 pub mod graphic_eq;
 pub mod hp_lp;
