@@ -721,7 +721,7 @@ impl FilterFactory for ReverbFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::fxsound::{test_ctx, test_loader};
+    use crate::pipeline::dsp::{test_ctx, test_loader};
 
     #[test]
     fn parse_valid() {

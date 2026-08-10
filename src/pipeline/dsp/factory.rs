@@ -16,10 +16,10 @@ use crate::pipeline::dsp::delay::DelayFilter;
 use crate::pipeline::dsp::filter::{
     ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory,
 };
-use crate::pipeline::dsp::fxsound::aural::AuralEnhancerFactory;
-use crate::pipeline::dsp::fxsound::maximizer::MaximizerFactory;
-use crate::pipeline::dsp::fxsound::reverb::ReverbFactory;
-use crate::pipeline::dsp::fxsound::wide::WideFactory;
+use crate::pipeline::dsp::aural::AuralEnhancerFactory;
+use crate::pipeline::dsp::maximizer::MaximizerFactory;
+use crate::pipeline::dsp::reverb::ReverbFactory;
+use crate::pipeline::dsp::wide::WideFactory;
 use crate::pipeline::dsp::graphic_eq::{parse_graphic_eq_params, GraphicEqFilter};
 use crate::pipeline::dsp::hp_lp::HighLowPassFilter;
 use crate::pipeline::dsp::loudness::{parse_loudness_params, LoudnessFilter};

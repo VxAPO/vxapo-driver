@@ -462,7 +462,7 @@ impl FilterFactory for MaximizerFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::fxsound::{test_ctx, test_loader};
+    use crate::pipeline::dsp::{test_ctx, test_loader};
 
     #[test]
     fn parse_defaults_and_overrides() {

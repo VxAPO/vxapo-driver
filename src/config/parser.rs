@@ -713,7 +713,7 @@ Channel: *
     // ── v9.1 FxSound 效果器命令（AuralEnhancer/Reverb/Maximizer） ────────
 
     #[test]
-    fn fxsound_commands_parse_and_produce_filters() {
+    fn effect_commands_parse_and_produce_filters() {
         let content = "\
 AuralEnhancer: TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0
 Reverb: RoomSize 1.0 Decay 0.566 Damping 0.408 Bandwidth 0.350 PreDelay 0 ms MotionRate 0.11 MotionDepth 0.63 ms Wet 0.3 Dry 0.9
@@ -730,7 +730,7 @@ Wide: Intensity 0.354331
     }
 
     #[test]
-    fn fxsound_spec_changes_with_params() {
+    fn effect_spec_changes_with_params() {
         let (_f, s1) = parse_str_spec("AuralEnhancer: Drive 1.0\n", &test_ctx());
         let (_f, s2) = parse_str_spec("AuralEnhancer: Drive 2.0\n", &test_ctx());
         assert_ne!(s1, s2);
@@ -743,7 +743,7 @@ Wide: Intensity 0.354331
     }
 
     #[test]
-    fn fxsound_invalid_params_reject() {
+    fn effect_invalid_params_reject() {
         // 已知命令但参数非法 → SyntaxError（不是静默跳过）。
         let err = parse_str_spec_result("AuralEnhancer: Bogus 1\n", &test_ctx()).unwrap_err();
         assert!(matches!(err, ConfigError::SyntaxError { .. }));
