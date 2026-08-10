@@ -13,17 +13,22 @@
 
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use once_cell::sync::Lazy;
 
 use crate::pipeline::dsp::convolution::ConvolutionFilter;
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{MAX_GRAPHIC_EQ_BANDS, clamp_gain_db, db_to_linear, warn_rate_limited};
 
 /// 生成的 FIR 长度（EqualizerAPO 用 16384）。
-/// 这里用 1024 点最小相位 FIR + 分块 FFT 卷积（块 128，v9.5）：
-/// - 频响与旧直接 FIR 完全一致，但单实例 CPU 约降 3~4 倍——多路音频流
-///   （每路一个 PreMix 实例）不再吃满 audiodg，声音设置页卡顿随之缓解；
-/// - 分块带来 128 采样隐藏延迟（≈2.7ms@48k），与既有策略一致不上报引擎。
-const GRAPHIC_EQ_IR_LEN: usize = 1024;
+/// v9.6 改回 512 点直接时域 FIR：
+/// - 分块 FFT（v9.5）在流停止时会把最后 ≤128 采样压在块缓冲里被引擎硬停丢弃，
+///   等于硬切尾音 → 切换设备时“嗡”声（空链无此问题，实测定位）；
+/// - 直接 FIR 无块缓冲：每个输入采样立即产生输出，停止时不丢尾音；
+/// - CPU 约分块 FFT 的 2 倍、旧 1024 点直接 FIR 的一半，单流仍可接受。
+const GRAPHIC_EQ_IR_LEN: usize = 512;
 /// 频响幅值下限，避免 log(0)。
 const GRAPHIC_EQ_MIN_MAG: f32 = 1e-5;
 
@@ -74,12 +79,15 @@ impl Filter for GraphicEqFilter {
             .iter()
             .any(|b| b.gain_db.abs() >= 0.05);
         let ir = if needs_filter {
-            build_graphic_eq_ir(&self.bands, sample_rate, GRAPHIC_EQ_IR_LEN)
+            // v9.6 IR 缓存：设置页/多流会在同一秒创建大量 APO 实例，每个 Lock
+            // 都重建 IR（FFT 计划 + cepstrum）会让音频服务控制线程明显停顿。
+            // IR 只依赖“排序后的频段 + 采样率”，进程内缓存后批量实例化近乎零成本。
+            graphic_eq_ir_cached(&self.bands, sample_rate)
         } else {
             Vec::new()
         };
 
-        let mut conv = ConvolutionFilter::with_ir(ir, 0.0);
+        let mut conv = ConvolutionFilter::with_ir_direct(ir, 0.0);
         conv.set_channel_indices(&self.channel_indices);
         conv.initialize(sample_rate, channel_names);
         self.conv = conv;
@@ -98,6 +106,29 @@ impl Filter for GraphicEqFilter {
         self.channel_indices = indices.to_vec();
         self.conv.set_channel_indices(indices);
     }
+}
+
+/// 按（频段指纹, 采样率）缓存生成的 FIR（v9.6，非 RT 路径）。
+fn graphic_eq_ir_cached(bands: &[EqBand], sample_rate: u32) -> Vec<f32> {
+    static CACHE: Lazy<Mutex<HashMap<(String, u32), Vec<f32>>>> =
+        Lazy::new(|| Mutex::new(HashMap::new()));
+
+    let mut sorted = bands.to_vec();
+    sorted.sort_by(|a, b| a.frequency.total_cmp(&b.frequency));
+    let mut key = String::new();
+    for b in &sorted {
+        use std::fmt::Write as _;
+        let _ = write!(key, "{:.3}:{:.3};", b.frequency, b.gain_db);
+    }
+    let key = (key, sample_rate);
+
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ir) = cache.get(&key) {
+        return ir.clone();
+    }
+    let ir = build_graphic_eq_ir(&sorted, sample_rate, GRAPHIC_EQ_IR_LEN);
+    cache.insert(key, ir.clone());
+    ir
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -396,14 +427,11 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_partition_block_size() {
+    fn latency_is_direct_fir_length_minus_one() {
         let bands = vec![EqBand { frequency: 1000.0, gain_db: 3.0 }];
         let mut filter = GraphicEqFilter::new(bands);
         filter.initialize(48000, &stereo_names());
-        assert_eq!(
-            filter.latency(),
-            crate::pipeline::dsp::math::CONVOLUTION_PARTITION_SIZE as u32
-        );
+        assert_eq!(filter.latency(), (GRAPHIC_EQ_IR_LEN - 1) as u32);
     }
 
     #[test]

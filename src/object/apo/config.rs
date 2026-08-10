@@ -398,7 +398,7 @@ fn config_file_unchanged(config_path: &str) -> bool {
     };
     let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     let key = (modified, meta.len());
-    let mut map = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let map = LAST.lock().unwrap_or_else(|e| e.into_inner());
     map.get(config_path) == Some(&key)
 }
 

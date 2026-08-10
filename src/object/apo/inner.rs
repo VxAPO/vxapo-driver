@@ -25,7 +25,23 @@ pub struct ApoObjectInner {
     pub reloading: bool,
     /// 生效配置指纹（v7.9，P0-4 配置变更检测）——当前生效链的 filter_spec 有序序列。
     pub active_spec: Vec<String>,
+    /// 启动淡入总长度（采样，v9.6）：流建立初期引擎可能仍在加载目标 APO 链，
+    /// 直接播会产生“首秒断续慢速”。先静音保持再线性淡入，听感为“加载完再播”。
+    pub startup_fade_total: usize,
+    /// 启动淡入剩余采样数。
+    pub startup_fade_remaining: usize,
+    /// 最近几次 APOProcess 调用记录（v9.6 诊断，RT 固定数组零分配）：
+    /// `(秒, 输入帧数, 输入 flags, 输出峰值)`——Unlock 时随日志输出，
+    /// 用于确认“切换走时旧流停止前引擎是否送了最后一段真实音频（嗡声）”。
+    pub last_calls: [(u64, u32, u32, f32); 4],
+    /// `last_calls` 环形写索引（自增，取模即可）。
+    pub last_call_idx: u64,
 }
+
+/// 启动静音保持时长（ms，v9.6 用户决策：直接静音 100ms，不做淡入）。
+pub(crate) const STARTUP_FADE_HOLD_MS: u32 = 100;
+/// 启动淡入时长（ms）：0 = 无淡入，静音结束后直接恢复正常音量。
+pub(crate) const STARTUP_FADE_RAMP_MS: u32 = 0;
 
 impl ApoObjectInner {
     pub fn new() -> Self {
@@ -41,7 +57,71 @@ impl ApoObjectInner {
             pending_reload: false,
             reloading: false,
             active_spec: Vec::new(),
+            startup_fade_total: 0,
+            startup_fade_remaining: 0,
+            last_calls: [(0, 0, 0, 0.0); 4],
+            last_call_idx: 0,
         }
+    }
+
+    /// 对输出交织缓冲应用启动静音保持（默认 500ms，无淡入，RT 零分配，v9.6）。
+    pub(crate) fn apply_startup_fade(
+        &mut self,
+        out: &mut [f32],
+        frames: usize,
+        out_ch: usize,
+    ) {
+        let total = self.startup_fade_total;
+        if total == 0 || out_ch == 0 {
+            self.startup_fade_remaining = 0;
+            return;
+        }
+        let hold = total * STARTUP_FADE_HOLD_MS as usize
+            / (STARTUP_FADE_HOLD_MS + STARTUP_FADE_RAMP_MS) as usize;
+        let ramp = (total - hold).max(1);
+        let mut rem = self.startup_fade_remaining;
+        let usable = frames.min(out.len() / out_ch);
+        for f in 0..usable {
+            if rem == 0 {
+                break;
+            }
+            let elapsed = total - rem;
+            let factor = if elapsed < hold {
+                0.0
+            } else {
+                ((elapsed - hold) as f32 / ramp as f32).min(1.0)
+            };
+            for c in 0..out_ch {
+                out[f * out_ch + c] *= factor;
+            }
+            rem -= 1;
+        }
+        self.startup_fade_remaining = rem;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_silence_holds_then_recovers() {
+        let mut inner = ApoObjectInner::new();
+        // 500ms 保持 + 0 淡入。
+        let total = (STARTUP_FADE_HOLD_MS + STARTUP_FADE_RAMP_MS) as usize;
+        inner.startup_fade_total = total;
+        inner.startup_fade_remaining = total;
+        let mut out = vec![1.0f32; total * 2];
+        inner.apply_startup_fade(&mut out, total, 2);
+
+        // 保持段全静音；结束后计数器归零。
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[(total - 1) * 2], 0.0);
+        assert_eq!(inner.startup_fade_remaining, 0);
+        // 静音结束后（计数器归零）后续处理不再改动输出。
+        let mut out2 = vec![1.0f32; 4];
+        inner.apply_startup_fade(&mut out2, 2, 2);
+        assert_eq!(out2, vec![1.0f32; 4]);
     }
 }
 

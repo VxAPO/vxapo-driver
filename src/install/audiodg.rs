@@ -73,10 +73,20 @@ pub fn restore() -> Result<()> {
 ///
 /// 由 object/apo.rs LockForProcess 调用。
 pub fn ensure_can_load() -> Result<()> {
-    if is_disabled()? {
+    // v9.6 进程内缓存：设置页/多流会瞬间调用大量 LockForProcess；该值安装后
+    // 已是 1（uninstall 会重启音频服务/进程），首查成功后无需反复读注册表。
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DISABLED: AtomicBool = AtomicBool::new(false);
+    if DISABLED.load(Ordering::Relaxed) {
         return Ok(());
     }
-    disable()
+    if is_disabled()? {
+        DISABLED.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    disable()?;
+    DISABLED.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 /// 停止 Windows 音频服务（只停不启，uninstall 前置用）。

@@ -22,6 +22,10 @@ use crate::sys::com::prelude::guid_to_string;
 use crate::sys::registry::RegKey;
 use crate::utils::vx_error::Result;
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use once_cell::sync::Lazy;
 
 // ── DeviceClasses 路径与 KS 分类 GUID ──────────────────────────────────────
 
@@ -122,6 +126,27 @@ pub fn find_msfx_entries(
         return Ok(result);
     }
 
+    // v9.6 快速路径：DeviceClasses 实例键名 = `##?#{归一化设备ID}#{KS类GUID}`
+    // （USB 等标准设备实证，大小写不敏感）。直接构造候选路径，把「首次切换到
+    // 新端点时 Initialize 的数百次注册表打开」降为几次——修复切换设备后
+    // 首秒音频断续慢速（自愈全树扫描阻塞音频服务控制线程）。
+    for class_guid in [KS_RENDER_CLASS, KS_AUDIO_CLASS] {
+        let candidates = [
+            format!("{DEVICE_CLASSES_ROOT}\\{class_guid}\\##?#{normalized}#{class_guid}"),
+            format!("{DEVICE_CLASSES_ROOT}\\{class_guid}\\{normalized}#{class_guid}"),
+        ];
+        for instance_path in candidates {
+            if RegKey::open(HKEY_LOCAL_MACHINE, &instance_path).is_err() {
+                continue;
+            }
+            collect_msfx_from_instance(&instance_path, node_type, &mut result)?;
+        }
+    }
+    if !result.is_empty() {
+        return Ok(result);
+    }
+
+    // 回退：完整树枚举（非标准实例名变体，如虚拟设备）。
     for class_guid in [KS_RENDER_CLASS, KS_AUDIO_CLASS] {
         let class_path = format!("{DEVICE_CLASSES_ROOT}\\{class_guid}");
         let class_key = match RegKey::open(HKEY_LOCAL_MACHINE, &class_path) {
@@ -138,41 +163,49 @@ pub fn find_msfx_entries(
                 continue;
             }
             let instance_path = format!("{}\\{}", class_path, instance);
-            let instance_key = match RegKey::open(HKEY_LOCAL_MACHINE, &instance_path) {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
-
-            // 设备接口引用（如 #GLOBAL），其下是 Device Parameters\MSFX。
-            let references = match instance_key.enum_sub_keys() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            for reference in references {
-                let msfx_root = format!(
-                    "{}\\{}\\Device Parameters\\MSFX",
-                    instance_path, reference
-                );
-                let msfx_key = match RegKey::open(HKEY_LOCAL_MACHINE, &msfx_root) {
-                    Ok(k) => k,
-                    Err(_) => continue,
-                };
-
-                let indexes = match msfx_key.enum_sub_keys() {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                for index in indexes {
-                    let entry_path = format!("{}\\{}", msfx_root, index);
-                    if matches_endpoint(&entry_path, node_type)? {
-                        result.push(entry_path);
-                    }
-                }
-            }
+            collect_msfx_from_instance(&instance_path, node_type, &mut result)?;
         }
     }
 
     Ok(result)
+}
+
+/// 枚举单个 DeviceClasses 实例下所有引用（如 `#GLOBAL`）的 `MSFX\N` 条目，
+/// 命中端点节点类型的条目写入 `result`（快速路径与全树回退共用，v9.6）。
+fn collect_msfx_from_instance(
+    instance_path: &str,
+    node_type: Option<&str>,
+    result: &mut Vec<String>,
+) -> Result<()> {
+    let instance_key = match RegKey::open(HKEY_LOCAL_MACHINE, instance_path) {
+        Ok(k) => k,
+        Err(_) => return Ok(()),
+    };
+    let references = match instance_key.enum_sub_keys() {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    for reference in references {
+        let msfx_root = format!(
+            "{}\\{}\\Device Parameters\\MSFX",
+            instance_path, reference
+        );
+        let msfx_key = match RegKey::open(HKEY_LOCAL_MACHINE, &msfx_root) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        let indexes = match msfx_key.enum_sub_keys() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for index in indexes {
+            let entry_path = format!("{}\\{}", msfx_root, index);
+            if matches_endpoint(&entry_path, node_type)? {
+                result.push(entry_path);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 计算接管 `MSFX\N` 模板所需的注册表变更。
@@ -533,6 +566,31 @@ pub fn ensure_takeover_for_endpoint(endpoint_path: &str) -> Result<()> {
         return Ok(());
     }
 
+    // 1b. 强制启用增强链（与 install Step 7 对齐：删除 DisableEnhancements /
+    //     PKEY_AudioEndpoint_Disable_SysFx），否则接管了模板也可能整链被禁用。
+    //     该动作廉价且必须，不参与扫描缓存。
+    if let Ok(fx_write) = RegKey::open_for_write(HKEY_LOCAL_MACHINE, &fx_path) {
+        let _ = fx_write.delete_value("DisableEnhancements");
+        let _ = fx_write.delete_value("{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5");
+    }
+
+    // 1c. MSFX 模板扫描缓存（v9.5）：`find_msfx_entries` 要遍历 DeviceClasses
+    //     两个 KS 类下全部实例，成本不低；而设置页/多流启动可能高频实例化本 APO
+    //     （每次 Initialize 都会走到这里）。自愈是“设备重新枚举后兜底”，30 秒
+    //     粒度完全足够——命中缓存直接跳过扫描，避免拖慢音频服务/设置页。
+    {
+        static LAST_SCAN: Lazy<Mutex<HashMap<String, Instant>>> =
+            Lazy::new(|| Mutex::new(HashMap::new()));
+        let mut cache = LAST_SCAN.lock().unwrap_or_else(|e| e.into_inner());
+        if cache
+            .get(endpoint_path)
+            .is_some_and(|last| last.elapsed() < Duration::from_secs(30))
+        {
+            return Ok(());
+        }
+        cache.insert(endpoint_path.to_owned(), Instant::now());
+    }
+
     // 2. 定位 MSFX 模板（失败视为无模板，不阻塞）。
     let endpoint_key = RegKey::open(HKEY_LOCAL_MACHINE, endpoint_path)?;
     let (device_id, node_type) = endpoint_identity(&endpoint_key);
@@ -567,13 +625,6 @@ pub fn ensure_takeover_for_endpoint(endpoint_path: &str) -> Result<()> {
         }
     }
 
-    // 4. 强制启用增强链（与 install Step 7 对齐：删除 DisableEnhancements /
-    //    PKEY_AudioEndpoint_Disable_SysFx），否则接管了模板也可能整链被禁用。
-    if let Ok(fx_write) = RegKey::open_for_write(HKEY_LOCAL_MACHINE, &fx_path) {
-        let _ = fx_write.delete_value("DisableEnhancements");
-        let _ = fx_write.delete_value("{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5");
-    }
-
     Ok(())
 }
 
@@ -596,6 +647,21 @@ mod tests {
         assert_eq!(
             normalize_device_id("USB\\VID_1234&PID_5678\\1&0"),
             "usb#vid_1234&pid_5678#1&0"
+        );
+    }
+
+    #[test]
+    fn fast_path_candidate_matches_known_instance_name() {
+        // v9.6：快速路径构造的实例键名应与安装时 SysFxBackups 实证路径一致。
+        let normalized =
+            normalize_device_id("{1}.USB\\VID_2D99&PID_A037&MI_00\\6&20BE7186&2&0000");
+        let candidate = format!(
+            "{DEVICE_CLASSES_ROOT}\\{KS_RENDER_CLASS}\\##?#{normalized}#{KS_RENDER_CLASS}"
+        );
+        let known = r"SYSTEM\CurrentControlSet\Control\DeviceClasses\{65E8773E-8F56-11D0-A3B9-00A0C9223196}\##?#USB#VID_2D99&PID_A037&MI_00#6&20BE7186&2&0000#{65e8773e-8f56-11d0-a3b9-00a0c9223196}";
+        assert!(
+            candidate.eq_ignore_ascii_case(known),
+            "candidate={candidate}\nknown={known}"
         );
     }
 

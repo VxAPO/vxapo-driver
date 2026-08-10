@@ -37,7 +37,14 @@ use crate::sys::com::prelude::{E_FAIL, HRESULT};
 /// （2026-08-10 实证：引擎实际会多给到 2×latency+1，2048 为安全余量）。
 const MAX_APO_LATENCY_SAMPLES: usize = 2048;
 
-/// `Reset`：清空链与过渡状态，回到未锁定基线。
+/// `Reset`：正常重置——重置滤波器状态与过渡，保留配置链（v9.6）。
+///
+/// 旧实现把 `current_chain` 换成空链——引擎在设备切换/流停止时可能先 `Reset`
+/// 再继续排空最后一段音频：最后一段突然失去 EQ（负增益配置下原始信号变响），
+/// 表现为 M16+ 切换走时“嗡”一声；若 `Reset` 后引擎继续 `APOProcess`，
+/// 链与临时缓冲被清空还会导致直通突变/无声。
+/// 实测引擎从不调用 Reset（日志 0 次），因此保持“正常重置”语义：
+/// 保留链/上下文/缓冲结构，仅清滤波器状态与过渡。
 pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
     // ---- 探针 6: Reset 被调（2026-08-04 排查，删）----
     #[cfg(debug_assertions)]
@@ -46,18 +53,24 @@ pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
     }
 
     let mut inner = apo.mutex.lock().unwrap();
-    inner.current_chain = Box::new(Chain::new());
+    inner.current_chain.reset();
     inner.outgoing_chain = None;
     inner.retired_chain = None; // R1：控制线程锁内统一析构
     inner.transition = None;
-    inner.pipeline_context = PipelineContext::new();
-    inner.temp_buffers.clear();
-    inner.temp_buffer_old.clear();
-    inner.temp_buffer_new.clear();
     inner.pending_reload = false;
     inner.reloading = false;
     // v7.9：清空配置指纹基线（重新 Lock 重新建立）。
     inner.active_spec.clear();
+    // v9.6：保留 pipeline_context / current_chain / temp_buffers 结构与容量；
+    // 临时缓冲清零（内容作废），结构保留（Reset 后引擎可能继续 APOProcess）。
+    for b in inner.temp_buffers.iter_mut() {
+        b.fill(0.0);
+    }
+    inner.temp_buffer_old.fill(0.0);
+    inner.temp_buffer_new.fill(0.0);
+    inner.startup_fade_total = 0;
+    inner.startup_fade_remaining = 0;
+    crate::object::apo::config::diag_append(&format!("RESET clsid={:?}", apo.clsid));
     apo.latency_samples.store(0, Ordering::SeqCst);
     apo.latency_frames_atomic.store(0, Ordering::SeqCst);
     Ok(())
@@ -248,6 +261,7 @@ pub(crate) fn lock_for_process(
     // 音量异常偏低 + 双倍隐藏延迟/CPU（设备切换后帧协商更易错位）。
     // PostMix 保留 child APO 委托（前任 EFX APO 仍生效），自身不再处理用户配置。
     let config_path = apo.config_path.lock().unwrap().clone();
+    let lock_start = std::time::Instant::now();
     let is_postmix = apo.clsid == CLSID_VXAPO_POST_MIX;
     let (filters, spec_chain) = if is_postmix {
         (Vec::new(), Vec::new())
@@ -260,7 +274,7 @@ pub(crate) fn lock_for_process(
             .map_err(|_| windows::core::Error::from(E_FAIL))?
     };
     crate::object::apo::config::diag_append(&format!(
-        "LOCK clsid={:?} postmix={} rate={} in={} out={} maxframes={} filters={} spec={} first_spec={}",
+        "LOCK clsid={:?} postmix={} rate={} in={} out={} maxframes={} filters={} spec={} first_spec={} lock_ms={} agg_created={} agg_destroyed={}",
         apo.clsid,
         is_postmix,
         format.sample_rate,
@@ -269,7 +283,10 @@ pub(crate) fn lock_for_process(
         input_descriptor.u32MaxFrameCount,
         filters.len(),
         spec_chain.len(),
-        spec_chain.first().cloned().unwrap_or_default()
+        spec_chain.first().cloned().unwrap_or_default(),
+        lock_start.elapsed().as_millis(),
+        crate::object::apo::aggregate::AGG_CREATED.load(std::sync::atomic::Ordering::Relaxed),
+        crate::object::apo::aggregate::AGG_DESTROYED.load(std::sync::atomic::Ordering::Relaxed)
     ));
 
     // 配置解析落地探针（debug 门控，验证 Lock 时确实读到了 per-device config）。
@@ -335,6 +352,15 @@ pub(crate) fn lock_for_process(
         // v7.9：active_spec 建立基线（当前生效链的配置指纹）。
         // 此后 hot_reload 与此基线比较决定是否真正切换。
         inner.active_spec = spec_chain;
+        // v9.6：流启动静音（PreMix + PostMix 都应用）。实测确认：切换设备嗡声
+        // 来自分块 FFT 块缓冲丢尾音，已改回 512 点直接 FIR；此处静音只负责
+        // 掩盖切回 M16+ 开头引擎加载的轻微断续（用户定稿：100ms）。
+        let sr = format.sample_rate.max(1) as usize;
+        inner.startup_fade_total = sr
+            * (super::inner::STARTUP_FADE_HOLD_MS + super::inner::STARTUP_FADE_RAMP_MS)
+                as usize
+            / 1000;
+        inner.startup_fade_remaining = inner.startup_fade_total;
     }
     apo.latency_samples.store(0, Ordering::SeqCst);
     apo.latency_frames_atomic.store(0, Ordering::SeqCst);
@@ -375,6 +401,7 @@ pub(crate) fn lock_for_process(
 ///
 /// 子 APO 解锁失败不阻塞父解锁（object 7.1.10 容错语义——UnlockForProcess 无重试语义）。
 pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
+    let unlock_start = std::time::Instant::now();
     // ---- 探针 6: UnlockForProcess 被调（2026-08-04 排查，删）----
     #[cfg(debug_assertions)]
     {
@@ -409,6 +436,21 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.reloading = false;
     // v7.9：释放配置指纹基线（重新 Lock 时重建）。
     inner.active_spec.clear();
+    inner.startup_fade_total = 0;
+    inner.startup_fade_remaining = 0;
+    crate::object::apo::config::diag_append(&format!(
+        "UNLOCK clsid={:?} ms={} calls=[{}]",
+        apo.clsid,
+        unlock_start.elapsed().as_millis(),
+        inner
+            .last_calls
+            .iter()
+            .map(|(s, f, fl, p)| format!("({s},{f},{fl},{p:.4})"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    inner.last_calls = [(0, 0, 0, 0.0); 4];
+    inner.last_call_idx = 0;
     Ok(())
 }
 
@@ -505,6 +547,10 @@ impl ApoObject {
                 }
                 output_prop.u32ValidFrameCount = frames as u32;
                 output_prop.u32BufferFlags = BUFFER_VALID;
+                // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
+                if inner.startup_fade_remaining > 0 {
+                    inner.apply_startup_fade(dst, frames, out_ch);
+                }
 
                 inner.retired_chain = outgoing; // R1：旧链退役（控制线程析构）
                 inner.outgoing_chain = None;
@@ -577,6 +623,10 @@ impl ApoObject {
                     out_slice[idx] = old_v * inv_factor + tbuf_new[idx] * factor;
                 }
             }
+            // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
+            if inner.startup_fade_remaining > 0 {
+                inner.apply_startup_fade(out_slice, frames, out_ch);
+            }
             output_prop.u32ValidFrameCount = frames as u32;
             output_prop.u32BufferFlags = BUFFER_VALID;
 
@@ -646,6 +696,34 @@ impl ApoObject {
             &self.process_stats,
             tbufs.as_mut_slice(),
         );
+        // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
+        // 引擎在设备切换后可能边加载目标链边开播，首段断续慢速；
+        // 淡入把听感变为“加载完再播”。仅 PreMix 实例启用（PostMix 直通）。
+        let output_one = unsafe { &mut **pp_outputs };
+        let out_slice = unsafe {
+            std::slice::from_raw_parts_mut(
+                output_one.pBuffer as *mut f32,
+                frames * out_ch as usize,
+            )
+        };
+        if inner.startup_fade_remaining > 0 {
+            inner.apply_startup_fade(out_slice, frames, out_ch as usize);
+        }
+        // v9.6 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前引擎
+        // 是否送了最后一段真实音频（嗡声幅度随播放音量变化）。
+        let idx = (inner.last_call_idx % inner.last_calls.len() as u64) as usize;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        inner.last_calls[idx] = (
+            secs,
+            frames as u32,
+            output_one.u32BufferFlags.0 as u32,
+            peak,
+        );
+        inner.last_call_idx += 1;
 
         inner.current_chain = owned_chain;
         inner.temp_buffers = tbufs;

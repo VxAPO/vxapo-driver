@@ -22,6 +22,12 @@ use crate::sys::com::apo_interfaces::{
 };
 use crate::sys::com::prelude::{E_NOINTERFACE, E_POINTER, GUID, HRESULT, Interface, IUnknown, S_OK};
 
+/// 聚合实例生命周期计数（v9.6 诊断）：`create_aggregate` 成功 +1，
+/// `na_release` 归零析构 -1。用于验证“audiodg 实例是否泄漏”
+/// （用户实测：设置页卡顿在重启后消失，怀疑实例未释放累积）。
+pub(crate) static AGG_CREATED: AtomicU32 = AtomicU32::new(0);
+pub(crate) static AGG_DESTROYED: AtomicU32 = AtomicU32::new(0);
+
 // ── vtable 槽位类型 ─────────────────────────────────────────────
 type QiFn = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
 type RefFn = unsafe extern "system" fn(*mut c_void) -> u32;
@@ -276,6 +282,7 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
     let apo = as_apo(base);
     let r = apo.cref.fetch_sub(1, Ordering::Release) - 1;
     if r == 0 {
+        AGG_DESTROYED.fetch_add(1, Ordering::Relaxed);
         std::sync::atomic::fence(Ordering::Acquire);
         let apo = as_apo(base);
         let release_inner = |p: *mut c_void| {
@@ -437,6 +444,7 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
     //    引擎对返回值调 QI(IAPO) → na_qi（NonDQI，不委托）→ 直接返回 NApo 的 IAPO 视图。
     //    （旧实现返回基址 = IAPO 视图（委托 QI）→ 引擎 QI 走 outer→ 外壳不认 → 弃用零方法）
     let base = Box::into_raw(apo_box) as *mut NApo;
+    AGG_CREATED.fetch_add(1, Ordering::Relaxed);
     (base as usize + OFF_ND_UNKNOWN) as *mut c_void
 }
 

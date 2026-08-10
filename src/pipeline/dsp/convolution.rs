@@ -14,6 +14,10 @@
 //! 增益（dB）在 `initialize` 时线性合并进 IR 系数（P0 clamp 后必有限）。
 
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use once_cell::sync::Lazy;
 
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 
@@ -410,12 +414,26 @@ fn build_partitioned(ir: &[f32], channels: usize) -> Option<PartitionedConv> {
     let fft_len = block_len * 2;
     let blocks = ir.len().div_ceil(block_len);
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(fft_len);
-    let ifft = planner.plan_fft_inverse(fft_len);
-    let scratch_len = fft
-        .get_inplace_scratch_len()
-        .max(ifft.get_inplace_scratch_len());
+    // v9.6 FFT 计划缓存：rustfft 的计划创建较慢（设置页/多流会瞬间创建大量实例），
+    // FFT 长度只有少数几种，进程内缓存后 clone Arc 计划即可（计划本身不可变）。
+    static FFT_PLAN_CACHE: Lazy<
+        Mutex<HashMap<usize, (Arc<dyn Fft<f32>>, Arc<dyn Fft<f32>>, usize)>>,
+    > = Lazy::new(|| Mutex::new(HashMap::new()));
+    let (fft, ifft, scratch_len) = {
+        let mut cache = FFT_PLAN_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((f, i, s)) = cache.get(&fft_len) {
+            (f.clone(), i.clone(), *s)
+        } else {
+            let mut planner = FftPlanner::<f32>::new();
+            let fft = planner.plan_fft_forward(fft_len);
+            let ifft = planner.plan_fft_inverse(fft_len);
+            let scratch_len = fft
+                .get_inplace_scratch_len()
+                .max(ifft.get_inplace_scratch_len());
+            cache.insert(fft_len, (fft.clone(), ifft.clone(), scratch_len));
+            (fft, ifft, scratch_len)
+        }
+    };
     let mut scratch = vec![Complex::new(0.0, 0.0); scratch_len];
 
     // 预计算 IR 各块频域系数（共享，已应用增益）。

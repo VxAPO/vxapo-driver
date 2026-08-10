@@ -73,6 +73,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
     //     仅限已装 VxAPO 的端点；失败仅降级日志，不阻塞初始化。
     if let Some(eg) = endpoint_guid {
         let eg_str = guid_to_string(&eg);
+        let selfheal_start = std::time::Instant::now();
         match crate::install::selector::operation::find_endpoint_path(&eg_str) {
             Ok(endpoint_path) => {
                 if let Err(e) =
@@ -80,6 +81,14 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
                 {
                     log::warn!("Initialize: MSFX self-heal failed for {eg_str}: {e}");
                 }
+                crate::object::apo::config::diag_append(&format!(
+                    "INIT clsid={:?} pid={} endpoint={eg_str} selfheal_ms={} agg_created={} agg_destroyed={}",
+                    apo.clsid,
+                    std::process::id(),
+                    selfheal_start.elapsed().as_millis(),
+                    crate::object::apo::aggregate::AGG_CREATED.load(std::sync::atomic::Ordering::Relaxed),
+                    crate::object::apo::aggregate::AGG_DESTROYED.load(std::sync::atomic::Ordering::Relaxed)
+                ));
             }
             Err(_) => {
                 // 端点路径找不到（虚拟设备/已拔出）→ 无需接管。
