@@ -1,10 +1,11 @@
-//! pipeline/dsp/fxsound — FxSound 效果器移植（AGPL 来源）
+//! pipeline/dsp/fxsound — 效果器子模块
 //!
-//! 移植自 FxSound（AGPL-3.0-or-later）：
-//! - `Auralp.c` → Aural Enhancer
-//! - `Maxi16.c` → Maximizer
-//! - `Wide32.c` → Wide（立体声加宽 / Surround）
-//! - Reverb → Dattorro 板式混响（v9.3 起按论文独立实现，不再来自 FxSound）
+//! 来源沿革：
+//! - `Auralp.c` → Aural Enhancer（FxSound 移植，AGPL-3.0-or-later）
+//! - `Maxi16.c` → Maximizer（v9.8 起独立实现：自动增益 + lookahead 峰值限幅，
+//!   原创 Rust 代码，无 AGPL 版权头）
+//! - `Wide32.c` → Wide（FxSound 移植，AGPL-3.0-or-later）
+//! - Reverb → Dattorro 板式混响（v9.3 起按论文独立实现）
 //!
 //! 每个模块提供：
 //! - 参数结构体与 EAPO 风格 `Key Value` 解析；

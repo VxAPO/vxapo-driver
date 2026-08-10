@@ -1,25 +1,13 @@
-// FxSound
-// Copyright (C) 2025  FxSound LLC
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-//! Maximizer（自动增益/限幅器）
+//! Maximizer（自动增益 + lookahead 峰值限幅器）
 //!
-//! 移植自 FxSound `Maxi16.c`（AGPL-3.0-or-later）。算法：
-//! - 0.1 Hz 单极点电平估计（仅以左声道/首通道输入平方驱动，与 C 一致）；
-//! - lookahead 环形缓冲 + 包络 ramp/release 峰值限幅；
-//! - `kernoise.h` 的 LCG 抖动（Uniform/Triangular/Shaped）与 16-bit 量化；
+//! v9.8 起为独立实现（原创 Rust 代码，不再移植自 FxSound `Maxi16.c`，
+//! 已移除 AGPL 版权头）。算法结构：
+//! - 自动增益：全声道单极点电平估计（约 250 ms），`Target` 控制增益回退起点
+//!   （`GainBoost · rms > Target` 时有效增益降为 `max(Target/rms, 1.0)`）；
+//! - lookahead 峰值限幅：环形延迟线 + 线性 attack 包络 + 多峰事件队列
+//!   （参考 FFmpeg `alimiter` 的 attack/release 调度思想，独立实现），
+//!   输出硬钳位到 `MaxOutput`；
+//! - 抖动：独立 xorshift64* PRNG，Uniform / Triangular / Shaped 均为 16-bit 量化；
 //! - 最终 Wet/Dry 混合。
 //!
 //! config 语法（EAPO 风格）：
@@ -28,7 +16,7 @@
 
 use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory};
 
-/// 抖动类型（对应 `KERNOISE_DITHER_*`）。
+/// 抖动类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DitherType {
     None,
@@ -52,8 +40,6 @@ pub struct MaximizerParams {
 impl Default for MaximizerParams {
     fn default() -> Self {
         Self {
-            // 原 Quick preset 1（44.1 kHz）：gain_boost=1.99526 → 6 dB；
-            // max_output=0.966051 → -0.3 dB；release_time_beta=0.997776 → ≈10.18 ms。
             gain_boost_db: 6.0,
             max_output_db: -0.3,
             release_ms: 10.18,
@@ -142,69 +128,64 @@ pub fn parse_maximizer_params(params: &str) -> Option<MaximizerParams> {
     Some(p)
 }
 
-/// `kernoise.h` 的 LCG：`seed = (3141592621 * seed + 2718282829) % 4294967291`。
-/// 输出按 C 宏把无符号 seed 位模式重解释为有符号 long，再乘峰值系数。
+/// 16-bit 量化峰值。
+const PEAK_LEVEL_16: f32 = 32_768.0;
+/// 自动增益电平估计时间常数。
+const LEVEL_EST_TAU_S: f32 = 0.25;
+
+/// 独立 xorshift64* PRNG（确定性种子，同参数可复现）。
 #[derive(Debug, Clone, Copy)]
-struct NoiseGen {
-    seed: u64,
+struct DitherRng {
+    state: u64,
 }
 
-impl NoiseGen {
+impl DitherRng {
     fn new() -> Self {
         Self {
-            seed: 10_322_234, // MAXIMIZE_NOISE_SEED
+            state: 0x9E37_79B9_7F4A_7C15,
         }
     }
 
-    fn next(&mut self) -> f32 {
-        self.seed = (3_141_592_621u64 * self.seed + 2_718_282_829u64) % 4_294_967_291u64;
-        (self.seed as u32 as i32) as f32 / 2_147_483_648.0
+    /// 均匀分布在 [-1, 1)。
+    fn next_f32(&mut self) -> f32 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        let top = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32;
+        top / 8_388_608.0 * 2.0 - 1.0
     }
 }
 
-/// `MAXI_ENVELOPE_BIAS`，避免包络下溢。
-const ENVELOPE_BIAS: f32 = 1.0e-24;
-/// 16-bit 量化峰值（`KERNOISE_PEAK_LEVEL_16`）。
-const PEAK_LEVEL_16: f32 = 32_768.0;
-
-#[derive(Debug)]
-struct MaximizerChannelState {
-    delay: Vec<f32>,
-    pos: usize,
-    max_abs: f32,
-    delta: f32,
-    env: f32,
-    ramp_count: usize,
-}
-
-impl MaximizerChannelState {
-    fn new(capacity: usize) -> Self {
-        Self {
-            delay: vec![0.0; capacity],
-            pos: 0,
-            max_abs: 0.0,
-            delta: 0.0,
-            env: 0.0,
-            ramp_count: 0,
-        }
-    }
+/// 限幅事件：某个超限峰值样本到达输出位置时应达成的包络状态。
+#[derive(Debug, Clone, Copy)]
+struct LimiterEvent {
+    /// 距触发还剩多少帧（0 = 本帧输出该峰值）。
+    remaining: usize,
+    /// 触发时包络应切换到的目标增益（limit/peak）。
+    gain: f32,
+    /// 触发后每帧的增益变化（到下一事件，或 release 回弹）。
+    slope: f32,
 }
 
 #[derive(Debug)]
 pub struct MaximizerFilter {
     params: MaximizerParams,
     gain_boost: f32,
-    max_output: f32,
-    release_beta: f32,
-    a0: f64,
-    filt_gain: f64,
+    limit: f32,
+    release_frames: f32,
+    level_alpha: f32,
     level: f64,
-    max_delay: usize,
-    noise: NoiseGen,
-    noise1_old: f32,
-    noise2_old: f32,
+    lookahead: usize,
+    w: usize,
+    att: f32,
+    delta: f32,
+    events: std::collections::VecDeque<LimiterEvent>,
+    rng: DitherRng,
+    shaped_prev: Vec<f32>,
     channel_indices: Vec<usize>,
-    channels: Vec<MaximizerChannelState>,
+    delay_lines: Vec<Vec<f32>>,
 }
 
 impl MaximizerFilter {
@@ -212,18 +193,95 @@ impl MaximizerFilter {
         Self {
             params,
             gain_boost: 0.0,
-            max_output: 0.0,
-            release_beta: 0.0,
-            a0: 0.0,
-            filt_gain: 0.0,
+            limit: 0.0,
+            release_frames: 1.0,
+            level_alpha: 0.0,
             level: 0.0,
-            max_delay: 1,
-            noise: NoiseGen::new(),
-            noise1_old: 0.0,
-            noise2_old: 0.0,
+            lookahead: 1,
+            w: 0,
+            att: 1.0,
+            delta: 0.0,
+            events: std::collections::VecDeque::new(),
+            rng: DitherRng::new(),
+            shaped_prev: Vec::new(),
             channel_indices: Vec::new(),
-            channels: Vec::new(),
+            delay_lines: Vec::new(),
         }
+    }
+
+    /// 调度限幅包络：新峰值在 `lookahead - 1` 帧后到达输出。
+    ///
+    /// 队列按触发先后排序（新峰值一定最后触发）。若新峰值要求的全程斜率比
+    /// 当前包络更陡，整体替换为单一事件（保守：中间峰值只会过限、不会超限）；
+    /// 否则在队列中找第一个「按现有斜率会在新峰值触发时超限」的段，收紧该段
+    /// 斜率并把新事件追加到队尾。
+    fn schedule(&mut self, gain: f32, release_slope: f32, lookahead: usize) {
+        let remaining = lookahead - 1;
+        let d_now = (gain - self.att) / lookahead as f32;
+
+        if self.events.is_empty() {
+            if d_now < self.delta {
+                self.delta = d_now;
+                self.events.push_back(LimiterEvent {
+                    remaining,
+                    gain,
+                    slope: release_slope,
+                });
+            }
+            return;
+        }
+
+        if d_now < self.delta {
+            self.delta = d_now;
+            self.events.clear();
+            self.events.push_back(LimiterEvent {
+                remaining,
+                gain,
+                slope: release_slope,
+            });
+            return;
+        }
+
+        for i in 0..self.events.len() {
+            let ev = self.events[i];
+            let dist = remaining.saturating_sub(ev.remaining);
+            if dist == 0 {
+                continue;
+            }
+            let pdelta = (gain - ev.gain) / dist as f32;
+            if pdelta < ev.slope {
+                self.events[i].slope = pdelta;
+                if self.events.len() >= self.events.capacity() {
+                    // 容量兜底：改走保守替换，保证新峰值仍被覆盖。
+                    self.delta = self.delta.min(d_now);
+                    self.events.clear();
+                }
+                self.events.push_back(LimiterEvent {
+                    remaining,
+                    gain,
+                    slope: release_slope,
+                });
+                return;
+            }
+        }
+    }
+
+    /// 16-bit 量化 + 抖动（None 由调用方跳过）。
+    fn quantize_dither(&mut self, value: f32, channel: usize, dither: DitherType) -> f32 {
+        let q = 1.0 / PEAK_LEVEL_16;
+        let noise = match dither {
+            DitherType::Uniform => self.rng.next_f32() * 0.5 * q,
+            DitherType::Triangular => (self.rng.next_f32() + self.rng.next_f32()) * 0.5 * q,
+            DitherType::Shaped => {
+                let n = self.rng.next_f32() * 0.5 * q;
+                let prev = self.shaped_prev[channel];
+                self.shaped_prev[channel] = n;
+                n - prev
+            }
+            DitherType::None => 0.0,
+        };
+        let scaled = (value / q + noise).clamp(-PEAK_LEVEL_16, PEAK_LEVEL_16 - 1.0);
+        scaled.round() * q
     }
 }
 
@@ -233,154 +291,132 @@ impl Filter for MaximizerFilter {
             self.channel_indices = (0..channel_names.len()).collect();
         }
         let sr = sample_rate.max(1) as f32;
-        let sr_f64 = sample_rate.max(1) as f64;
 
         self.gain_boost = 10.0f32.powf(self.params.gain_boost_db / 20.0);
-        self.max_output = 10.0f32.powf(self.params.max_output_db / 20.0);
-        self.release_beta =
-            (-1.0f32 / (self.params.release_ms * 0.001 * sr)).exp();
-
-        // 0.1 Hz 单极点电平估计低通（`MAXIMIZE_LEVEL_FILT_CUTOFF`），double 设计。
-        let r_omega = core::f64::consts::TAU * 0.1 / sr_f64;
-        let cos_om = r_omega.cos();
-        let root_calc = (cos_om * cos_om - 4.0 * cos_om + 3.0).sqrt();
-        let d_tmp = 2.0 - cos_om - root_calc;
-        self.a0 = d_tmp;
-        self.filt_gain = 1.0 - d_tmp;
+        self.limit = 10.0f32.powf(self.params.max_output_db / 20.0);
+        self.release_frames = (self.params.release_ms * 0.001 * sr).max(1.0);
+        self.level_alpha = (-1.0 / (LEVEL_EST_TAU_S * sr)).exp();
         self.level = 0.0;
+        self.lookahead = ((sr * self.params.lookahead_ms * 0.001).round() as usize).max(1);
 
-        self.max_delay = (sr * 0.00075).trunc().max(1.0) as usize;
-        // 预留上限与 C 端 MAXI_MAX_DELAY_LEN(96) 一致，环形长度仍用实际 max_delay。
-        let capacity = self.max_delay.max(96);
-        self.channels = self
+        let capacity = self.lookahead.min(128).max(1);
+        self.delay_lines = self
             .channel_indices
             .iter()
-            .map(|_| MaximizerChannelState::new(capacity))
+            .map(|_| vec![0.0; self.lookahead])
             .collect();
-        self.noise = NoiseGen::new();
-        self.noise1_old = 0.0;
-        self.noise2_old = 0.0;
+        self.shaped_prev = vec![0.0; self.channel_indices.len()];
+        self.w = 0;
+        self.att = 1.0;
+        self.delta = 0.0;
+        self.events = std::collections::VecDeque::with_capacity(capacity);
+        self.rng = DitherRng::new();
         None
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
-        if self.channel_indices.is_empty() || self.channels.is_empty() {
+        if self.channel_indices.is_empty() || self.delay_lines.is_empty() {
             return;
         }
-        let n = self.channel_indices.len().min(self.channels.len());
+        let n = self.channel_indices.len().min(self.delay_lines.len());
         let first = self.channel_indices[0];
         if first >= samples.len() {
             return;
         }
         let frame_count = frame_count.min(samples[first].len());
-        let max_delay = self.max_delay;
-        let d = self.params.dither;
+        let lookahead = self.lookahead;
+        let limit = self.limit;
+        let release_frames = self.release_frames;
+        let wet = self.params.wet;
+        let dry = self.params.dry;
+        let dither = self.params.dither;
+        let alpha = self.level_alpha as f64;
+        let gain_boost = self.gain_boost;
+        let target = self.params.target;
 
         for f in 0..frame_count {
-            // 电平估计：仅首通道输入平方驱动（与 C 的 in1 一致）。
-            let in0 = samples[first][f];
-            self.level = self.level * self.a0 + (in0 as f64) * (in0 as f64) * self.filt_gain;
-            let sqrt_level = self.level.sqrt() as f32;
-            let gain_boost = if self.gain_boost * sqrt_level > self.params.target {
-                // 自动回退增益，最小 1.06（防音量抽吸）。
-                (self.params.target / sqrt_level).max(1.06)
+            // 1) 全声道 RMS 电平估计（单极点，约 250 ms）与自动增益。
+            let mut sum_sq = 0.0f64;
+            for k in 0..n {
+                let slot = self.channel_indices[k];
+                if slot < samples.len() {
+                    let x = samples[slot][f] as f64;
+                    sum_sq += x * x;
+                }
+            }
+            self.level = self.level * alpha + sum_sq / n as f64 * (1.0 - alpha);
+            let rms = self.level.sqrt() as f32;
+            let boost = if gain_boost * rms > target {
+                (target / rms).max(1.0)
             } else {
-                self.gain_boost
+                gain_boost
             };
 
+            // 2) 写入延迟线并检测输入峰值。
+            let mut peak_in = 0.0f32;
+            for k in 0..n {
+                let slot = self.channel_indices[k];
+                if slot >= samples.len() {
+                    continue;
+                }
+                let v = samples[slot][f] * boost;
+                self.delay_lines[k][self.w] = v;
+                let a = v.abs();
+                if a > peak_in {
+                    peak_in = a;
+                }
+            }
+
+            // 3) 超限则调度 attack 包络（该峰值 lookahead 帧后到达输出）。
+            if peak_in > limit {
+                let g = limit / peak_in;
+                let release_slope = (1.0 - g) / release_frames;
+                self.schedule(g, release_slope, lookahead);
+            }
+
+            // 4) 包络推进。
+            self.att += self.delta;
+            if self.att >= 1.0 {
+                self.att = 1.0;
+                self.delta = 0.0;
+                self.events.clear();
+            } else if self.att <= 1.0e-9 {
+                self.att = 1.0e-9;
+                self.delta = (1.0 - self.att) / release_frames;
+            }
+
+            // 5) 读取延迟线输出：包络 × 延迟样本 + 硬钳位 + 抖动/量化 + Wet/Dry。
+            let rpos = (self.w + 1) % lookahead;
             for k in 0..n {
                 let slot = self.channel_indices[k];
                 if slot >= samples.len() {
                     continue;
                 }
                 let input = samples[slot][f];
-                let st = &mut self.channels[k];
-
-                let dly_out = st.delay[st.pos];
-                let new_val = gain_boost * self.max_output * input;
-                st.delay[st.pos] = new_val;
-                st.pos += 1;
-                if st.pos >= max_delay {
-                    st.pos = 0;
+                let dly = self.delay_lines[k][rpos];
+                let mut out = (dly * self.att).clamp(-limit, limit);
+                if dither != DitherType::None {
+                    out = self.quantize_dither(out, k, dither);
                 }
-                let new_abs = new_val.abs();
-
-                // 包络更新：ramp 模式追赶新峰值，否则按 release 指数衰减。
-                if st.ramp_count > 0 {
-                    let abs_out = dly_out.abs();
-                    if abs_out > st.env {
-                        st.env = abs_out;
-                    }
-                    if new_abs > st.max_abs {
-                        st.max_abs = new_abs;
-                        st.ramp_count = max_delay;
-                        let tmp_delta = (new_abs - st.env) / (max_delay + 1) as f32;
-                        if tmp_delta > st.delta {
-                            st.delta = tmp_delta;
-                        }
-                    } else {
-                        st.ramp_count -= 1;
-                    }
-                    st.env += st.delta;
-                } else {
-                    st.env = st.env * self.release_beta + ENVELOPE_BIAS;
-                    let abs_out = dly_out.abs();
-                    if abs_out > st.env {
-                        st.env = abs_out;
-                    }
-                    if new_abs > st.env {
-                        st.max_abs = new_abs;
-                        st.delta = (new_abs - st.env) / (max_delay + 1) as f32;
-                        st.env += st.delta;
-                        st.ramp_count = max_delay;
-                    }
-                }
-
-                // 峰值归一化输出（lookahead 后的旧值）。
-                let out = if st.env > self.max_output {
-                    dly_out * self.max_output / st.env
-                } else {
-                    dly_out
-                };
-
-                let out = if d == DitherType::None {
-                    out
-                } else {
-                    let dither = match d {
-                        DitherType::Uniform => self.noise.next() * 0.5,
-                        DitherType::Triangular => {
-                            (self.noise.next() + self.noise.next()) * 0.5
-                        }
-                        DitherType::Shaped => {
-                            let noise_tmp = self.noise.next() * 0.325;
-                            let shaped = if k == 0 {
-                                let v = noise_tmp - self.noise1_old;
-                                self.noise1_old = noise_tmp;
-                                v
-                            } else if k == 1 {
-                                let v = noise_tmp - self.noise2_old;
-                                self.noise2_old = noise_tmp;
-                                v
-                            } else {
-                                // 扩展通道：无历史状态，直接使用当前噪声。
-                                noise_tmp
-                            };
-                            shaped
-                        }
-                        DitherType::None => unreachable!(),
-                    };
-                    let v = out * PEAK_LEVEL_16 + dither;
-                    let q = if v >= 0.0 {
-                        (v + 0.5) as f32
-                    } else {
-                        (v - 0.5) as f32
-                    };
-                    q / PEAK_LEVEL_16
-                };
-
-                let mixed = out * self.params.wet + input * self.params.dry;
+                let mixed = out * wet + input * dry;
                 samples[slot][f] = if mixed.is_finite() { mixed } else { 0.0 };
             }
+
+            // 6) 触发到期事件、事件倒计时、推进写头。
+            loop {
+                match self.events.front() {
+                    Some(ev) if ev.remaining == 0 => {
+                        let ev = self.events.pop_front().expect("front checked");
+                        self.att = ev.gain;
+                        self.delta = ev.slope;
+                    }
+                    _ => break,
+                }
+            }
+            for ev in self.events.iter_mut() {
+                ev.remaining -= 1;
+            }
+            self.w = (self.w + 1) % lookahead;
         }
     }
 
@@ -390,16 +426,14 @@ impl Filter for MaximizerFilter {
 
     fn reset(&mut self) {
         self.level = 0.0;
-        self.noise = NoiseGen::new();
-        self.noise1_old = 0.0;
-        self.noise2_old = 0.0;
-        for st in self.channels.iter_mut() {
-            st.delay.fill(0.0);
-            st.pos = 0;
-            st.max_abs = 0.0;
-            st.delta = 0.0;
-            st.env = 0.0;
-            st.ramp_count = 0;
+        self.w = 0;
+        self.att = 1.0;
+        self.delta = 0.0;
+        self.events.clear();
+        self.rng = DitherRng::new();
+        self.shaped_prev.fill(0.0);
+        for d in self.delay_lines.iter_mut() {
+            d.fill(0.0);
         }
     }
 }
@@ -491,6 +525,146 @@ mod tests {
             for (x, y) in a.iter().zip(b.iter()) {
                 assert!((x - y).abs() < 1e-6);
             }
+        }
+    }
+
+    #[test]
+    fn silence_stays_silent() {
+        let mut f = MaximizerFilter::new(MaximizerParams::default());
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let mut samples = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
+        f.process(&mut samples, 4800);
+        for ch in &samples {
+            for &v in ch {
+                assert_eq!(v, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn lookahead_delays_impulse_by_n_minus_one_frames() {
+        // GainBoost 0 dB / MaxOutput 0 dB：无增益无限制，纯验证延迟线长度。
+        let mut f = MaximizerFilter::new(MaximizerParams {
+            gain_boost_db: 0.0,
+            max_output_db: 0.0,
+            release_ms: 10.0,
+            target: 1.0,
+            lookahead_ms: 1.0,
+            dither: DitherType::None,
+            wet: 1.0,
+            dry: 0.0,
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let mut samples = vec![vec![0.0f32; 96], vec![0.0f32; 96]];
+        samples[0][0] = 0.5;
+        samples[1][0] = 0.3;
+        f.process(&mut samples, 96);
+
+        let n = (48000.0f32 * 0.001).round() as usize; // 48
+        let expect = n - 1;
+        let expected = [0.5f32, 0.3f32];
+        for (ch, &want) in expected.iter().enumerate() {
+            for (i, &v) in samples[ch].iter().enumerate() {
+                if i == expect {
+                    assert!(
+                        (v - want).abs() < 1e-4,
+                        "channel {ch}: expected impulse at {expect}, got {v}"
+                    );
+                } else {
+                    assert!(v.abs() < 1e-4, "channel {ch}: unexpected value {v} at {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overshoot_impulse_clamped_at_limit() {
+        let mut f = MaximizerFilter::new(MaximizerParams {
+            gain_boost_db: 0.0,
+            max_output_db: -6.0,
+            release_ms: 10.0,
+            target: 1.0,
+            lookahead_ms: 1.0,
+            dither: DitherType::None,
+            wet: 1.0,
+            dry: 0.0,
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let mut samples = vec![vec![0.0f32; 96], vec![0.0f32; 96]];
+        samples[0][0] = 1.0;
+        f.process(&mut samples, 96);
+
+        let limit = 10.0f32.powf(-6.0 / 20.0);
+        let n = 48usize;
+        assert!(
+            (samples[0][n - 1] - limit).abs() < 1e-4,
+            "peak frame {} = {}, expected {}",
+            n - 1,
+            samples[0][n - 1],
+            limit
+        );
+        for &v in &samples[0] {
+            assert!(v.is_finite());
+            assert!(v.abs() <= limit * 1.001 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn envelope_recovers_after_release() {
+        let mut f = MaximizerFilter::new(MaximizerParams {
+            gain_boost_db: 0.0,
+            max_output_db: -6.0,
+            release_ms: 10.0,
+            target: 1.0,
+            lookahead_ms: 1.0,
+            dither: DitherType::None,
+            wet: 1.0,
+            dry: 0.0,
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let mut samples = vec![vec![0.0f32; 1600], vec![0.0f32; 1600]];
+        samples[0][0] = 1.0; // 超限脉冲触发 attack
+        // release 10 ms = 480 帧；600 帧后包络应已回 1。
+        samples[0][600] = 0.1;
+        f.process(&mut samples, 1600);
+        // 帧 600 的样本在延迟 N-1=47 帧后输出。
+        let out_at = 600 + 47;
+        assert!(
+            (samples[0][out_at] - 0.1).abs() < 1e-3,
+            "expected 0.1 after release, got {}",
+            samples[0][out_at]
+        );
+    }
+
+    #[test]
+    fn quiet_input_gets_full_boost() {
+        // GainBoost 12 dB（3.98×），电平远低于 Target → 保持满增益、不触发限幅。
+        let mut f = MaximizerFilter::new(MaximizerParams {
+            gain_boost_db: 12.0,
+            max_output_db: -0.3,
+            release_ms: 10.0,
+            target: 0.32,
+            lookahead_ms: 1.0,
+            dither: DitherType::None,
+            wet: 1.0,
+            dry: 0.0,
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let mut samples = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
+        for i in 0..4800 {
+            samples[0][i] = 0.01 * (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin();
+        }
+        f.process(&mut samples, 4800);
+        let want = 0.01 * 10.0f32.powf(12.0 / 20.0);
+        // 跳过延迟线预热（前 N-1 帧输出为 0），比较稳态峰值幅度。
+        let peak = samples[0][100..].iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        assert!(
+            (peak - want).abs() < 0.005,
+            "expected ≈{want}, got peak {peak}"
+        );
+        for &v in &samples[0][100..] {
+            assert!(v.is_finite());
+            assert!(v.abs() <= want * 1.05 + 1e-4);
         }
     }
 
