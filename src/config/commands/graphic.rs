@@ -13,7 +13,10 @@ use crate::pipeline::dsp::factory::OutcomeKind;
 pub fn handle(value: &str, ctx: &mut ParseContext) -> Result<(), ConfigError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(syntax(ctx, "GraphicEQ: requires frequency/gain pairs"));
+        // v9.5：空参数 = 显式移除 EQ（不产生滤波器，等同 passthrough）。
+        // 与“配置里根本没有 GraphicEQ”不同——parser 会对空参数也产出 spec
+        // 指纹，热重载据此把旧 EQ 链切换为空链。
+        return Ok(());
     }
 
     let outcome = ctx

@@ -19,8 +19,10 @@ use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{MAX_GRAPHIC_EQ_BANDS, clamp_gain_db, db_to_linear, warn_rate_limited};
 
 /// 生成的 FIR 长度（EqualizerAPO 用 16384）。
-/// 这里用 1024 点直接时域 FIR：无分区块延迟，延迟不上报引擎；
-/// CPU 约 1ms/滤波器/480帧，多流场景仍可控。
+/// 这里用 1024 点最小相位 FIR + 分块 FFT 卷积（块 128，v9.5）：
+/// - 频响与旧直接 FIR 完全一致，但单实例 CPU 约降 3~4 倍——多路音频流
+///   （每路一个 PreMix 实例）不再吃满 audiodg，声音设置页卡顿随之缓解；
+/// - 分块带来 128 采样隐藏延迟（≈2.7ms@48k），与既有策略一致不上报引擎。
 const GRAPHIC_EQ_IR_LEN: usize = 1024;
 /// 频响幅值下限，避免 log(0)。
 const GRAPHIC_EQ_MIN_MAG: f32 = 1e-5;
@@ -77,7 +79,7 @@ impl Filter for GraphicEqFilter {
             Vec::new()
         };
 
-        let mut conv = ConvolutionFilter::with_ir_direct(ir, 0.0);
+        let mut conv = ConvolutionFilter::with_ir(ir, 0.0);
         conv.set_channel_indices(&self.channel_indices);
         conv.initialize(sample_rate, channel_names);
         self.conv = conv;
@@ -394,11 +396,14 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_direct_fir_length_minus_one() {
+    fn latency_is_partition_block_size() {
         let bands = vec![EqBand { frequency: 1000.0, gain_db: 3.0 }];
         let mut filter = GraphicEqFilter::new(bands);
         filter.initialize(48000, &stereo_names());
-        assert_eq!(filter.latency(), (GRAPHIC_EQ_IR_LEN - 1) as u32);
+        assert_eq!(
+            filter.latency(),
+            crate::pipeline::dsp::math::CONVOLUTION_PARTITION_SIZE as u32
+        );
     }
 
     #[test]

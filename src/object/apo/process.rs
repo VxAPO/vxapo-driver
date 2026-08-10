@@ -32,9 +32,9 @@ use crate::sys::com::apo_types::{
 };
 use crate::sys::com::prelude::{E_FAIL, HRESULT};
 
-/// 卷积型 GraphicEQ 的内部块延迟（采样数）；临时缓冲按此预留余量，
-/// 避免引擎按 `CalcInputFrames` 多给帧数时越界（2026-08-10 实证：
-/// 引擎实际会多给到 2×latency+1，因此取 2048 安全余量）。
+/// 卷积型 GraphicEQ 的内部隐藏延迟相关预留（v9.5 起为分块 FFT 块大小 128）；
+/// 临时缓冲按此预留余量，避免引擎按 `CalcInputFrames` 多给帧数时越界
+/// （2026-08-10 实证：引擎实际会多给到 2×latency+1，2048 为安全余量）。
 const MAX_APO_LATENCY_SAMPLES: usize = 2048;
 
 /// `Reset`：清空链与过渡状态，回到未锁定基线。
@@ -259,6 +259,18 @@ pub(crate) fn lock_for_process(
             .parse_file_with_spec(&config_path, &dsp_ctx)
             .map_err(|_| windows::core::Error::from(E_FAIL))?
     };
+    crate::object::apo::config::diag_append(&format!(
+        "LOCK clsid={:?} postmix={} rate={} in={} out={} maxframes={} filters={} spec={} first_spec={}",
+        apo.clsid,
+        is_postmix,
+        format.sample_rate,
+        format.channels,
+        output_format.channels,
+        input_descriptor.u32MaxFrameCount,
+        filters.len(),
+        spec_chain.len(),
+        spec_chain.first().cloned().unwrap_or_default()
+    ));
 
     // 配置解析落地探针（debug 门控，验证 Lock 时确实读到了 per-device config）。
     #[cfg(debug_assertions)]

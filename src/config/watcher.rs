@@ -141,12 +141,12 @@ impl ConfigWatcher {
             // Safety: notify_handle 有效。
             let ok = unsafe { FindNextChangeNotification(self.notify_handle) };
             // v9.4：重置失败 → 句柄保持 signaled → wait 会立即返回 → hot_reload
-            // 无限自旋（audiodg CPU 持续高位、声音设置页卡顿）。失败时关闭句柄
-            // 并标记无效，让循环干净退出（等效不监控），绝不自旋。
+            // 无限自旋（audiodg CPU 持续高位、声音设置页卡顿）。失败时先尝试
+            // **重建**监控句柄；重建也失败才退出（等效不监控），绝不自旋。
             if ok.is_err() {
-                let _ = unsafe { FindCloseChangeNotification(self.notify_handle) };
-                self.notify_handle = HANDLE(std::ptr::null_mut());
-                return false;
+                if !self.recreate_notify() {
+                    return false;
+                }
             }
             return true;
         }
@@ -184,6 +184,28 @@ impl ConfigWatcher {
         }
         // 不关闭 shutdown_event——由 APO 实例在 Drop/Unlock 统一管理，
         // 避免 ConfigWatcher 与 ApoObject 生命周期竞态（双关闭）。
+    }
+
+    /// 重建目录变更通知句柄（`FindNextChangeNotification` 失败后的自愈路径，v9.4）。
+    fn recreate_notify(&mut self) -> bool {
+        let _ = unsafe { FindCloseChangeNotification(self.notify_handle) };
+        self.notify_handle = HANDLE(std::ptr::null_mut());
+        // Safety: watch_dir 为所有权 PathBuf 转 HSTRING 借用（存活至调用返回）。
+        let new_handle = unsafe {
+            use windows::core::HSTRING;
+            let dir_w = HSTRING::from(self.watch_dir.as_os_str());
+            FindFirstChangeNotificationW(
+                &dir_w,
+                true,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+            )
+        }
+        .unwrap_or(HANDLE(std::ptr::null_mut()));
+        if new_handle.is_invalid() {
+            return false;
+        }
+        self.notify_handle = new_handle;
+        true
     }
 }
 

@@ -333,7 +333,9 @@ pub(crate) fn parse_lines_impl(
                 "graphiceq" => {
                     let before = ctx.filters.len();
                     let r = graphic::handle(value, ctx);
-                    if r.is_ok() && ctx.filters.len() > before {
+                    // v9.5：空参数（`GraphicEQ:`）也产出 spec 指纹——显式移除 EQ
+                    // 必须触发热重载（切到空链 passthrough），否则指纹不变被短路。
+                    if r.is_ok() && (ctx.filters.len() > before || value.trim().is_empty()) {
                         ctx.specs.push(produce_spec(cmd, value));
                     }
                     r
@@ -747,6 +749,20 @@ Wide: Intensity 0.354331
         assert!(matches!(err, ConfigError::SyntaxError { .. }));
         let err = parse_str_spec_result("Maximizer: Dither Pink\n", &test_ctx()).unwrap_err();
         assert!(matches!(err, ConfigError::SyntaxError { .. }));
+    }
+
+    #[test]
+    fn empty_graphic_eq_is_valid_noop_with_spec() {
+        // v9.5：`GraphicEQ:` 空参数 = 显式移除 EQ（passthrough），且必须产出
+        // spec 指纹——热重载据此把旧 EQ 链切换为空链（指纹 ≠ 无此命令）。
+        let (filters, specs) = parse_str_spec("GraphicEQ:\n", &test_ctx());
+        assert_eq!(filters.len(), 0);
+        assert_eq!(specs.len(), 1);
+        assert!(specs[0].starts_with("graphiceq"));
+
+        // 与“配置里根本没有 GraphicEQ”指纹不同 → 热重载必然触发。
+        let (_f0, s0) = parse_str_spec("# nothing\n", &test_ctx());
+        assert_ne!(s0, specs);
     }
 
     // ── v7.9 三类 config 复杂度覆盖（用户反馈） ──────────────────────────
