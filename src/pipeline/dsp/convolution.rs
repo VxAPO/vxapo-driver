@@ -35,6 +35,10 @@ const MAX_WAV_FILE_SIZE: usize = 1 << 20; // 1 MiB
 pub struct ConvolutionFilter {
     /// IR 文件路径（用于日志/错误报告）。
     ir_path: String,
+    /// 由调用方直接注入的 IR（GraphicEQ 运行时生成）；优先于文件加载。
+    ir_override: Option<Vec<f32>>,
+    /// 强制走直接时域 FIR（GraphicEQ 用：无分区块延迟，延迟不上报引擎）。
+    force_direct: bool,
     /// 增益（dB）。
     gain_db: f32,
     /// 运行模式（直通 / 直接 FIR / 分块 FFT）。
@@ -151,6 +155,32 @@ impl ConvolutionFilter {
     pub fn new(ir_path: &str, gain_db: f32) -> Self {
         Self {
             ir_path: ir_path.to_owned(),
+            ir_override: None,
+            force_direct: false,
+            gain_db,
+            mode: ConvMode::Passthrough,
+            channel_indices: Vec::new(),
+        }
+    }
+
+    /// 使用内存中已生成的 IR 创建卷积滤波器（GraphicEQ 等运行时生成场景）。
+    pub fn with_ir(ir: Vec<f32>, gain_db: f32) -> Self {
+        Self {
+            ir_path: "<generated>".to_owned(),
+            ir_override: Some(ir),
+            force_direct: false,
+            gain_db,
+            mode: ConvMode::Passthrough,
+            channel_indices: Vec::new(),
+        }
+    }
+
+    /// 使用内存 IR 并强制直接时域 FIR（无分区块延迟）。
+    pub fn with_ir_direct(ir: Vec<f32>, gain_db: f32) -> Self {
+        Self {
+            ir_path: "<generated-direct>".to_owned(),
+            ir_override: Some(ir),
+            force_direct: true,
             gain_db,
             mode: ConvMode::Passthrough,
             channel_indices: Vec::new(),
@@ -167,7 +197,11 @@ impl Filter for ConvolutionFilter {
         let channels = self.channel_indices.len().max(1);
 
         self.mode = ConvMode::Passthrough;
-        match load_wav_ir(&self.ir_path) {
+        let loaded = match &self.ir_override {
+            Some(ir) => Ok(ir.clone()),
+            None => load_wav_ir(&self.ir_path),
+        };
+        match loaded {
             Ok(raw_ir) => {
                 if raw_ir.is_empty() {
                     return None;
@@ -198,7 +232,7 @@ impl Filter for ConvolutionFilter {
                     return None;
                 }
 
-                if ir.len() <= MAX_DIRECT_IR_LEN {
+                if ir.len() <= MAX_DIRECT_IR_LEN || self.force_direct {
                     self.mode = ConvMode::Direct(build_direct(&ir, channels));
                 } else if ir.len() <= MAX_PARTITIONED_IR_LEN {
                     match build_partitioned(&ir, channels) {

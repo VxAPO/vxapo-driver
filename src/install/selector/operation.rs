@@ -16,12 +16,13 @@ use crate::install::device::slots::{
     ApoSlot, ChildApoKind, InstallMode, SlotValue, read_slot_value, CHILD_APO_PATH_ROOT,
     FX_PROPERTIES_KEY, INSTALL_VERSION,
 };
+use crate::install::device::sysfx;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, GUID, IUnknown,
     guid_to_string,
 };
-use crate::sys::registry::RegKey;
+use crate::sys::registry::{RegKey, RegValue};
 use crate::utils::vx_error::{Result, VxApoError};
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -246,6 +247,15 @@ pub fn install_endpoint(
     // ── Step 7: 删除 DisableEnhancements ──────────────────────────────────
 
     let _ = fx_key.delete_value("DisableEnhancements");
+    // EAPO DeviceAPOInfo.cpp 78/642-645：Windows 以
+    // `{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5`（PKEY_AudioEndpoint_Disable_SysFx）
+    // 禁用整条增强链；安装时删除以强制启用。
+    let _ = fx_key.delete_value("{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5");
+
+    // ── Step 8: 接管 Windows“设备默认效果”（CAPX MSFX 模板）───────────────
+    // 仅改端点 FxProperties 会被 Windows 重启/重新枚举后从驱动模板恢复，
+    // 导致微软 WMALFXGFX APO 与 VxAPO 同时加载（音频断断续续/慢放）。
+    take_over_sysfx(device_guid, &endpoint_path, &fx_key, config, &mut tx)?;
 
     // 全部成功 → 提交事务（禁用回滚）。
     tx.commit();
@@ -368,6 +378,10 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         ));
     }
 
+    // ── 恢复 Windows“设备默认效果”（CAPX MSFX 模板）──────────────────────
+    // 必须先于删除信息区执行：安装时保存的微软原始 APO 值在信息区里。
+    restore_sysfx(device_guid, &endpoint_path)?;
+
     // ── 删除 VxAPO 独立安装信息区（含所有备份，v8.4）────────────────────
     // **卸载 ≠ 快照恢复**（2026-08-05 用户纠正）：卸载只删 VxAPO 自己的 CLSID，
     // **不**把 install 时备份的第三方 APO（EAPO）写回父槽位——那是快照 restore
@@ -391,6 +405,109 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
 
     // 全流程收尾：重启音频服务恢复输出（槽位删除后引擎需重枚举）。
     crate::install::audiodg::restart_audio_service()?;
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CAPX 设备默认效果接管
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 接管指定端点的 Windows“设备默认效果”。
+///
+/// 两部分：
+/// 1. 设备接口 `MSFX\N` 模板：微软 StreamEffect → VxAPO PreMix，删除 ModeEffect；
+/// 2. 端点 FxProperties `,6`（MFX）：非 SfxMfx 模式时删除微软 MFX，避免与
+///    VxAPO PostMix（`,7`）重复处理。
+///
+/// 所有原始值写入事务，安装失败自动回滚；成功后再持久化到 VxAPO 信息区，
+/// 供卸载恢复。
+fn take_over_sysfx(
+    device_guid: &str,
+    endpoint_path: &str,
+    fx_key: &RegKey,
+    config: &InstallConfig,
+    tx: &mut Transaction,
+) -> Result<()> {
+    let endpoint_key = RegKey::open(HKEY_LOCAL_MACHINE, endpoint_path)?;
+    let (device_id, node_type) = sysfx::endpoint_identity(&endpoint_key);
+    let paths = sysfx::find_msfx_entries(device_id.as_deref(), node_type.as_deref())?;
+    let mut changes =
+        sysfx::plan_msfx_takeover(&paths, config.install_mode, config.install_premix, config.install_postmix)?;
+
+    // 端点 FxProperties 上的微软 MFX：默认模式（SfxEfx）下必须删掉。
+    if config.install_mode != InstallMode::SfxMfx {
+        let fx_path = format!("{}\\{}", endpoint_path, FX_PROPERTIES_KEY);
+        if let Ok(RegValue::Sz(mode)) = fx_key.read_value(sysfx::PKEY_FX_MODE_EFFECT_CLSID) {
+            if sysfx::is_ms_mode_clsid(&mode) || sysfx::is_vxapo_clsid(&mode) {
+                changes.push(sysfx::SysFxChange {
+                    key_path: fx_path,
+                    value_name: sysfx::PKEY_FX_MODE_EFFECT_CLSID.to_string(),
+                    original: Some(mode),
+                    target: None,
+                });
+            }
+        }
+    }
+
+    if changes.is_empty() {
+        return Ok(());
+    }
+
+    for change in &changes {
+        if let Some(original) = &change.original {
+            tx.record(RollbackAction::RestoreValue {
+                key_path: change.key_path.clone(),
+                name: change.value_name.clone(),
+                backup: original.clone(),
+            });
+        }
+        let key = RegKey::open_for_write(HKEY_LOCAL_MACHINE, &change.key_path)?;
+        match &change.target {
+            Some(target) => key.write_sz(&change.value_name, target)?,
+            None => key.delete_value(&change.value_name)?,
+        }
+    }
+
+    let backups = sysfx::changes_to_backups(&changes);
+    if !backups.is_empty() {
+        let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+        let (root, sub_key) = split_hklm_path(&info_key)?;
+        let info = RegKey::open_for_write(root, sub_key)?;
+        info.write_multi_value(sysfx::SYSFX_BACKUP_VALUE, &sysfx::encode_backups(&backups))?;
+    }
+
+    Ok(())
+}
+
+/// 卸载时恢复微软默认效果（优先用信息区备份，无备份则按 CAPX 默认值兜底）。
+fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()> {
+    let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
+    let backups = match split_hklm_path(&info_key) {
+        Ok((root, sub_key)) => RegKey::open(root, sub_key)
+            .ok()
+            .and_then(|k| k.read_multi_value(sysfx::SYSFX_BACKUP_VALUE).ok())
+            .map(|values| sysfx::decode_backups(&values))
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let changes = if !backups.is_empty() {
+        sysfx::plan_msfx_restore(&backups)?
+    } else {
+        let endpoint_key = RegKey::open(HKEY_LOCAL_MACHINE, endpoint_path)?;
+        let (device_id, node_type) = sysfx::endpoint_identity(&endpoint_key);
+        let paths = sysfx::find_msfx_entries(device_id.as_deref(), node_type.as_deref())?;
+        sysfx::plan_msfx_restore_defaults(&paths)?
+    };
+
+    for change in &changes {
+        let key = RegKey::open_for_write(HKEY_LOCAL_MACHINE, &change.key_path)?;
+        match &change.target {
+            Some(target) => key.write_sz(&change.value_name, target)?,
+            None => key.delete_value(&change.value_name)?,
+        }
+    }
+
     Ok(())
 }
 

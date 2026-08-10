@@ -60,7 +60,11 @@ pub fn apply_error_policy(
             match policy {
                 ErrorPolicy::Bypass => {
                     let copy_len = input_slice.len().min(output_buffer.len());
-                    output_buffer[..copy_len].copy_from_slice(&input_slice[..copy_len]);
+                    // 输入输出可能是同一块 in-place 缓冲，不能用 copy_from_slice
+                    // （重叠 UB）；逐元素拷贝等价 memmove。
+                    for i in 0..copy_len {
+                        output_buffer[i] = input_slice[i];
+                    }
                     if output_buffer.len() > copy_len {
                         output_buffer[copy_len..].fill(0.0);
                     }
@@ -82,6 +86,24 @@ pub fn process_chain_interleaved(
     frame_count: usize,
     temp: &mut [Vec<f32>],
 ) -> Result<()> {
+    // 防御（2026-08-10）：过渡路径可能收到超过平面缓冲容量的帧数，
+    // 直接旁通而不是 panic，避免 audiodg 崩溃/连锁静音。
+    let io_ok = frame_count
+        .checked_mul(channels)
+        .map_or(false, |n| n <= input.len() && n <= output.len());
+    let ready = temp.len() >= channels
+        && temp[..channels].iter().all(|b| b.len() >= frame_count)
+        && io_ok;
+    if !ready {
+        let copy_len = input.len().min(output.len());
+        for i in 0..copy_len {
+            output[i] = input[i];
+        }
+        if output.len() > copy_len {
+            output[copy_len..].fill(0.0);
+        }
+        return Ok(());
+    }
     deinterleave_into(input, temp, channels, frame_count);
     chain.process(temp, frame_count)?;
     interleave_from_guarded(temp, output, channels, frame_count);
@@ -120,6 +142,36 @@ pub fn process_audio(
 
         let input_slice = unsafe { input_info.as_slice() };
         let output_slice = unsafe { output_info.as_slice_mut() };
+
+        // 防御（2026-08-10 多流崩溃根因）：引擎传入的帧数偶尔会超过按
+        // max_frame_count 分配的临时缓冲。此时直通而非 panic，避免 audiodg 崩溃。
+        let input_ok = frames
+            .checked_mul(in_ch)
+            .map_or(false, |n| n <= input_slice.len());
+        let output_ok = frames
+            .checked_mul(out_ch)
+            .map_or(false, |n| n <= output_slice.len());
+        let deinterleave_ready = temp_buffers.len() >= in_ch
+            && temp_buffers[..in_ch].iter().all(|b| b.len() >= frames)
+            && input_ok
+            && output_ok;
+        if !deinterleave_ready {
+            let copy_len = input_slice.len().min(output_slice.len());
+            apply_error_policy(
+                Err(crate::utils::vx_error::VxApoError::internal(
+                    "temp buffer smaller than valid frame count",
+                )),
+                input_slice,
+                output_slice,
+                ErrorPolicy::Bypass,
+                stats,
+            );
+            output_prop.u32BufferFlags = BUFFER_VALID;
+            // 不能谎报帧数：输出缓冲装不下 frames 时，只报实际写入的帧数。
+            output_prop.u32ValidFrameCount =
+                (copy_len / out_ch.max(1)) as u32;
+            continue;
+        }
 
         // Step 2: 交织 → 去交织
         deinterleave_into(input_slice, &mut temp_buffers[..in_ch], in_ch, frames);

@@ -47,6 +47,9 @@ impl Chain {
                 names = next;
             }
         }
+        // 延迟可能依赖 initialize（如卷积型 GraphicEQ/Convolution 在 initialize
+        // 时才确定 IR/分块长度），因此初始化完成后重算一次总延迟。
+        self.total_latency = self.filters.iter().map(|f| f.latency()).sum();
     }
 
     /// 总延迟（采样数）。

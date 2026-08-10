@@ -31,6 +31,11 @@ use crate::sys::com::apo_types::{
 };
 use crate::sys::com::prelude::{E_FAIL, HRESULT};
 
+/// 卷积型 GraphicEQ 的内部块延迟（采样数）；临时缓冲按此预留余量，
+/// 避免引擎按 `CalcInputFrames` 多给帧数时越界（2026-08-10 实证：
+/// 引擎实际会多给到 2×latency+1，因此取 2048 安全余量）。
+const MAX_APO_LATENCY_SAMPLES: usize = 2048;
+
 /// `Reset`：清空链与过渡状态，回到未锁定基线。
 pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
     // ---- 探针 6: Reset 被调（2026-08-04 排查，删）----
@@ -59,7 +64,8 @@ pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
 
 /// `GetLatency`：有 child → 委托 child；无 child → 返回 0。
 ///
-/// P0-6（v8.3 S4）：align EAPO `*pTime=0` 后仅 child 委托改写——EAPO 不维护自身延迟值。
+/// 分区块已缩至 32 采样（≈0.67ms），隐藏延迟不会造成可闻慢放；
+/// 向引擎上报延迟会导致帧协商错位/无声（2026-08-10 实证），因此不上报。
 pub(crate) fn get_latency(apo: &ApoObject_Impl) -> Result<i64> {
     // ---- 探针 6: GetLatency 被调（2026-08-04 排查，删）----
     #[cfg(debug_assertions)]
@@ -267,14 +273,18 @@ pub(crate) fn lock_for_process(
     }
     // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
     chain.initialize(format.sample_rate, &channel_names);
-    let total_latency = chain.total_latency();
+    // 延迟不上报引擎；分区块已缩小到 32 采样，隐藏延迟不产生可闻慢放。
+    let _total_latency = chain.total_latency();
 
     // Step 5: 预分配过渡缓冲区（v7.8 修订，杜绝 RT 线程过渡首次 resize 扩容——
     //          EAPO 对齐：按 max_frame_count × max_ch 预分配充足容量）。
+    // 2026-08-10：缓冲区额外预留 MAX_APO_LATENCY_SAMPLES，因为引擎按
+    // CalcInputFrames(output+latency) 提供的帧数可能超过 max_frame_count。
     let max_ch = pipeline_context
         .input_channels
         .max(pipeline_context.output_channels) as usize;
-    let max_samples = pipeline_context.max_frame_count * max_ch;
+    let frame_capacity = pipeline_context.max_frame_count + MAX_APO_LATENCY_SAMPLES;
+    let max_samples = frame_capacity * max_ch;
     let temp_buffer_old = vec![0.0f32; max_samples];
     let temp_buffer_new = vec![0.0f32; max_samples];
 
@@ -284,7 +294,7 @@ pub(crate) fn lock_for_process(
     // panic 兜底输出清零 + BUFFER_SILENT → 完全无声（2026-08-04 实测根因）。
     let mut temp_buffers: Vec<Vec<f32>> = Vec::with_capacity(max_ch);
     for _ in 0..max_ch {
-        temp_buffers.push(vec![0.0f32; pipeline_context.max_frame_count]);
+        temp_buffers.push(vec![0.0f32; frame_capacity]);
     }
 
     // Step 6: 更新内部状态。（R1：退役链由控制线程锁内统一析构）
@@ -304,9 +314,8 @@ pub(crate) fn lock_for_process(
         // 此后 hot_reload 与此基线比较决定是否真正切换。
         inner.active_spec = spec_chain;
     }
-    apo.latency_samples.store(total_latency, Ordering::SeqCst);
-    apo.latency_frames_atomic
-        .store(total_latency, Ordering::SeqCst);
+    apo.latency_samples.store(0, Ordering::SeqCst);
+    apo.latency_frames_atomic.store(0, Ordering::SeqCst);
 
     // Step 6b（P0-6，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父，Note 57）。
     // 对齐 EAPO 341-347：childCfg->LockForProcess 结果仅 Trace 不 return。
@@ -418,14 +427,21 @@ impl ApoObject {
         // P0-6（v8.1 D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
         // 双链共享同一份 child 输出作输入；child 不在 current/outgoing 任一链内。
         // 锁 inner **前**调（避免持 inner 锁调 child——child 是独立 COM 对象，无循环依赖）。
-        if let Some(child) = self.child_apo.lock().unwrap().as_ref() {
+        if let Some(child) = self
+            .child_apo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             // SAFETY: 引擎保证 pp_inputs/pp_outputs 有效（APOProcess 契约）。
             unsafe { child.apo_process(num_input, pp_inputs, num_output, pp_outputs) };
             // 委托帧数计算（RT 无锁，object 7.1.11：每帧委托）。
             let _ = child.calc_input_frames(0);
         }
 
-        let mut inner = self.mutex.lock().unwrap();
+        // 锁被前序 panic 污染时继续使用数据（PoisonError::into_inner），
+        // 避免 RT 路径二次 panic 导致整个 audiodg 崩溃（2026-08-10 实证）。
+        let mut inner = self.mutex.lock().unwrap_or_else(|e| e.into_inner());
         let pending = inner.pending_reload;
 
         // 过渡模式存在 → 双链处理 + 混合。
@@ -455,7 +471,10 @@ impl ApoObject {
                     std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
                 };
                 let copy_len = src.len().min(dst.len());
-                dst[..copy_len].copy_from_slice(&src[..copy_len]);
+                // in-place 场景 src/dst 可能重叠，逐元素拷贝（memmove 语义）。
+                for i in 0..copy_len {
+                    dst[i] = src[i];
+                }
                 if dst.len() > copy_len {
                     dst[copy_len..].fill(0.0);
                 }

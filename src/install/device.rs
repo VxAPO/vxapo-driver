@@ -5,6 +5,7 @@
 //! - format：WAVEFORMATEX 解析 + 通道掩码兜底（只读）
 //! - slots：5 槽位读取 + 3 模式 + GUID 回退（只读）
 //! - info：组合查询层（只读）
+//! - sysfx：Windows CAPX“设备默认效果”模板定位/接管/恢复
 //!
 //! 边界：不知道 pipeline/、config/。只负责设备 APO 的安装/卸载和设备查询。
 
@@ -12,3 +13,4 @@ pub mod endpoint;
 pub mod format;
 pub mod info;
 pub mod slots;
+pub mod sysfx;
