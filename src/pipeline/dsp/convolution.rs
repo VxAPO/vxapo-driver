@@ -106,7 +106,7 @@ static USE_AVX2_FMA: AtomicBool = AtomicBool::new(false);
 
 /// 运行时探测 AVX2+FMA（非 RT，build_direct 调用；幂等）。
 #[cfg(target_arch = "x86_64")]
-fn init_fir_simd() {
+pub(crate) fn init_fir_simd() {
     if std::arch::is_x86_feature_detected!("avx2")
         && std::arch::is_x86_feature_detected!("fma")
     {
@@ -117,7 +117,7 @@ fn init_fir_simd() {
 /// 连续段点积 `Σ a[i]·b[i]`（等长）。AVX2+FMA 8 路 FMA；回退标量 mul_add
 /// （release 下编译器按 SSE2 自动向量化 4 路）。
 #[inline]
-fn dot(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         if USE_AVX2_FMA.load(Ordering::Relaxed) {
