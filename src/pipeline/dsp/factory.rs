@@ -19,6 +19,7 @@ use crate::pipeline::dsp::filter::{
 use crate::pipeline::dsp::fxsound::aural::AuralEnhancerFactory;
 use crate::pipeline::dsp::fxsound::maximizer::MaximizerFactory;
 use crate::pipeline::dsp::fxsound::reverb::ReverbFactory;
+use crate::pipeline::dsp::fxsound::wide::WideFactory;
 use crate::pipeline::dsp::graphic_eq::{parse_graphic_eq_params, GraphicEqFilter};
 use crate::pipeline::dsp::hp_lp::HighLowPassFilter;
 use crate::pipeline::dsp::loudness::{parse_loudness_params, LoudnessFilter};
@@ -198,8 +199,8 @@ pub enum OutcomeKind {
 // 工厂索引常量（v6.3 规范 4.10）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 内置工厂总数（18，v9.1 新增 AuralEnhancer/Reverb/Maximizer）。
-pub const FACTORY_COUNT: usize = 18;
+/// 内置工厂总数（19，v9.2 新增 Wide）。
+pub const FACTORY_COUNT: usize = 19;
 
 /// 工厂索引常量表。
 pub mod index {
@@ -221,6 +222,7 @@ pub mod index {
     pub const AURAL_ENHANCER: usize = 15;
     pub const REVERB: usize = 16;
     pub const MAXIMIZER: usize = 17;
+    pub const WIDE: usize = 18;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -625,7 +627,7 @@ impl FilterFactory for LoudnessFactory {
 ///
 /// 注册顺序与 `index` 常量保持一致（优先级从高到低）：
 /// IIR → BIQUAD → PREAMP → DELAY → COPY → CONVOLUTION → GRAPHIC_EQ → VST_PLUGIN
-/// → LOUDNESS_CORRECTION → AURAL_ENHANCER → REVERB → MAXIMIZER
+/// → LOUDNESS_CORRECTION → AURAL_ENHANCER → REVERB → MAXIMIZER → WIDE
 pub fn register_builtin_filters(registry: &mut FilterRegistry) {
     registry.register(Box::new(IirFactory));
     registry.register(Box::new(BiquadFactory));
@@ -639,6 +641,7 @@ pub fn register_builtin_filters(registry: &mut FilterRegistry) {
     registry.register(Box::new(AuralEnhancerFactory));
     registry.register(Box::new(ReverbFactory));
     registry.register(Box::new(MaximizerFactory));
+    registry.register(Box::new(WideFactory));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -906,6 +909,21 @@ mod tests {
         assert!(matches!(result, FilterCreateResult::NoMatch));
     }
 
+    #[test]
+    fn wide_factory_parses_params() {
+        let factory = WideFactory;
+        let result = factory.create_filter("Intensity 0.7", &test_ctx(), &NullLoader);
+        assert!(matches!(result, FilterCreateResult::Filter(_)));
+        assert_eq!(factory.command_name(), "Wide");
+    }
+
+    #[test]
+    fn wide_factory_invalid_no_match() {
+        let factory = WideFactory;
+        let result = factory.create_filter("", &test_ctx(), &NullLoader);
+        assert!(matches!(result, FilterCreateResult::NoMatch));
+    }
+
     // ── Preamp / Copy 工厂 ──────────────────────────────────────────────────
 
     #[test]
@@ -955,7 +973,8 @@ mod tests {
         assert!(names.contains(&"AuralEnhancer"));
         assert!(names.contains(&"Reverb"));
         assert!(names.contains(&"Maximizer"));
-        assert_eq!(registry.len(), 12);
+        assert!(names.contains(&"Wide"));
+        assert_eq!(registry.len(), 13);
     }
 
     #[test]
@@ -964,7 +983,7 @@ mod tests {
         register_builtin_filters(&mut registry);
         let names = registry.factory_names();
 
-        // 与 index 常量顺序一致：IIR → ... → LOUDNESS_CORRECTION → AURAL_ENHANCER → REVERB → MAXIMIZER
+        // 与 index 常量顺序一致：IIR → ... → AURAL_ENHANCER → REVERB → MAXIMIZER → WIDE
         let expected = [
             index::IIR,
             index::BIQUAD,
@@ -978,6 +997,7 @@ mod tests {
             index::AURAL_ENHANCER,
             index::REVERB,
             index::MAXIMIZER,
+            index::WIDE,
         ];
 
         for (i, &idx) in expected.iter().enumerate() {
@@ -1004,6 +1024,7 @@ mod tests {
             index::AURAL_ENHANCER => "AuralEnhancer",
             index::REVERB => "Reverb",
             index::MAXIMIZER => "Maximizer",
+            index::WIDE => "Wide",
             _ => "<unregistered>",
         }
     }
@@ -1104,6 +1125,14 @@ mod tests {
             &NullLoader,
         );
         assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
+
+        let outcome = registry.try_create_named(
+            "Wide",
+            "Intensity 0.4",
+            &test_ctx(),
+            &NullLoader,
+        );
+        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
     }
 
     #[test]
@@ -1125,6 +1154,7 @@ mod tests {
         assert!(index::LOUDNESS_CORRECTION < index::AURAL_ENHANCER);
         assert!(index::AURAL_ENHANCER < index::REVERB);
         assert!(index::REVERB < index::MAXIMIZER);
-        assert!(index::MAXIMIZER + 1 == FACTORY_COUNT);
+        assert!(index::MAXIMIZER < index::WIDE);
+        assert!(index::WIDE + 1 == FACTORY_COUNT);
     }
 }

@@ -716,13 +716,15 @@ Channel: *
 AuralEnhancer: TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0
 Reverb: RoomSize 1.0 Decay 0.566 Damping 0.408 Bandwidth 0.350 PreDelay 0 ms MotionRate 0.11 MotionDepth 0.63 ms Wet 0.3 Dry 0.9
 Maximizer: GainBoost 6 dB MaxOutput -0.3 dB Release 100 ms Target 0.32 Lookahead 0.75 ms Dither Shaped
+Wide: Intensity 0.354331
 ";
         let (filters, specs) = parse_str_spec(content, &test_ctx());
-        assert_eq!(filters.len(), 3);
-        assert_eq!(specs.len(), 3);
+        assert_eq!(filters.len(), 4);
+        assert_eq!(specs.len(), 4);
         assert!(specs[0].starts_with("auralenhancer"));
         assert!(specs[1].starts_with("reverb"));
         assert!(specs[2].starts_with("maximizer"));
+        assert!(specs[3].starts_with("wide"));
     }
 
     #[test]

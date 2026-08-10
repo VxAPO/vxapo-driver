@@ -4,6 +4,7 @@
 //! - `Auralp.c` → Aural Enhancer
 //! - `Lex16.c` → Lexicon 风格 Reverb
 //! - `Maxi16.c` → Maximizer
+//! - `Wide32.c` → Wide（立体声加宽 / Surround）
 //!
 //! 每个模块提供：
 //! - 参数结构体与 EAPO 风格 `Key Value` 解析；
@@ -13,6 +14,7 @@
 pub mod aural;
 pub mod maximizer;
 pub mod reverb;
+pub mod wide;
 
 #[cfg(test)]
 pub(crate) use test_support::{test_ctx, test_loader};
