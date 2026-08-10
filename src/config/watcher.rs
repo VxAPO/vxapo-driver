@@ -139,7 +139,15 @@ impl ConfigWatcher {
             let _ = unsafe { WaitForMultipleObjects(&[self.notify_handle], false, DEDUP_WINDOW_MS) };
             // 重置通知，为下一次等待准备。
             // Safety: notify_handle 有效。
-            let _ = unsafe { FindNextChangeNotification(self.notify_handle) };
+            let ok = unsafe { FindNextChangeNotification(self.notify_handle) };
+            // v9.4：重置失败 → 句柄保持 signaled → wait 会立即返回 → hot_reload
+            // 无限自旋（audiodg CPU 持续高位、声音设置页卡顿）。失败时关闭句柄
+            // 并标记无效，让循环干净退出（等效不监控），绝不自旋。
+            if ok.is_err() {
+                let _ = unsafe { FindCloseChangeNotification(self.notify_handle) };
+                self.notify_handle = HANDLE(std::ptr::null_mut());
+                return false;
+            }
             return true;
         }
 

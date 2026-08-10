@@ -23,6 +23,7 @@ use crate::pipeline::format::{extract_format, AudioFormat};
 use crate::pipeline::process::{
     ErrorPolicy, ProcessParams, process_audio, process_chain_interleaved,
 };
+use crate::object::vx_reg_props::CLSID_VXAPO_POST_MIX;
 use crate::sys::audio_defs::get_channel_names;
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{
@@ -242,13 +243,22 @@ pub(crate) fn lock_for_process(
     //         （路径来自 Initialize 确定的 per-device config_path）。
     // v7.9：parse_file_with_spec → (滤波器列表, spec chain) 双返回。
     // active_spec 即本次解析产出的配置指纹（LockForProcess 建立基线）。
-    let mut registry = FilterRegistry::new();
-    register_all_commands(&mut registry);
-    let parser = ConfigParser::new(registry);
+    // v9.4：PostMix 实例默认直通——Windows 对渲染设备同时挂 SFX(PreMix) + EFX(PostMix)
+    // 两个 VxAPO 实例，若都加载同一 config 会把用户配置（如 GraphicEQ 卷积）应用两次：
+    // 音量异常偏低 + 双倍隐藏延迟/CPU（设备切换后帧协商更易错位）。
+    // PostMix 保留 child APO 委托（前任 EFX APO 仍生效），自身不再处理用户配置。
     let config_path = apo.config_path.lock().unwrap().clone();
-    let (filters, spec_chain) = parser
-        .parse_file_with_spec(&config_path, &dsp_ctx)
-        .map_err(|_| windows::core::Error::from(E_FAIL))?;
+    let is_postmix = apo.clsid == CLSID_VXAPO_POST_MIX;
+    let (filters, spec_chain) = if is_postmix {
+        (Vec::new(), Vec::new())
+    } else {
+        let mut registry = FilterRegistry::new();
+        register_all_commands(&mut registry);
+        let parser = ConfigParser::new(registry);
+        parser
+            .parse_file_with_spec(&config_path, &dsp_ctx)
+            .map_err(|_| windows::core::Error::from(E_FAIL))?
+    };
 
     // 配置解析落地探针（debug 门控，验证 Lock 时确实读到了 per-device config）。
     #[cfg(debug_assertions)]
@@ -336,9 +346,12 @@ pub(crate) fn lock_for_process(
     ensure_can_load().map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
     // Step 8 (v7.10)：Lock 末尾启动 watcher（config_path 已确定 + active_spec 基线就绪）。
+    // v9.4：PostMix 直通实例不启动 watcher（无配置可热重载，也避免双实例重复解析）。
     // 启动失败降级（仅日志），不阻塞锁定。
-    if let Err(e) = start_watcher(apo) {
-        log::warn!("LockForProcess: watcher start failed: {e}");
+    if !is_postmix {
+        if let Err(e) = start_watcher(apo) {
+            log::warn!("LockForProcess: watcher start failed: {e}");
+        }
     }
 
     // 全部成功 → 解除守卫（不再回退状态）。

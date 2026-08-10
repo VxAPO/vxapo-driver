@@ -4,8 +4,12 @@
 //! 运行 watcher 驱动的热重载逻辑。不包含 COM 接口方法。
 
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::time::SystemTime;
 
 use windows::core::Result;
+
+use once_cell::sync::Lazy;
 
 use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
@@ -233,6 +237,17 @@ pub(crate) fn hot_reload_impl(
     clsid: GUID,
     obj_ptr: usize,
 ) {
+    // 0. 文件级预检（v9.4）：`FindFirstChangeNotificationW` 是目录级通知，
+    //    目录里任何文件变化（如无关文件）都会触发。按 config.txt 的
+    //    (mtime, size) 记录上次已处理状态，未变化直接跳过——避免事件风暴
+    //    导致重复解析/重建链（audiodg CPU 高位、声音设置页卡顿的诱因之一）。
+    {
+        let path = config_path.lock().unwrap().clone();
+        if config_unchanged_since_last_reload(&path) {
+            return;
+        }
+    }
+
     // 1. R2 阻塞式（短锁检查，不构建新链）。
     {
         let mut guard = inner.lock().unwrap();
@@ -352,4 +367,22 @@ pub(crate) fn hot_reload_impl(
     let mut sm = SmoothingProvider::new(length);
     sm.begin();
     guard.transition = Some(sm);
+}
+
+/// 目录级事件 ≠ config.txt 变化：按 (mtime, size) 幂等跳过（v9.4）。
+fn config_unchanged_since_last_reload(config_path: &str) -> bool {
+    static LAST: Lazy<Mutex<HashMap<String, (SystemTime, u64)>>> =
+        Lazy::new(|| Mutex::new(HashMap::new()));
+    let meta = match std::fs::metadata(config_path) {
+        Ok(m) => m,
+        Err(_) => return true, // 文件不存在：无可重载，跳过。
+    };
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let key = (modified, meta.len());
+    let mut map = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if map.get(config_path) == Some(&key) {
+        return true;
+    }
+    map.insert(config_path.to_owned(), key);
+    false
 }

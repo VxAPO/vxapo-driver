@@ -16,6 +16,7 @@
 //! 3. 在 VxAPO 安装信息区保存原始值，卸载时恢复微软默认效果。
 
 use crate::install::device::slots::InstallMode;
+use crate::install::device::slots::ApoSlot;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::guid_to_string;
 use crate::sys::registry::RegKey;
@@ -474,6 +475,108 @@ pub fn is_vxapo_clsid(v: &str) -> bool {
     v.eq_ignore_ascii_case(&pre) || v.eq_ignore_ascii_case(&post)
 }
 
+/// 单个 `MSFX\N` 条目的运行期自愈动作（纯决策，可单测）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealAction {
+    /// 无需变更。
+    Noop,
+    /// 把微软 StreamEffect 替换为 VxAPO PreMix，并删除微软 ModeEffect。
+    ReplaceStreamDeleteMode,
+    /// 只删除微软 ModeEffect（StreamEffect 已是 VxAPO 或第三方）。
+    DeleteModeOnly,
+}
+
+/// 判断单个 `MSFX\N` 条目是否需要运行期接管（v9.4）。
+///
+/// 铁律：**只动微软 CAPX**——stream 是微软 CAPX → 替换为 VxAPO PreMix；
+/// mode 是微软 CAPX → 删除；含 WMALFX 上下文但值缺失也视为微软条目。
+/// 第三方 APO 一律不动。
+pub fn msfx_heal_action(
+    stream: Option<&str>,
+    mode: Option<&str>,
+    has_context: bool,
+) -> HealAction {
+    let stream_is_ms = stream.is_some_and(is_ms_stream_clsid);
+    let mode_is_ms = mode.is_some_and(is_ms_mode_clsid);
+    let stream_is_vx = stream.is_some_and(is_vxapo_clsid);
+
+    if stream_is_ms {
+        return HealAction::ReplaceStreamDeleteMode;
+    }
+    if mode_is_ms || (has_context && stream_is_vx) {
+        return HealAction::DeleteModeOnly;
+    }
+    HealAction::Noop
+}
+
+/// 运行期自愈：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX 重新灌回
+/// `MSFX\N`（与 VxAPO 同时加载 → 断断续续/慢放，v9.0 仅安装时接管不够）。
+///
+/// 本函数在本 DLL 被加载（`Initialize`，控制线程）时调用：
+/// - 仅当端点 FxProperties 已装 VxAPO（本 DLL 管理该端点）才动作；
+/// - 只替换/删除微软 CAPX CLSID，绝不覆盖第三方 APO；
+/// - 与安装 Step 7 对齐，同时删除禁用增强链的值，保证接管生效；
+/// - 幂等：无微软条目时零写入；失败仅返回 Err，调用方降级日志。
+pub fn ensure_takeover_for_endpoint(endpoint_path: &str) -> Result<()> {
+    // 1. 端点必须由 VxAPO 管理（任一槽位含 VxAPO CLSID）。
+    let fx_path = format!("{}\\{}", endpoint_path, "FxProperties");
+    let fx = match RegKey::open(HKEY_LOCAL_MACHINE, &fx_path) {
+        Ok(k) => k,
+        Err(_) => return Ok(()),
+    };
+    let managed = ApoSlot::ALL.iter().any(|slot| {
+        fx.read_sz(&ApoSlot::value_name(*slot))
+            .as_deref()
+            .is_some_and(is_vxapo_clsid)
+    });
+    if !managed {
+        return Ok(());
+    }
+
+    // 2. 定位 MSFX 模板（失败视为无模板，不阻塞）。
+    let endpoint_key = RegKey::open(HKEY_LOCAL_MACHINE, endpoint_path)?;
+    let (device_id, node_type) = endpoint_identity(&endpoint_key);
+    let paths = find_msfx_entries(device_id.as_deref(), node_type.as_deref())?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    // 3. 逐条目按纯决策接管。
+    for path in &paths {
+        let key = match RegKey::open(HKEY_LOCAL_MACHINE, path) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        let stream = key.read_sz(PKEY_FX_STREAM_EFFECT_CLSID);
+        let mode = key.read_sz(PKEY_FX_MODE_EFFECT_CLSID);
+        let has_context = key.key_exists_child(WMALFX_CONTEXT).unwrap_or(false);
+        match msfx_heal_action(stream.as_deref(), mode.as_deref(), has_context) {
+            HealAction::Noop => {}
+            HealAction::ReplaceStreamDeleteMode => {
+                let write_key = RegKey::open_for_write(HKEY_LOCAL_MACHINE, path)?;
+                write_key.write_sz(
+                    PKEY_FX_STREAM_EFFECT_CLSID,
+                    &guid_to_string(&CLSID_VXAPO_PRE_MIX),
+                )?;
+                let _ = write_key.delete_value(PKEY_FX_MODE_EFFECT_CLSID);
+            }
+            HealAction::DeleteModeOnly => {
+                let write_key = RegKey::open_for_write(HKEY_LOCAL_MACHINE, path)?;
+                let _ = write_key.delete_value(PKEY_FX_MODE_EFFECT_CLSID);
+            }
+        }
+    }
+
+    // 4. 强制启用增强链（与 install Step 7 对齐：删除 DisableEnhancements /
+    //    PKEY_AudioEndpoint_Disable_SysFx），否则接管了模板也可能整链被禁用。
+    if let Ok(fx_write) = RegKey::open_for_write(HKEY_LOCAL_MACHINE, &fx_path) {
+        let _ = fx_write.delete_value("DisableEnhancements");
+        let _ = fx_write.delete_value("{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5");
+    }
+
+    Ok(())
+}
+
 // ── 测试 ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -508,6 +611,41 @@ mod tests {
         assert!(is_vxapo_clsid(&guid_to_string(&CLSID_VXAPO_PRE_MIX)));
         assert!(is_vxapo_clsid(&guid_to_string(&CLSID_VXAPO_POST_MIX)));
         assert!(!is_vxapo_clsid("{C9453E73-8C5C-4463-9984-AF8BAB2F5447}"));
+    }
+
+    #[test]
+    fn msfx_heal_action_replaces_only_ms_capx() {
+        let ms_stream = Some(MS_CAPX_STREAM_CLSID);
+        let ms_mode = Some(MS_CAPX_MODE_CLSID);
+        let vx_str = guid_to_string(&CLSID_VXAPO_PRE_MIX);
+        let vx = Some(vx_str.as_str());
+        let third_party = Some("{6861CFDC-0461-49D5-A8DF-BE5ACD02692F}");
+
+        // 微软 StreamEffect → 替换 + 删微软 ModeEffect。
+        assert_eq!(
+            msfx_heal_action(ms_stream, ms_mode, true),
+            HealAction::ReplaceStreamDeleteMode
+        );
+        assert_eq!(
+            msfx_heal_action(ms_stream, None, false),
+            HealAction::ReplaceStreamDeleteMode
+        );
+        // StreamEffect 已是 VxAPO + 微软 ModeEffect → 只删 ModeEffect。
+        assert_eq!(
+            msfx_heal_action(vx, ms_mode, true),
+            HealAction::DeleteModeOnly
+        );
+        // 只有微软 ModeEffect → 只删。
+        assert_eq!(
+            msfx_heal_action(None, ms_mode, false),
+            HealAction::DeleteModeOnly
+        );
+        // 第三方一律不动（即使有 WMALFX 上下文残留，只要不是微软值也不动）。
+        assert_eq!(
+            msfx_heal_action(third_party, third_party, true),
+            HealAction::Noop
+        );
+        assert_eq!(msfx_heal_action(None, None, true), HealAction::Noop);
     }
 
     #[test]

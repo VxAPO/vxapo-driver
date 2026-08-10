@@ -516,7 +516,10 @@ fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 从端点 GUID 定位注册表路径（先 Render 再 Capture）。
-fn find_endpoint_path(device_guid: &str) -> Result<String> {
+///
+/// `pub(crate)`：运行期自愈（object/apo/init.rs `Initialize`）需要按端点 GUID
+/// 定位路径以接管 MSFX 模板（v9.4）。
+pub(crate) fn find_endpoint_path(device_guid: &str) -> Result<String> {
     let render = format!("{}\\{}", RENDER_PATH, device_guid);
     if RegKey::open(HKEY_LOCAL_MACHINE, &render).is_ok() {
         return Ok(render);

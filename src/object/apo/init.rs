@@ -67,6 +67,26 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
     };
     *apo.child_apo.lock().unwrap() = child;
 
+    // 5b. 运行期自愈（v9.4）：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX
+    //     重新灌回 `MSFX\N`，与 VxAPO 同时加载导致断断续续/慢放。本 DLL 在
+    //     每次加载（Initialize，控制线程）时按端点自愈接管——仅动微软 CAPX，
+    //     仅限已装 VxAPO 的端点；失败仅降级日志，不阻塞初始化。
+    if let Some(eg) = endpoint_guid {
+        let eg_str = guid_to_string(&eg);
+        match crate::install::selector::operation::find_endpoint_path(&eg_str) {
+            Ok(endpoint_path) => {
+                if let Err(e) =
+                    crate::install::device::sysfx::ensure_takeover_for_endpoint(&endpoint_path)
+                {
+                    log::warn!("Initialize: MSFX self-heal failed for {eg_str}: {e}");
+                }
+            }
+            Err(_) => {
+                // 端点路径找不到（虚拟设备/已拔出）→ 无需接管。
+            }
+        }
+    }
+
     // 5. per-device 配置路径（object 7.1.8）。
     let path = if valid_init_data {
         let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
