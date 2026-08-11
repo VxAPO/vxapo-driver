@@ -17,7 +17,7 @@
 //! config 语法（EAPO 风格）：
 //! `Wide: Intensity 0.354331`
 
-use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory};
+use crate::pipeline::dsp::filter::Filter;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WideParams {
@@ -266,31 +266,9 @@ impl Filter for WideFilter {
     }
 }
 
-#[derive(Debug)]
-pub struct WideFactory;
-
-impl FilterFactory for WideFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_wide_params(params) {
-            Some(p) => FilterCreateResult::Filter(Box::new(WideFilter::new(p))),
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Wide"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::{test_ctx, test_loader};
 
     #[test]
     fn parse_valid_and_defaults() {
@@ -648,11 +626,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn factory_matches_named_command() {
-        let factory = WideFactory;
-        let result = factory.create_filter("Intensity 0.5", &test_ctx(), &test_loader());
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "Wide");
-    }
 }

@@ -31,7 +31,7 @@
 //! - MotionDepth 0..2 ms：调制深度（2ms = 论文 EXCURSION 16 采样@29761Hz）
 //! - Wet/Dry 0..1
 
-use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory};
+use crate::pipeline::dsp::filter::Filter;
 
 /// 论文延迟表参考采样率（Table 1）。
 const DAT_REF_SR: f32 = 29761.0;
@@ -697,31 +697,9 @@ impl Filter for ReverbFilter {
     }
 }
 
-#[derive(Debug)]
-pub struct ReverbFactory;
-
-impl FilterFactory for ReverbFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_reverb_params(params) {
-            Some(p) => FilterCreateResult::Filter(Box::new(ReverbFilter::new(p))),
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Reverb"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::{test_ctx, test_loader};
 
     #[test]
     fn parse_valid() {
@@ -855,11 +833,4 @@ mod tests {
         assert!(peak < 2.0);
     }
 
-    #[test]
-    fn factory_matches() {
-        let factory = ReverbFactory;
-        let result = factory.create_filter("RoomSize 1.0", &test_ctx(), &test_loader());
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "Reverb");
-    }
 }

@@ -142,50 +142,6 @@ impl Filter for ChannelScopedFilter {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FilterCreateResult
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 工厂创建结果（四种状态）。
-#[derive(Debug)]
-pub enum FilterCreateResult {
-    /// 匹配成功，产生了过滤器实例。
-    Filter(Box<dyn Filter>),
-    /// 匹配成功，但不需要产生过滤器（如 `Device:` 匹配、`Include:` 已递归加载）。
-    NoFilter,
-    /// 匹配失败，继续尝试下一工厂。
-    NoMatch,
-    /// 当前文件应停止解析（如 `Device:` 不匹配）。
-    AbortFile,
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FilterFactory trait
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 过滤器工厂 trait。
-///
-/// 每个配置命令对应一个工厂实现。
-/// 遍历工厂列表，第一个返回 `Filter` 或 `NoFilter` 的工厂胜出。
-pub trait FilterFactory: Send {
-    /// 尝试根据配置行参数创建过滤器。
-    ///
-    /// - `params`：配置行冒号后的值部分（已 trim）
-    /// - `ctx`：引擎上下文
-    /// - `loader`：配置加载器回调（用于 `Include:` 递归）
-    ///
-    /// 返回 `FilterCreateResult` 四种状态之一。
-    fn create_filter(
-        &self,
-        params: &str,
-        ctx: &DspContext,
-        loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult;
-
-    /// 此工厂匹配的命令关键字（用于日志和调试）。
-    fn command_name(&self) -> &str;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
 // DspContext
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -233,20 +189,6 @@ pub enum ProcessingStage {
     PreMix,
     PostMix,
     Capture,
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ConfigLoader trait
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 配置加载器回调 trait。
-///
-/// `Include:` 命令通过此 trait 回调 `parser.rs` 递归加载子配置文件。
-/// `cmd_include.rs` 不能直接 import `parser.rs`，必须通过此 trait 解耦。
-pub trait ConfigLoader {
-    /// 加载指定路径的配置文件。返回该文件产生的过滤器列表。
-    /// 文件不存在或解析失败时返回空列表（降级为 passthrough）。
-    fn load_config(&self, path: &str, ctx: &DspContext) -> Vec<Box<dyn Filter>>;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

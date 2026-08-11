@@ -11,7 +11,7 @@
 //! config 语法（EAPO 风格）：
 //! `AuralEnhancer: TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0`
 
-use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory};
+use crate::pipeline::dsp::filter::Filter;
 
 /// 默认 Aural Tune（对应原 Quick preset 1 / MIDI 53 映射，约 1.76 kHz）。
 pub const DEFAULT_TUNE_HZ: f32 = 1760.0;
@@ -263,31 +263,9 @@ impl Filter for AuralEnhancerFilter {
     }
 }
 
-#[derive(Debug)]
-pub struct AuralEnhancerFactory;
-
-impl FilterFactory for AuralEnhancerFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_aural_params(params) {
-            Some(p) => FilterCreateResult::Filter(Box::new(AuralEnhancerFilter::new(p))),
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "AuralEnhancer"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::{test_ctx, test_loader};
 
     #[test]
     fn parse_defaults_and_overrides() {
@@ -544,11 +522,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn factory_matches_named_command() {
-        let factory = AuralEnhancerFactory;
-        let result = factory.create_filter("Drive 1.77", &test_ctx(), &test_loader());
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "AuralEnhancer");
-    }
 }

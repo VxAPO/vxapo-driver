@@ -14,7 +14,7 @@
 //! `Maximizer: GainBoost 6 dB MaxOutput -0.3 dB Release 100 ms
 //!  Target 0.32 Lookahead 0.75 ms Dither Shaped [Wet 1.0 Dry 0.0]`
 
-use crate::pipeline::dsp::filter::{ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory};
+use crate::pipeline::dsp::filter::Filter;
 
 /// 抖动类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,31 +438,9 @@ impl Filter for MaximizerFilter {
     }
 }
 
-#[derive(Debug)]
-pub struct MaximizerFactory;
-
-impl FilterFactory for MaximizerFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_maximizer_params(params) {
-            Some(p) => FilterCreateResult::Filter(Box::new(MaximizerFilter::new(p))),
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Maximizer"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::{test_ctx, test_loader};
 
     #[test]
     fn parse_defaults_and_overrides() {
@@ -775,15 +753,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn factory_matches_named_command() {
-        let factory = MaximizerFactory;
-        let result = factory.create_filter(
-            "GainBoost 6 dB Dither Shaped",
-            &test_ctx(),
-            &test_loader(),
-        );
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "Maximizer");
-    }
 }
