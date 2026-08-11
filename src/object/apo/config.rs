@@ -4,12 +4,9 @@
 //! 运行 watcher 驱动的热重载逻辑。不包含 COM 接口方法。
 
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 use std::time::SystemTime;
 
 use windows::core::Result;
-
-use once_cell::sync::Lazy;
 
 use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
@@ -235,19 +232,6 @@ pub(crate) fn hot_reload_impl(
     clsid: GUID,
     obj_ptr: usize,
 ) {
-    // 0. 文件级预检（v9.4）：`FindFirstChangeNotificationW` 是目录级通知，
-    //    目录里任何文件变化（如无关文件）都会触发。按 config.toml 的
-    //    (mtime, size) 与上次**已应用**状态比较，未变化直接跳过——避免事件风暴
-    //    导致重复解析/重建链（audiodg CPU 高位、声音设置页卡顿的诱因之一）。
-    //    注意：**只比较不记录**——记录必须发生在真正应用之后，否则 R2 阻塞
-    //    （过渡在途）时已记录新 mtime，过渡完成后的补重载会被预检吞掉。
-    {
-        let path = config_path.lock().unwrap().clone();
-        if config_file_unchanged(&path) {
-            diag_append(&format!("RELOAD skip(unchanged) clsid={clsid:?}"));
-            return;
-        }
-    }
 
     // 1. R2 阻塞式（短锁检查，不构建新链）。
     {
@@ -303,8 +287,6 @@ pub(crate) fn hot_reload_impl(
         Ok(r) => r,
         Err(e) => {
             log::warn!("hot_reload: config parse failed — keeping old chain");
-            // 文件已尝试处理（失败）；记录状态避免事件风暴反复解析同一坏文件。
-            mark_config_applied(&config_path);
             diag_append(&format!("RELOAD parse-fail clsid={clsid:?} err={e}"));
             #[cfg(debug_assertions)]
             {
@@ -324,7 +306,6 @@ pub(crate) fn hot_reload_impl(
             && guard.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
         if same {
             log::debug!("hot_reload: config unchanged — skip");
-            mark_config_applied(&config_path);
             diag_append(&format!("RELOAD spec-same clsid={clsid:?}"));
             #[cfg(debug_assertions)]
             {
@@ -365,7 +346,6 @@ pub(crate) fn hot_reload_impl(
         dsp_ctx.channel_names.clone(),
     ));
     guard.active_spec = new_spec;
-    mark_config_applied(&config_path);
     diag_append(&format!(
         "RELOAD applied clsid={clsid:?} filters={} spec={}",
         guard.current_chain.filter_count(),
@@ -389,42 +369,14 @@ pub(crate) fn hot_reload_impl(
     guard.transition = Some(sm);
 }
 
-/// 目录级事件 ≠ config.toml 变化：按 (mtime, size) 判断是否与上次**已应用**状态一致。
-/// 只比较、不记录（记录由 [`mark_config_applied`] 在真正处理后写入）。
-fn config_file_unchanged(config_path: &str) -> bool {
-    static LAST: Lazy<Mutex<HashMap<String, (SystemTime, u64)>>> =
-        Lazy::new(|| Mutex::new(HashMap::new()));
-    let meta = match std::fs::metadata(config_path) {
-        Ok(m) => m,
-        Err(_) => return true, // 文件不存在：无可重载。
-    };
-    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let key = (modified, meta.len());
-    let map = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    map.get(config_path) == Some(&key)
-}
-
-/// 记录 config.toml 已处理的 (mtime, size)（v9.4）。
-///
-/// 仅在以下时机调用：spec 相同跳过、解析失败（文件已处理）、链成功交换应用。
-/// **不得**在 R2 阻塞（transition/reloading）提前返回时调用——否则补重载被吞。
-fn mark_config_applied(config_path: &str) {
-    static LAST: Lazy<Mutex<HashMap<String, (SystemTime, u64)>>> =
-        Lazy::new(|| Mutex::new(HashMap::new()));
-    let meta = match std::fs::metadata(config_path) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let key = (modified, meta.len());
-    let mut map = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    map.insert(config_path.to_owned(), key);
-}
-
 /// 运行期诊断日志（v9.4，仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
 /// 记录 Lock/热重载的关键事件，供设备切换/热重载失效问题定位；失败静默。
 pub(crate) fn diag_append(line: &str) {
     use std::io::Write;
+    // v9.15: serialize log writes across all watcher/control threads to prevent
+    // interleaved/corrupted lines during reload storms.
+    static DIAG_LOCK: Mutex<()> = Mutex::new(());
+    let _diag_guard = DIAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let secs = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -34,11 +34,21 @@ pub struct ApoObjectInner {
     /// 启动淡入剩余采样数。
     pub startup_fade_remaining: usize,
     /// 最近几次 APOProcess 调用记录（v9.6 诊断，RT 固定数组零分配）：
-    /// `(秒, 输入帧数, 输入 flags, 输出峰值)`——Unlock 时随日志输出，
-    /// 用于确认“切换走时旧流停止前引擎是否送了最后一段真实音频（嗡声）”。
-    pub last_calls: [(u64, u32, u32, f32); 4],
+    /// `(秒, 输入帧数, 输入 flags, 输入峰值, 输出 flags, 输出峰值)`——Unlock 时随日志输出，
+    /// 用于区分“浏览器/引擎注入超大输入”与“DSP 自身数值爆炸”（v9.15 诊断增强）。
+    pub last_calls: [(u64, u32, u32, f32, u32, f32); 8],
     /// `last_calls` 环形写索引（自增，取模即可）。
     pub last_call_idx: u64,
+    /// 锁定周期内输出峰值高水位（RT 写、Unlock 读，v9.15 诊断）。
+    pub hot_out_peak: f32,
+    /// 高水位对应帧的输入峰值。
+    pub hot_in_peak: f32,
+    /// 高水位对应帧的时间戳（秒）。
+    pub hot_secs: u64,
+    /// 输入标志为 BUFFER_SILENT 但内容非零（引擎脏静音缓冲）的调用次数（v9.15 诊断）。
+    pub silent_dirty_calls: u32,
+    /// 脏静音缓冲中输入峰值的最大值。
+    pub silent_dirty_max_in: f32,
 }
 
 /// 启动静音保持时长（ms，v9.6 用户决策：直接静音 100ms，不做淡入）。
@@ -63,8 +73,13 @@ impl ApoObjectInner {
             last_lock_key: None,
             startup_fade_total: 0,
             startup_fade_remaining: 0,
-            last_calls: [(0, 0, 0, 0.0); 4],
+            last_calls: [(0, 0, 0, 0.0, 0, 0.0); 8],
             last_call_idx: 0,
+            hot_out_peak: 0.0,
+            hot_in_peak: 0.0,
+            hot_secs: 0,
+            silent_dirty_calls: 0,
+            silent_dirty_max_in: 0.0,
         }
     }
 

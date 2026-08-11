@@ -140,6 +140,11 @@ pub fn process_audio(
             BufferAction::Process => {}
         }
 
+        // v9.15：BUFFER_SILENT 标志是权威的——“内容无效，勿读”。
+        // 引擎（如浏览器音效菜单切换）会复用上一帧缓冲，SILENT 标志下里面
+        // 残留的可能是我们自己上一帧的输出；若按有效数据处理会形成
+        // “输出→下一帧输入”的自我反馈爆音（日志实证 in_peak≈30 @ in_flags=2）。
+        let input_silent = input_prop.u32BufferFlags == BUFFER_SILENT;
         let input_slice = unsafe { input_info.as_slice() };
         let output_slice = unsafe { output_info.as_slice_mut() };
 
@@ -173,11 +178,18 @@ pub fn process_audio(
             continue;
         }
 
-        // Step 2: 交织 → 去交织
-        deinterleave_into(input_slice, &mut temp_buffers[..in_ch], in_ch, frames);
+        // Step 2: 交织 → 去交织（SILENT 输入按全零处理，绝不读取残留内容）
+        if input_silent {
+            for ch in temp_buffers[..in_ch].iter_mut() {
+                ch[..frames].fill(0.0);
+            }
+        } else {
+            deinterleave_into(input_slice, &mut temp_buffers[..in_ch], in_ch, frames);
+        }
 
-        // Step 3: is_silent 优化检测
-        if output_flags == BUFFER_SILENT {
+        // Step 3: is_silent 优化检测（仅对 VALID 输入：SILENT 标志已由引擎声明，
+        // 不再用内容二次判断——残留大数值会被误判为有效音频）
+        if output_flags == BUFFER_SILENT && !input_silent {
             if is_silent(&temp_buffers[..out_ch.min(temp_buffers.len())], frames) {
                 output_info.zero();
                 output_prop.u32BufferFlags = BUFFER_SILENT;
@@ -231,7 +243,13 @@ pub fn process_audio(
             out_ch.min(temp_buffers.len()),
             frames,
         );
-        output_prop.u32BufferFlags = output_flags;
+        if input_silent {
+            // 引擎声明静音：输出必须为静音（链状态照常更新，但内容不落到输出）。
+            output_slice.fill(0.0);
+            output_prop.u32BufferFlags = BUFFER_SILENT;
+        } else {
+            output_prop.u32BufferFlags = output_flags;
+        }
         // EAPO:482 对齐：显式设置输出帧数（APO 契约要求 APO 写回）——
         // 缺失 → 引擎判输出无效 → 完全无声（2026-08-04 实测 audiodg 加载但无声根因）。
         output_prop.u32ValidFrameCount = frames as u32;
@@ -270,5 +288,49 @@ mod tests {
         let mut temp = vec![vec![0.0; 4]; 2];
         process_chain_interleaved(&mut chain, &input, &mut output, 2, 2, &mut temp).unwrap();
         assert_eq!(input, output);
+    }
+
+    /// v9.15 回归：引擎标记 BUFFER_SILENT 但缓冲内残留大数值（脏静音缓冲）时，
+    /// 必须输出静音且不得把残留内容当有效音频处理（自我反馈爆音根因）。
+    #[test]
+    fn silent_buffer_with_garbage_outputs_silence() {
+        let mut chain = Chain::new();
+        let stats = ProcessStatistics::new();
+        let mut input_buf = vec![5.0f32; 4]; // 残留“上一帧输出”式的大数值
+        let mut output_buf = vec![1.0f32; 4];
+        let mut input_prop = APO_CONNECTION_PROPERTY {
+            pBuffer: input_buf.as_mut_ptr() as usize,
+            u32ValidFrameCount: 4,
+            u32BufferFlags: BUFFER_SILENT,
+            u32Signature: 0,
+        };
+        let mut output_prop = APO_CONNECTION_PROPERTY {
+            pBuffer: output_buf.as_mut_ptr() as usize,
+            u32ValidFrameCount: 4,
+            u32BufferFlags: BUFFER_VALID,
+            u32Signature: 0,
+        };
+        let params = ProcessParams {
+            input_channels: 1,
+            output_channels: 1,
+            sample_rate: 48_000,
+            max_frame_count: 4,
+            valid_frame_count: 4,
+            error_policy: ErrorPolicy::Bypass,
+            allow_silent_buffer: true,
+        };
+        let mut temp = vec![vec![0.0f32; 4]; 1];
+        process_audio(
+            std::slice::from_ref(&input_prop),
+            std::slice::from_mut(&mut output_prop),
+            &params,
+            &mut chain,
+            &stats,
+            &mut temp,
+        )
+        .unwrap();
+        assert!(output_buf.iter().all(|&v| v == 0.0), "silent input must zero output");
+        assert_eq!(output_prop.u32BufferFlags, BUFFER_SILENT);
+        assert_eq!(output_prop.u32ValidFrameCount, 4);
     }
 }

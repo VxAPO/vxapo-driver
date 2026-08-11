@@ -470,24 +470,61 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.startup_fade_total = 0;
     inner.startup_fade_remaining = 0;
     crate::object::apo::config::diag_append(&format!(
-        "UNLOCK clsid={:?} ms={} calls=[{}]",
+        "UNLOCK clsid={:?} ms={} calls=[{}] hot=(out={:.4},in={:.4},secs={}) silent_dirty=(calls={},max_in={:.4})",
         apo.clsid,
         unlock_start.elapsed().as_millis(),
         inner
             .last_calls
             .iter()
-            .map(|(s, f, fl, p)| format!("({s},{f},{fl},{p:.4})"))
+            .map(|(s, f, ifl, ip, ofl, op)| format!("({s},{f},{ifl},{ip:.4},{ofl},{op:.4})"))
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" "),
+        inner.hot_out_peak,
+        inner.hot_in_peak,
+        inner.hot_secs,
+        inner.silent_dirty_calls,
+        inner.silent_dirty_max_in,
     ));
-    inner.last_calls = [(0, 0, 0, 0.0); 4];
+    inner.last_calls = [(0, 0, 0, 0.0, 0, 0.0); 8];
     inner.last_call_idx = 0;
+    inner.hot_out_peak = 0.0;
+    inner.hot_in_peak = 0.0;
+    inner.hot_secs = 0;
+    inner.silent_dirty_calls = 0;
+    inner.silent_dirty_max_in = 0.0;
     Ok(())
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // RT 处理主体（P0-5，v8.2）
 // ══════════════════════════════════════════════════════════════════════════════
+
+/// 记录一次 RT 调用的诊断快照（v9.15）：输入/输出峰值与缓冲标志写入环形数组，
+/// 同时维护锁定周期内的输出峰值高水位（Unlock 时随日志输出）。
+fn record_rt_call(
+    inner: &mut crate::object::apo::inner::ApoObjectInner,
+    secs: u64,
+    frames: u32,
+    in_flags: u32,
+    in_peak: f32,
+    out_flags: u32,
+    out_peak: f32,
+) {
+    let idx = (inner.last_call_idx % inner.last_calls.len() as u64) as usize;
+    inner.last_calls[idx] = (secs, frames, in_flags, in_peak, out_flags, out_peak);
+    inner.last_call_idx += 1;
+    if out_peak > inner.hot_out_peak {
+        inner.hot_out_peak = out_peak;
+        inner.hot_in_peak = in_peak;
+        inner.hot_secs = secs;
+    }
+    // v9.15: dirty silent buffers (BUFFER_SILENT flag with non-zero content)
+    // are the root cause of the self-feedback buzz; count them for verification.
+    if in_flags == BUFFER_SILENT.0 as u32 && in_peak > 1.0e-3 {
+        inner.silent_dirty_calls = inner.silent_dirty_calls.saturating_add(1);
+        inner.silent_dirty_max_in = inner.silent_dirty_max_in.max(in_peak);
+    }
+}
 
 impl ApoObject {
     /// APOProcess 实际处理主体。
@@ -555,6 +592,55 @@ impl ApoObject {
             let in_ch = inner.pipeline_context.input_channels as usize;
             let out_ch = inner.pipeline_context.output_channels as usize;
 
+            // v9.15: engine-declared silent buffers may still contain our previous
+            // output (in-place reuse); processing them re-enters the DSP and creates
+            // the self-feedback buzz. For transition frames, output silence and keep
+            // the in-flight transition state untouched.
+            let input_silent = unsafe { (&**pp_inputs).u32BufferFlags == BUFFER_SILENT };
+            if input_silent {
+                let ip = unsafe { &**pp_inputs };
+                let frames = ip.u32ValidFrameCount as usize;
+                let in_peak = if frames > 0 && in_ch > 0 {
+                    unsafe {
+                        std::slice::from_raw_parts(ip.pBuffer as *const f32, frames * in_ch)
+                    }
+                    .iter()
+                    .fold(0.0f32, |m, &v| m.max(v.abs()))
+                } else {
+                    0.0
+                };
+                let op = unsafe { &mut **pp_outputs };
+                let out_len = frames * out_ch;
+                if out_len > 0 {
+                    unsafe {
+                        std::slice::from_raw_parts_mut(op.pBuffer as *mut f32, out_len)
+                    }
+                    .fill(0.0);
+                }
+                op.u32ValidFrameCount = frames as u32;
+                op.u32BufferFlags = BUFFER_SILENT;
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                record_rt_call(
+                    &mut inner,
+                    secs,
+                    frames as u32,
+                    BUFFER_SILENT.0 as u32,
+                    in_peak,
+                    BUFFER_SILENT.0 as u32,
+                    0.0,
+                );
+                inner.outgoing_chain = outgoing;
+                inner.transition = transition;
+                inner.current_chain = owned_chain;
+                inner.temp_buffers = tbufs;
+                inner.temp_buffer_old = tbuf_old;
+                inner.temp_buffer_new = tbuf_new;
+                return;
+            }
+
             // 防御（用户风险①）：pending 残留但过渡不在途（transition 已被清空/
             // 被其它路径消费）→ 无混合器。此时**必须写出**（APO 契约：每帧写输出）：
             // 直接复制输入到输出（bypass），恢复状态、旧链退役；若可重载则触发补重载。
@@ -578,6 +664,24 @@ impl ApoObject {
                 }
                 output_prop.u32ValidFrameCount = frames as u32;
                 output_prop.u32BufferFlags = BUFFER_VALID;
+                // v9.15 诊断：过渡旁通帧也记录输入/输出峰值。
+                {
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let in_peak = src.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+                    let out_peak = dst.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+                    record_rt_call(
+                        &mut inner,
+                        secs,
+                        frames as u32,
+                        input_prop.u32BufferFlags.0 as u32,
+                        in_peak,
+                        BUFFER_VALID.0 as u32,
+                        out_peak,
+                    );
+                }
                 // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
                 if inner.startup_fade_remaining > 0 {
                     inner.apply_startup_fade(dst, frames, out_ch);
@@ -660,6 +764,24 @@ impl ApoObject {
             }
             output_prop.u32ValidFrameCount = frames as u32;
             output_prop.u32BufferFlags = BUFFER_VALID;
+            // v9.15 诊断：过渡混合帧也记录输入/输出峰值。
+            {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let in_peak = input_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+                let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+                record_rt_call(
+                    &mut inner,
+                    secs,
+                    frames as u32,
+                    input_prop.u32BufferFlags.0 as u32,
+                    in_peak,
+                    BUFFER_VALID.0 as u32,
+                    out_peak,
+                );
+            }
 
             // 当前过渡结束条件：advance 到达上限或过渡原本未激活。
             let finished = transition.as_ref().map_or(true, |p| p.counter() >= p.length());
@@ -719,6 +841,19 @@ impl ApoObject {
         let outputs = std::slice::from_mut(output_one);
         let mut owned_chain = std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
         let mut tbufs = std::mem::take(&mut inner.temp_buffers);
+        // v9.15 诊断：处理前先取输入峰值（in-place 缓冲处理后会被输出覆盖）。
+        let in_peak = if frames > 0 && in_ch > 0 {
+            unsafe {
+                std::slice::from_raw_parts(
+                    input_one.pBuffer as *const f32,
+                    frames * in_ch as usize,
+                )
+            }
+            .iter()
+            .fold(0.0f32, |m, &v| m.max(v.abs()))
+        } else {
+            0.0
+        };
         let _ = process_audio(
             inputs,
             outputs,
@@ -740,21 +875,22 @@ impl ApoObject {
         if inner.startup_fade_remaining > 0 {
             inner.apply_startup_fade(out_slice, frames, out_ch as usize);
         }
-        // v9.6 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前引擎
-        // 是否送了最后一段真实音频（嗡声幅度随播放音量变化）。
-        let idx = (inner.last_call_idx % inner.last_calls.len() as u64) as usize;
+        // v9.6/v9.15 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前
+        // 引擎是否送了最后一段真实音频（嗡声幅度随播放音量变化）。
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-        inner.last_calls[idx] = (
+        let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        record_rt_call(
+            &mut inner,
             secs,
             frames as u32,
+            input_one.u32BufferFlags.0 as u32,
+            in_peak,
             output_one.u32BufferFlags.0 as u32,
-            peak,
+            out_peak,
         );
-        inner.last_call_idx += 1;
 
         inner.current_chain = owned_chain;
         inner.temp_buffers = tbufs;
