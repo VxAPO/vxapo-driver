@@ -9,15 +9,13 @@
 //! `DllCanUnloadNow` 判定条件：`INST_COUNT == 0 && LOCK_COUNT == 0` 时返回 `S_OK`。
 //!
 //! 使用 `#[implement]` 宏自动生成 vtable 与 COM 引用计数。
-//! 实际对象创建委托 `host/instance/apo_interface.rs`。
+//! 实际对象创建委托 `object/apo/aggregate.rs`（NApo 聚合外壳）。
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::core::{BOOL, Error, Ref};
 
-#[allow(unused_imports)]
-use crate::object::apo::ApoObject;
 use crate::object::vx_reg_props::is_vxapo_clsid;
 use crate::sys::com::prelude::*;
 
@@ -32,8 +30,18 @@ pub fn lock_increment() -> u32 {
 }
 
 pub fn lock_decrement() -> u32 {
-    let prev = LOCK_COUNT.fetch_sub(1, Ordering::SeqCst);
-    prev.saturating_sub(1)
+    // 零值保护（v9.17，对齐 ref_count.rs CAS 模式）：LockServer(false) 的多余调用
+    // 不得把计数下溢成 u32::MAX——否则 DllCanUnloadNow 永久返回 S_FALSE。
+    let mut prev = LOCK_COUNT.load(Ordering::SeqCst);
+    loop {
+        if prev == 0 {
+            return 0;
+        }
+        match LOCK_COUNT.compare_exchange(prev, prev - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return prev - 1,
+            Err(actual) => prev = actual,
+        }
+    }
 }
 
 pub fn lock_count() -> u32 {
@@ -65,24 +73,13 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         riid: *const GUID,
         ppvobject: *mut *mut c_void,
     ) -> windows_core::Result<()> {
-        // ---- P0-7 无声诊断探针 4（2026-08-04，debug 门控，排查完删除）----
-        // 移到函数最顶部：即使聚合检查（Step 3 CLASS_E_NOAGGREGATION）提前 return，
-        // 也留下「CreateInstance 被调 + pUnkOuter 是否非空」记录——区分「未被调」vs「被聚合拒绝」。
-        #[cfg(debug_assertions)]
-        {
-            let _ = std::fs::write(
-                r"C:\ProgramData\VxAPO\createinstance_probe.txt",
-                format!("CreateInstance clsid={:?} riid={:?} punkouter_null={}\n", self.target_clsid, unsafe { *riid }, punkouter.is_null()),
-            );
-        }
-
-        // ── Step 1: 输出指针初始化 ─────────────────────────
-        unsafe { *ppvobject = std::ptr::null_mut() };
-
-        // ── Step 2: 参数校验 ───────────────────────────────
+        // ── Step 1: 参数校验（先校验后写入，v9.17：空指针不得先解引用）──
         if riid.is_null() || ppvobject.is_null() {
             return Err(Error::from(E_INVALIDARG));
         }
+
+        // ── Step 2: 输出指针初始化 ─────────────────────────
+        unsafe { *ppvobject = std::ptr::null_mut() };
 
         // ── Step 3: 聚合支持（P0-7 无声根因修复）────────────
         // EAPO `EqualizerAPO(IUnknown* pUnkOuter)` 明确支持聚合（引擎以 pUnkOuter 非空
@@ -94,14 +91,13 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // 的自包含 IUnknown 没有该机制（探针 selfQI_IAPO_hr=0 只证明 inner 自 QI 可行，
         // 不代表引擎经外壳链能拿到）。
         //
-        // 本分支保持「接受聚合 + 创建 inner 返回」（探针可观察引擎下一步动作）；
-        // 完整 NonDelegating 委托需手写 vtable（08 文档 §6），本阶段先锁定行为。
+        // 聚合语义（delegating QI→outer / NonDelegating QI→inner）由
+        // object/apo/aggregate.rs 的 NApo 完整实现（P0-7 已落地）。
         if !punkouter.is_null() {
             let iid_unknown = IUnknown::IID;
             if unsafe { *riid } != iid_unknown {
                 return Err(Error::from(E_NOINTERFACE));
             }
-            // 探针记录聚合被接受（不拦，走下去创建 inner）。
         }
 
         // ── Step 4: 创建聚合外壳（NApo，P0-7 手写 vtable）──
@@ -140,18 +136,6 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // 最终由调用方持有的那一个引用负责销毁（不释放会永久泄漏 NApo）。
         unsafe { crate::object::apo::aggregate::release_aggregate(na) };
 
-        // ---- 探针 4b：CreateInstance 结果（2026-08-04，debug 门控，排查完删除）----
-        #[cfg(debug_assertions)]
-        {
-            let _ = std::fs::write(
-                r"C:\ProgramData\VxAPO\createinstance_probe.txt",
-                format!(
-                    "CreateInstance SUCCESS clsid={:?} aggregate_na=1 returned_riid={:?}\n",
-                    self.target_clsid, unsafe { *riid }
-                ),
-            );
-        }
-
         Ok(())
     }
 
@@ -184,6 +168,7 @@ pub fn create_factory(clsid: &GUID) -> Option<IClassFactory> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object::apo::ApoObject;
     use crate::object::ref_count as inst_count;
     use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
 
@@ -204,6 +189,16 @@ mod tests {
         assert!(!lock_is_zero());
 
         assert_eq!(lock_decrement(), 1);
+        assert_eq!(lock_decrement(), 0);
+        assert!(lock_is_zero());
+    }
+
+    #[test]
+    fn lock_decrement_zero_is_noop() {
+        // v9.17 回归：LockServer(false) 在计数已为 0 时不得下溢为 u32::MAX
+        // （否则 DllCanUnloadNow 永久 S_FALSE）。
+        lock_reset_for_test();
+        assert_eq!(lock_decrement(), 0);
         assert_eq!(lock_decrement(), 0);
         assert!(lock_is_zero());
     }

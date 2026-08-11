@@ -34,30 +34,6 @@ impl Default for WideParams {
     }
 }
 
-pub fn parse_wide_params(params: &str) -> Option<WideParams> {
-    let mut p = WideParams::default();
-    let mut matched = false;
-    let tokens: Vec<&str> = params.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        let key = tokens[i].to_ascii_lowercase();
-        let value = *tokens.get(i + 1)?;
-        match key.as_str() {
-            "intensity" | "surround" | "int" => {
-                p.intensity = value.parse().ok()?;
-                i += 2;
-            }
-            _ => return None,
-        }
-        matched = true;
-    }
-    if !matched {
-        return None;
-    }
-    p.intensity = p.intensity.clamp(0.0, 1.0);
-    Some(p)
-}
-
 /// FIR 分频点（Hz），以下低频不处理。
 const CROSSOVER_HZ: f32 = 200.0;
 /// FIR 长度（与 GraphicEQ 对齐；延迟 = (N-1)/2）。
@@ -269,29 +245,6 @@ impl Filter for WideFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_valid_and_defaults() {
-        let p = parse_wide_params("Intensity 0.7").unwrap();
-        assert!((p.intensity - 0.7).abs() < 1e-6);
-        let p = parse_wide_params("Surround 0.2").unwrap();
-        assert!((p.intensity - 0.2).abs() < 1e-6);
-        // 缺参 → None（与其余效果器解析器一致）。
-        assert!(parse_wide_params("").is_none());
-    }
-
-    #[test]
-    fn parse_unknown_key_is_none() {
-        assert!(parse_wide_params("Bogus 1").is_none());
-    }
-
-    #[test]
-    fn clamp_extremes() {
-        let p = parse_wide_params("Intensity 999").unwrap();
-        assert_eq!(p.intensity, 1.0);
-        let p = parse_wide_params("Intensity -1").unwrap();
-        assert_eq!(p.intensity, 0.0);
-    }
 
     #[test]
     fn intensity_zero_is_passthrough() {

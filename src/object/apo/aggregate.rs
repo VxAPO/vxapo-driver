@@ -90,6 +90,10 @@ const OFF_ASE: usize = 24;
 /// CreateInstance 返回此视图——引擎 QI(IAPO) 走此视图的 NonDelegatingQI。
 const OFF_ND_UNKNOWN: usize = 32;
 
+// 编译期护栏（v9.17，审查 #11）：偏移常量按 x64（8 字节指针）硬编码，
+// 32 位构建直接编译失败，不得带错误布局进入链接/运行。
+const _: () = assert!(core::mem::size_of::<*const ()>() == 8);
+
 #[repr(C)]
 pub struct NApo {
     /// IAudioProcessingObject vtable 指针（offset 0 = 对象基址首字段）。
@@ -129,6 +133,12 @@ fn as_apo<'a>(base: *mut NApo) -> &'a NApo {
 /// 从任意接口视图还原 NApo 基址。
 unsafe fn base_from_this(this: *mut c_void) -> *mut NApo {
     // SAFETY: 调用方保证 this 指向 NApo 内某个视图字段地址。
+    //
+    // 不变式（v9.17 文档化）：RT/CFG/ASE 三个接口视图的 stub 一律先经
+    // `base_from_iface` 回退到基址，再进 `na_*`；IAPO 视图 offset 为 0，
+    // `this == base`。因此运行时唯一可能走到本函数的“非基址视图”只有
+    // `vtbl_nondeg_unknown`（offset 32）——用 vtable 静态地址唯一性区分。
+    // 新增直接以 RT/CFG/ASE 视图调用 `na_qi` 的路径前，必须重新论证此不变式。
     let this_vtbl = unsafe { *(this as *const *const usize) };
     if this_vtbl as usize == &ND_UNKNOWN_VTBL as *const _ as usize {
         base_from_iface(this, OFF_ND_UNKNOWN)
@@ -150,6 +160,8 @@ unsafe fn delegate_qi_at(base: *mut NApo, riid: *const GUID, ppv: *mut *mut c_vo
         return na_qi(base as *mut c_void, riid, ppv);
     }
     // ★ 委托 outer——引擎身份检查通过（IAPO->QI(IUnknown) = outer IUnknown）
+    // SAFETY: COM 聚合契约保证 p_unk_outer 是有效 IUnknown 实现（引擎外壳，
+    // 生命周期由引擎管理）；vtable 槽 0 为该对象的 QI。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
     let qi: QiFn = unsafe { std::mem::transmute(*outer_vtbl) };
     unsafe { qi(apo.p_unk_outer, riid, ppv) }
@@ -161,6 +173,7 @@ unsafe fn delegate_addref_at(base: *mut NApo) -> u32 {
     if apo.p_unk_outer.is_null() {
         return na_addref(base as *mut c_void);
     }
+    // SAFETY: 同 delegate_qi_at——p_unk_outer 为有效聚合外壳，槽 1 为 AddRef。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
     let addref: RefFn = unsafe { std::mem::transmute(*outer_vtbl.add(1)) };
     unsafe { addref(apo.p_unk_outer) }
@@ -172,6 +185,7 @@ unsafe fn delegate_release_at(base: *mut NApo) -> u32 {
     if apo.p_unk_outer.is_null() {
         return na_release(base as *mut c_void);
     }
+    // SAFETY: 同 delegate_qi_at——p_unk_outer 为有效聚合外壳，槽 2 为 Release。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
     let release: RefFn = unsafe { std::mem::transmute(*outer_vtbl.add(2)) };
     unsafe { release(apo.p_unk_outer) }
@@ -381,7 +395,9 @@ static IAPO_ASE_VTBL: IapoAseVtbl = IapoAseVtbl {
 /// QI(接口) → 返回对应 vtable 字段地址；IUnknown → 对象基址；AddRef/Release 自维护。
 ///
 /// # Safety
-/// `clsid` 必须是 VxAPO PreMix/PostMix。
+/// - `clsid` 必须是 VxAPO PreMix/PostMix。
+/// - `p_unk_outer` 必须为 null 或指向有效 IUnknown 聚合外壳（COM 聚合契约，
+///   生命周期由调用方/引擎管理；NApo 仅借用指针，不 AddRef/Release outer）。
 pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_void {
     // 1. 创建 ApoObject（复用全部 DSP 逻辑）。
     let apo = ApoObject::new(clsid);

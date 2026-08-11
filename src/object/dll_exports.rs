@@ -127,16 +127,6 @@ pub unsafe extern "system" fn DllGetClassObject(
     // SAFETY: 由调用方（COM 运行时）保证 rclsid 有效。
     let clsid = unsafe { *rclsid };
 
-    // ---- P0-7 无声诊断探针 3（2026-08-04，debug 门控，排查完删除）----
-    // 记录引擎请求的 CLSID + riid——定位「引擎请求哪个接口」「QI 是否被拒」。
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\getclassobject_probe.txt",
-            format!("DllGetClassObject clsid={:?} riid={:?}\n", clsid, unsafe { *riid }),
-        );
-    }
-
     // ── CLSID 路由（Note 4） ────────────────────────────────
 
     // 创建工厂（#[implement] COM 智能指针，ref_count 初始 = 1）
@@ -165,17 +155,6 @@ pub unsafe extern "system" fn DllGetClassObject(
 
     if hr.is_err() {
         unsafe { *ppv = std::ptr::null_mut() };
-    }
-
-    // ---- 探针 3b：记录返回 HRESULT（2026-08-04，debug 门控，排查完删除）----
-    #[cfg(debug_assertions)]
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
-            r"C:\ProgramData\VxAPO\getclassobject_probe.txt",
-        ) {
-            let _ = writeln!(f, "  -> hr={:08X}", hr.0 as u32);
-        }
     }
 
     hr

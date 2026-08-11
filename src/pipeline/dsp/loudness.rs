@@ -15,7 +15,7 @@
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::biquad::{BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
-use crate::pipeline::dsp::math::{PHON_MAX, PHON_MIN, clamp_gain_db};
+use crate::pipeline::dsp::math::clamp_gain_db;
 
 /// 等响曲线滤波器。
 #[derive(Debug)]
@@ -143,31 +143,6 @@ fn iso_226_approx(freq: f32, phon_diff: f32) -> f32 {
     clamp_gain_db(phon_diff * freq_factor)
 }
 
-/// 解析 `LoudnessCorrection:` 参数。
-///
-/// 格式：`phon [reference_phon]`
-pub fn parse_loudness_params(params: &str) -> Option<(f32, f32)> {
-    let parts: Vec<&str> = params.split_whitespace().collect();
-    if parts.is_empty() {
-        return None;
-    }
-
-    let phon = parts[0].parse::<f32>().ok()?;
-    let reference = if parts.len() >= 2 {
-        parts[1].parse::<f32>().ok()?
-    } else {
-        80.0
-    };
-    if !phon.is_finite() || !reference.is_finite() {
-        return None;
-    }
-
-    Some((
-        phon.clamp(PHON_MIN, PHON_MAX),
-        reference.clamp(PHON_MIN, PHON_MAX),
-    ))
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
@@ -178,27 +153,6 @@ mod tests {
 
     fn stereo_names() -> Vec<String> {
         vec!["L".into(), "R".into()]
-    }
-
-    // ── parse_loudness_params ────────────────────────────────────────────────
-
-    #[test]
-    fn parse_phon_only() {
-        let (phon, ref_phon) = parse_loudness_params("40").unwrap();
-        assert_eq!(phon, 40.0);
-        assert_eq!(ref_phon, 80.0);
-    }
-
-    #[test]
-    fn parse_both() {
-        let (phon, ref_phon) = parse_loudness_params("60 80").unwrap();
-        assert_eq!(phon, 60.0);
-        assert_eq!(ref_phon, 80.0);
-    }
-
-    #[test]
-    fn parse_empty() {
-        assert!(parse_loudness_params("").is_none());
     }
 
     // ── LoudnessFilter ──────────────────────────────────────────────────────

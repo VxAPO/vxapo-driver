@@ -52,82 +52,6 @@ impl Default for MaximizerParams {
     }
 }
 
-pub fn parse_maximizer_params(params: &str) -> Option<MaximizerParams> {
-    let mut p = MaximizerParams::default();
-    let mut matched = false;
-    let tokens: Vec<&str> = params.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        let key = tokens[i].to_ascii_lowercase();
-        let value = *tokens.get(i + 1)?;
-        match key.as_str() {
-            "gainboost" | "gain_boost" | "gain" => {
-                p.gain_boost_db = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("db")) {
-                    i += 1;
-                }
-            }
-            "maxoutput" | "max_output" | "max" => {
-                p.max_output_db = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("db")) {
-                    i += 1;
-                }
-            }
-            "release" | "release_time" | "releasems" => {
-                p.release_ms = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("ms")) {
-                    i += 1;
-                }
-            }
-            "target" => {
-                p.target = value.parse().ok()?;
-                i += 2;
-            }
-            "lookahead" => {
-                p.lookahead_ms = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("ms")) {
-                    i += 1;
-                }
-            }
-            "dither" => {
-                p.dither = match value.to_ascii_lowercase().as_str() {
-                    "none" | "off" => DitherType::None,
-                    "uniform" => DitherType::Uniform,
-                    "triangular" | "triang" | "triangle" => DitherType::Triangular,
-                    "shaped" => DitherType::Shaped,
-                    _ => return None,
-                };
-                i += 2;
-            }
-            "wet" => {
-                p.wet = value.parse().ok()?;
-                i += 2;
-            }
-            "dry" => {
-                p.dry = value.parse().ok()?;
-                i += 2;
-            }
-            _ => return None,
-        }
-        matched = true;
-    }
-    if !matched {
-        return None;
-    }
-    p.gain_boost_db = p.gain_boost_db.clamp(0.0, 30.0);
-    p.max_output_db = p.max_output_db.clamp(-30.0, 0.0);
-    p.release_ms = p.release_ms.clamp(0.1, 100.0);
-    p.target = p.target.clamp(0.01, 1.0);
-    p.lookahead_ms = p.lookahead_ms.clamp(0.0, 10.0);
-    p.wet = p.wet.clamp(0.0, 1.0);
-    p.dry = p.dry.clamp(0.0, 1.0);
-    Some(p)
-}
-
 /// 16-bit 量化峰值。
 const PEAK_LEVEL_16: f32 = 32_768.0;
 /// 自动增益电平估计时间常数。
@@ -441,51 +365,6 @@ impl Filter for MaximizerFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_defaults_and_overrides() {
-        let p = parse_maximizer_params(
-            "GainBoost 12 dB MaxOutput -1 dB Release 50 ms Dither Triangular Wet 0.5 Dry 0.5",
-        )
-        .unwrap();
-        assert!((p.gain_boost_db - 12.0).abs() < 1e-6);
-        assert!((p.max_output_db + 1.0).abs() < 1e-6);
-        assert!((p.release_ms - 50.0).abs() < 1e-6);
-        assert_eq!(p.dither, DitherType::Triangular);
-        assert_eq!(p.target, 0.32);
-        assert!((p.wet - 0.5).abs() < 1e-6);
-        assert!((p.dry - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_empty_is_none() {
-        assert!(parse_maximizer_params("").is_none());
-    }
-
-    #[test]
-    fn parse_unknown_key_is_none() {
-        assert!(parse_maximizer_params("Bogus 1").is_none());
-    }
-
-    #[test]
-    fn parse_invalid_dither_is_none() {
-        assert!(parse_maximizer_params("Dither Pink").is_none());
-    }
-
-    #[test]
-    fn clamp_extremes() {
-        let p = parse_maximizer_params(
-            "GainBoost 999 MaxOutput -999 Release 0 Target 99 Lookahead 99 Wet 2 Dry -1",
-        )
-        .unwrap();
-        assert_eq!(p.gain_boost_db, 30.0);
-        assert_eq!(p.max_output_db, -30.0);
-        assert_eq!(p.release_ms, 0.1);
-        assert_eq!(p.target, 1.0);
-        assert_eq!(p.lookahead_ms, 10.0);
-        assert_eq!(p.wet, 1.0);
-        assert_eq!(p.dry, 0.0);
-    }
 
     #[test]
     fn dry_only_is_passthrough() {

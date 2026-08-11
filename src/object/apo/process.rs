@@ -1,4 +1,4 @@
-//! object/apo/process.rs — Lock/Unlock/APOProcess 实现
+﻿//! object/apo/process.rs — Lock/Unlock/APOProcess 实现
 //!
 //! 接口方法的大体积逻辑下沉到这里，`apo.rs` 的 trait 实现只保留参数转发：
 //! - IAudioProcessingObjectRT：APOProcess / CalcInputFrames / CalcOutputFrames
@@ -46,13 +46,7 @@ const MAX_APO_LATENCY_SAMPLES: usize = 8192;
 /// 实测引擎从不调用 Reset（日志 0 次），因此保持“正常重置”语义：
 /// 保留链/上下文/缓冲结构，仅清滤波器状态与过渡。
 pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
-    // ---- 探针 6: Reset 被调（2026-08-04 排查，删）----
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "Reset called\n");
-    }
-
-    let mut inner = apo.mutex.lock().unwrap();
+    let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
     inner.current_chain.reset();
     inner.outgoing_chain = None;
     inner.retired_chain = None; // R1：控制线程锁内统一析构
@@ -81,13 +75,12 @@ pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
 /// 分区块已缩至 32 采样（≈0.67ms），隐藏延迟不会造成可闻慢放；
 /// 向引擎上报延迟会导致帧协商错位/无声（2026-08-10 实证），因此不上报。
 pub(crate) fn get_latency(apo: &ApoObject_Impl) -> Result<i64> {
-    // ---- 探针 6: GetLatency 被调（2026-08-04 排查，删）----
-    #[cfg(debug_assertions)]
+    if let Some(child) = apo
+        .child_apo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
     {
-        let _ = std::fs::write(r"C:\ProgramData\VxAPO\method_probe.txt", "GetLatency called\n");
-    }
-
-    if let Some(child) = apo.child_apo.lock().unwrap().as_ref() {
         return Ok(child.get_latency());
     }
     Ok(0)
@@ -95,19 +88,10 @@ pub(crate) fn get_latency(apo: &ApoObject_Impl) -> Result<i64> {
 
 /// `GetInputChannelCount`：仅锁定状态返回输入通道数。
 pub(crate) fn get_input_channel_count(apo: &ApoObject_Impl) -> Result<u32> {
-    // ---- 探针 6: GetInputChannelCount 被调（2026-08-04 排查，删）----
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\method_probe.txt",
-            "GetInputChannelCount called\n",
-        );
-    }
-
     if apo.state_cell.current() != ApoState::Locked {
         return Err(windows::core::Error::from(APOERR_NOT_INITIALIZED));
     }
-    let inner = apo.mutex.lock().unwrap();
+    let inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
     Ok(inner.pipeline_context.input_channels)
 }
 
@@ -152,7 +136,7 @@ pub(crate) fn apo_process(
 /// panic）；保守策略以「不 panic + 不越界」为第一约束。
 pub(crate) fn calc_input_frames(apo: &ApoObject_Impl, output_frames: u32) -> u32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        output_frames + apo.latency_frames_atomic.load(Ordering::Acquire)
+        output_frames.saturating_add(apo.latency_frames_atomic.load(Ordering::Acquire))
     }))
     .unwrap_or_else(|_| output_frames)
 }
@@ -177,19 +161,6 @@ pub(crate) fn lock_for_process(
     num_output: u32,
     pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
 ) -> Result<()> {
-    // ---- P0-7 无声诊断探针 2（2026-08-04，debug 门控，排查完删除）----
-    // 记录 LockForProcess 是否被调 + 输入/输出连接数（判断引擎是否走到配置阶段）。
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\lock_probe.txt",
-            format!(
-                "LockForProcess called: num_input={} num_output={}\n",
-                num_input, num_output
-            ),
-        );
-    }
-
     // Step 0: 状态机 Initialized → Locked，失败自动回退。
     apo.state_cell
         .transition(ApoState::Initialized, ApoState::Locked)
@@ -260,7 +231,11 @@ pub(crate) fn lock_for_process(
     // 两个 VxAPO 实例，若都加载同一 config 会把用户配置（如 GraphicEQ 卷积）应用两次：
     // 音量异常偏低 + 双倍隐藏延迟/CPU（设备切换后帧协商更易错位）。
     // PostMix 保留 child APO 委托（前任 EFX APO 仍生效），自身不再处理用户配置。
-    let config_path = apo.config_path.lock().unwrap().clone();
+    let config_path = apo
+        .config_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let lock_start = std::time::Instant::now();
     let is_postmix = apo.clsid == CLSID_VXAPO_POST_MIX;
     let (filters, spec_chain) = if is_postmix {
@@ -293,7 +268,7 @@ pub(crate) fn lock_for_process(
     };
     let reuse_cached;
     {
-        let inner = apo.mutex.lock().unwrap();
+        let inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
         reuse_cached = lock_key.as_ref().is_some_and(|k| {
             inner.last_lock_key.as_ref() == Some(k) && !inner.current_chain.is_empty()
         });
@@ -314,20 +289,6 @@ pub(crate) fn lock_for_process(
         crate::object::apo::aggregate::AGG_CREATED.load(std::sync::atomic::Ordering::Relaxed),
         crate::object::apo::aggregate::AGG_DESTROYED.load(std::sync::atomic::Ordering::Relaxed)
     ));
-
-    // 配置解析落地探针（debug 门控，验证 Lock 时确实读到了 per-device config）。
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\config_probe.txt",
-            format!(
-                "Lock parsed filters={} spec={} path={}\n",
-                filters.len(),
-                spec_chain.len(),
-                config_path
-            ),
-        );
-    }
 
     // Step 4: 组装 Chain。
     // v9.12 修订：同 config/格式的 Unlock→Relock（如关闭网页触发的端点重协商）
@@ -369,7 +330,7 @@ pub(crate) fn lock_for_process(
 
     // Step 6: 更新内部状态。（R1：退役链由控制线程锁内统一析构）
     {
-        let mut inner = apo.mutex.lock().unwrap();
+        let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
         if !reuse_cached {
             inner.current_chain = Box::new(chain);
             inner.last_lock_key = lock_key;
@@ -398,7 +359,12 @@ pub(crate) fn lock_for_process(
 
     // Step 6b（P0-6，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父，Note 57）。
     // 对齐 EAPO 341-347：childCfg->LockForProcess 结果仅 Trace 不 return。
-    if let Some(child) = apo.child_apo.lock().unwrap().as_ref() {
+    if let Some(child) = apo
+        .child_apo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         // SAFETY: 父描述符指针从引擎传入（只读语义）；child API 用可变指针仅因
         // windows-rs 绑定如此（描述符数组在调用期间有效且不被 child 修改）。
         unsafe {
@@ -433,21 +399,18 @@ pub(crate) fn lock_for_process(
 /// 子 APO 解锁失败不阻塞父解锁（object 7.1.10 容错语义——UnlockForProcess 无重试语义）。
 pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     let unlock_start = std::time::Instant::now();
-    // ---- 探针 6: UnlockForProcess 被调（2026-08-04 排查，删）----
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\method_probe.txt",
-            "UnlockForProcess called\n",
-        );
-    }
 
     apo.state_cell
         .transition(ApoState::Locked, ApoState::Initialized)
         .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
     // P0-6（object 7.1.10）：子 APO UnlockForProcess 委托——失败不阻塞父解锁。
-    if let Some(child) = apo.child_apo.lock().unwrap().as_ref() {
+    if let Some(child) = apo
+        .child_apo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         let hr = child.unlock_for_process();
         if hr.0 != 0 {
             log::warn!("child APO UnlockForProcess failed");
@@ -455,11 +418,11 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     }
 
     // Stop watcher：SetEvent → join → close（v7.10 stop_watcher）。先释放锁（join 可能等待）。
-    drop(apo.mutex.lock().unwrap());
+    drop(apo.mutex.lock().unwrap_or_else(|e| e.into_inner()));
     stop_watcher(apo);
 
     // R1：退役链 + 过渡状态由控制线程锁内统一析构。
-    let mut inner = apo.mutex.lock().unwrap();
+    let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
     inner.retired_chain = None;
     inner.outgoing_chain = None;
     inner.transition = None;
@@ -520,10 +483,54 @@ fn record_rt_call(
     }
     // v9.15: dirty silent buffers (BUFFER_SILENT flag with non-zero content)
     // are the root cause of the self-feedback buzz; count them for verification.
-    if in_flags == BUFFER_SILENT.0 as u32 && in_peak > 1.0e-3 {
+    if in_flags == BUFFER_SILENT.0 as u32 && in_peak > SILENT_DIRTY_THRESHOLD {
         inner.silent_dirty_calls = inner.silent_dirty_calls.saturating_add(1);
         inner.silent_dirty_max_in = inner.silent_dirty_max_in.max(in_peak);
     }
+}
+
+/// 脏静音缓冲判定阈值（v9.15）：输入峰值超过该值视为内容非零。
+const SILENT_DIRTY_THRESHOLD: f32 = 1.0e-3;
+
+/// RT 路径统一交错切片构造（R3/v9.17）。
+///
+/// 帧数先 clamp 到 `max_frames`，再做 `saturating_mul`，杜绝“切片先于校验构造”
+/// 导致的越界读写（引擎违约时以截断代替 OOB）；零长度返回空切片。
+///
+/// # Safety
+/// `ptr` 必须指向引擎分配的、容量至少 `max_frames * ch` 的 f32 缓冲
+/// （APO 连接契约：缓冲按连接描述符的 `u32MaxFrameCount` 分配）。
+unsafe fn checked_interleaved_slice<'a>(
+    ptr: *const f32,
+    frames: usize,
+    ch: usize,
+    max_frames: usize,
+) -> &'a [f32] {
+    let frames = frames.min(max_frames);
+    let n = frames.saturating_mul(ch);
+    if n == 0 {
+        return &[];
+    }
+    std::slice::from_raw_parts(ptr, n)
+}
+
+/// [`checked_interleaved_slice`] 的可变版本。
+///
+/// # Safety
+/// 同 [`checked_interleaved_slice`]：`ptr` 为可写引擎缓冲，容量至少
+/// `max_frames * ch`。
+unsafe fn checked_interleaved_slice_mut<'a>(
+    ptr: *mut f32,
+    frames: usize,
+    ch: usize,
+    max_frames: usize,
+) -> &'a mut [f32] {
+    let frames = frames.min(max_frames);
+    let n = frames.saturating_mul(ch);
+    if n == 0 {
+        return &mut [];
+    }
+    std::slice::from_raw_parts_mut(ptr, n)
 }
 
 impl ApoObject {
@@ -539,26 +546,6 @@ impl ApoObject {
         num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
-        // ---- P0-7 无声诊断探针（2026-08-04，debug 门控，排查完删除）----
-        // 每次调用 +1，写文件（仅测试用；RT 违规但 debug 阶段可接受）。
-        // 用 static AtomicU32 每 100 次写一次，确认 APOProcess 是否被引擎调用。
-        #[cfg(debug_assertions)]
-        {
-            use std::sync::atomic::{AtomicU32, Ordering as AOrd};
-            static FRAME_COUNTER: AtomicU32 = AtomicU32::new(0);
-            let n = FRAME_COUNTER.fetch_add(1, AOrd::Relaxed);
-            if n % 200 == 0 {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\apo_process_probe.txt",
-                    format!(
-                        "APOProcess called: {} frames={}\n",
-                        n,
-                        unsafe { (**pp_inputs).u32ValidFrameCount }
-                    ),
-                );
-            }
-        }
-
         // P0-6（v8.1 D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
         // 双链共享同一份 child 输出作输入；child 不在 current/outgoing 任一链内。
         // 锁 inner **前**调（避免持 inner 锁调 child——child 是独立 COM 对象，无循环依赖）。
@@ -578,19 +565,22 @@ impl ApoObject {
         // 避免 RT 路径二次 panic 导致整个 audiodg 崩溃（2026-08-10 实证）。
         let mut inner = self.mutex.lock().unwrap_or_else(|e| e.into_inner());
         let pending = inner.pending_reload;
+        let max_frames = inner.pipeline_context.max_frame_count;
 
         // 过渡模式存在 → 双链处理 + 混合。
         if pending || inner.transition.is_some() {
-            // 先把所有需要变异的字段移到栈上（每次仅单字段借用），避免互斥 guard 多 &mut。
-            let mut outgoing = inner.outgoing_chain.take();
-            let mut transition = inner.transition.take();
-            let mut owned_chain =
-                std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
-            let mut tbufs = std::mem::take(&mut inner.temp_buffers);
-            let mut tbuf_old = std::mem::take(&mut inner.temp_buffer_old);
-            let mut tbuf_new = std::mem::take(&mut inner.temp_buffer_new);
-            let in_ch = inner.pipeline_context.input_channels as usize;
-            let out_ch = inner.pipeline_context.output_channels as usize;
+            // 字段拆借用（R2/v9.17）：各字段独立 &mut，不再“取出占位链再放回”，
+            // 把 RT 零分配从“依赖编译器消除”升级为逻辑保证。
+            // MutexGuard 的 Deref 不参与字段拆分，先取 `&mut *inner` 再拆字段。
+            let inner_ref = &mut *inner;
+            let mut outgoing = inner_ref.outgoing_chain.take();
+            let mut transition = inner_ref.transition.take();
+            let current_chain = &mut inner_ref.current_chain;
+            let mut tbufs = std::mem::take(&mut inner_ref.temp_buffers);
+            let mut tbuf_old = std::mem::take(&mut inner_ref.temp_buffer_old);
+            let mut tbuf_new = std::mem::take(&mut inner_ref.temp_buffer_new);
+            let in_ch = inner_ref.pipeline_context.input_channels as usize;
+            let out_ch = inner_ref.pipeline_context.output_channels as usize;
 
             // v9.15: engine-declared silent buffers may still contain our previous
             // output (in-place reuse); processing them re-enters the DSP and creates
@@ -599,10 +589,11 @@ impl ApoObject {
             let input_silent = unsafe { (&**pp_inputs).u32BufferFlags == BUFFER_SILENT };
             if input_silent {
                 let ip = unsafe { &**pp_inputs };
-                let frames = ip.u32ValidFrameCount as usize;
+                let frames = (ip.u32ValidFrameCount as usize).min(max_frames);
                 let in_peak = if frames > 0 && in_ch > 0 {
+                    // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
                     unsafe {
-                        std::slice::from_raw_parts(ip.pBuffer as *const f32, frames * in_ch)
+                        checked_interleaved_slice(ip.pBuffer as *const f32, frames, in_ch, max_frames)
                     }
                     .iter()
                     .fold(0.0f32, |m, &v| m.max(v.abs()))
@@ -610,10 +601,10 @@ impl ApoObject {
                     0.0
                 };
                 let op = unsafe { &mut **pp_outputs };
-                let out_len = frames * out_ch;
-                if out_len > 0 {
+                if frames > 0 && out_ch > 0 {
+                    // SAFETY: 同输入缓冲（输出由引擎按 u32MaxFrameCount × ch 分配）。
                     unsafe {
-                        std::slice::from_raw_parts_mut(op.pBuffer as *mut f32, out_len)
+                        checked_interleaved_slice_mut(op.pBuffer as *mut f32, frames, out_ch, max_frames)
                     }
                     .fill(0.0);
                 }
@@ -624,7 +615,7 @@ impl ApoObject {
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
                 record_rt_call(
-                    &mut inner,
+                    inner_ref,
                     secs,
                     frames as u32,
                     BUFFER_SILENT.0 as u32,
@@ -632,12 +623,11 @@ impl ApoObject {
                     BUFFER_SILENT.0 as u32,
                     0.0,
                 );
-                inner.outgoing_chain = outgoing;
-                inner.transition = transition;
-                inner.current_chain = owned_chain;
-                inner.temp_buffers = tbufs;
-                inner.temp_buffer_old = tbuf_old;
-                inner.temp_buffer_new = tbuf_new;
+                inner_ref.outgoing_chain = outgoing;
+                inner_ref.transition = transition;
+                inner_ref.temp_buffers = tbufs;
+                inner_ref.temp_buffer_old = tbuf_old;
+                inner_ref.temp_buffer_new = tbuf_new;
                 return;
             }
 
@@ -647,12 +637,13 @@ impl ApoObject {
             if transition.is_none() {
                 let input_prop = unsafe { &**pp_inputs };
                 let output_prop = unsafe { &mut **pp_outputs };
-                let frames = input_prop.u32ValidFrameCount as usize;
+                let frames = (input_prop.u32ValidFrameCount as usize).min(max_frames);
+                // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
                 let src = unsafe {
-                    std::slice::from_raw_parts(input_prop.pBuffer as *const f32, frames * in_ch)
+                    checked_interleaved_slice(input_prop.pBuffer as *const f32, frames, in_ch, max_frames)
                 };
                 let dst = unsafe {
-                    std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+                    checked_interleaved_slice_mut(output_prop.pBuffer as *mut f32, frames, out_ch, max_frames)
                 };
                 let copy_len = src.len().min(dst.len());
                 // in-place 场景 src/dst 可能重叠，逐元素拷贝（memmove 语义）。
@@ -673,7 +664,7 @@ impl ApoObject {
                     let in_peak = src.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                     let out_peak = dst.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                     record_rt_call(
-                        &mut inner,
+                        inner_ref,
                         secs,
                         frames as u32,
                         input_prop.u32BufferFlags.0 as u32,
@@ -683,39 +674,45 @@ impl ApoObject {
                     );
                 }
                 // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
-                if inner.startup_fade_remaining > 0 {
-                    inner.apply_startup_fade(dst, frames, out_ch);
+                if inner_ref.startup_fade_remaining > 0 {
+                    inner_ref.apply_startup_fade(dst, frames, out_ch);
                 }
 
-                inner.retired_chain = outgoing; // R1：旧链退役（控制线程析构）
-                inner.outgoing_chain = None;
-                inner.transition = None;
-                inner.current_chain = owned_chain;
-                inner.temp_buffers = tbufs;
-                inner.temp_buffer_old = tbuf_old;
-                inner.temp_buffer_new = tbuf_new;
-                if pending && !inner.reloading {
-                    inner.pending_reload = false;
+                inner_ref.retired_chain = outgoing; // R1：旧链退役（控制线程析构）
+                inner_ref.outgoing_chain = None;
+                inner_ref.transition = None;
+                inner_ref.temp_buffers = tbufs;
+                inner_ref.temp_buffer_old = tbuf_old;
+                inner_ref.temp_buffer_new = tbuf_new;
+                if pending && !inner_ref.reloading {
+                    inner_ref.pending_reload = false;
                     drop(inner);
                     self.hot_reload();
                 }
                 return;
             }
-            let current_chain = owned_chain.as_mut();
-
             let input_prop = unsafe { &**pp_inputs };
             let output_prop = unsafe { &mut **pp_outputs };
-            let frames = input_prop.u32ValidFrameCount as usize;
+            let frames = (input_prop.u32ValidFrameCount as usize).min(max_frames);
 
             // 输入切片（交织）。
+            // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             let input_slice = unsafe {
-                std::slice::from_raw_parts(input_prop.pBuffer as *const f32, frames * in_ch)
+                checked_interleaved_slice(input_prop.pBuffer as *const f32, frames, in_ch, max_frames)
             };
 
             // 旧链 → temp_buffer_old。
             let mut old_ready = true;
             if let Some(old_chain) = outgoing.as_mut() {
-                tbuf_old.resize(frames * out_ch, 0.0);
+                // R2/v9.17：过渡缓冲在 Lock 时已按 (max_frame_count + 余量) × ch 预分配，
+                // 此处只允许容量内写入，禁止 resize（RT 零分配逻辑保证）。
+                let n = frames.saturating_mul(out_ch);
+                debug_assert!(
+                    n <= tbuf_old.len(),
+                    "transition old buffer under-allocated: {n} > {}",
+                    tbuf_old.len()
+                );
+                tbuf_old[..n].fill(0.0);
                 let _ = process_chain_interleaved(
                     old_chain,
                     input_slice,
@@ -729,9 +726,15 @@ impl ApoObject {
             }
 
             // 新链 → temp_buffer_new。
-            tbuf_new.resize(frames * out_ch, 0.0);
+            let n = frames.saturating_mul(out_ch);
+            debug_assert!(
+                n <= tbuf_new.len(),
+                "transition new buffer under-allocated: {n} > {}",
+                tbuf_new.len()
+            );
+            tbuf_new[..n].fill(0.0);
             let _ = process_chain_interleaved(
-                current_chain,
+                current_chain.as_mut(),
                 input_slice,
                 tbuf_new.as_mut_slice(),
                 out_ch,
@@ -743,8 +746,9 @@ impl ApoObject {
             // 过渡长度按采样数计（10ms = 480 采样 @48k），不是按 APOProcess 调用次数。
             // 用户风险②：advance() 返回 None（已达上限）时**也必须写输出**——
             // 按 factor=1.0（纯新链）输出，APO 契约要求每帧写出。
+            // SAFETY: 输出缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             let out_slice = unsafe {
-                std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+                checked_interleaved_slice_mut(output_prop.pBuffer as *mut f32, frames, out_ch, max_frames)
             };
             for f in 0..frames {
                 let factor = transition
@@ -759,8 +763,8 @@ impl ApoObject {
                 }
             }
             // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
-            if inner.startup_fade_remaining > 0 {
-                inner.apply_startup_fade(out_slice, frames, out_ch);
+            if inner_ref.startup_fade_remaining > 0 {
+                inner_ref.apply_startup_fade(out_slice, frames, out_ch);
             }
             output_prop.u32ValidFrameCount = frames as u32;
             output_prop.u32BufferFlags = BUFFER_VALID;
@@ -773,7 +777,7 @@ impl ApoObject {
                 let in_peak = input_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                 let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                 record_rt_call(
-                    &mut inner,
+                    inner_ref,
                     secs,
                     frames as u32,
                     input_prop.u32BufferFlags.0 as u32,
@@ -786,23 +790,23 @@ impl ApoObject {
             // 当前过渡结束条件：advance 到达上限或过渡原本未激活。
             let finished = transition.as_ref().map_or(true, |p| p.counter() >= p.length());
             if finished {
-                tbuf_old.clear();
-                tbuf_new.clear();
+                // 保留长度（容量即长度），仅清零内容——后续过渡帧直接写入，无需 resize。
+                tbuf_old.fill(0.0);
+                tbuf_new.fill(0.0);
                 // R1：旧链移入退役槽（零析构），控制线程锁内统一 drop。
-                inner.retired_chain = outgoing;
-                inner.outgoing_chain = None;
-                inner.transition = None;
-                inner.current_chain = owned_chain;
-                inner.temp_buffers = tbufs;
-                inner.temp_buffer_old = tbuf_old;
-                inner.temp_buffer_new = tbuf_new;
+                inner_ref.retired_chain = outgoing;
+                inner_ref.outgoing_chain = None;
+                inner_ref.transition = None;
+                inner_ref.temp_buffers = tbufs;
+                inner_ref.temp_buffer_old = tbuf_old;
+                inner_ref.temp_buffer_new = tbuf_new;
                 // R2 修正（用户风险①）：过渡完成帧如需重载，**不**在此置 `reloading=true`——
                 // `reloading` 表示"正在解析中"（hot_reload 自己会置位），若先置 true 再调
                 // hot_reload，短锁检查 `reloading==true` 会直接返回 → 延迟重载被自己拦截。
                 // 若 hot_reload 正在运行（reloading=true，另一线程在解析），此处保留
                 // pending=true，下帧 APOProcess 再触发。
-                if pending && !inner.reloading {
-                    inner.pending_reload = false;
+                if pending && !inner_ref.reloading {
+                    inner_ref.pending_reload = false;
                     drop(inner);
                     self.hot_reload();
                     return;
@@ -810,26 +814,26 @@ impl ApoObject {
                 return;
             } else {
                 // 过渡进行中 → 写回迁移状态。
-                inner.outgoing_chain = outgoing;
-                inner.transition = transition;
+                inner_ref.outgoing_chain = outgoing;
+                inner_ref.transition = transition;
             }
             // 写回栈上字段。
-            inner.current_chain = owned_chain;
-            inner.temp_buffers = tbufs;
-            inner.temp_buffer_old = tbuf_old;
-            inner.temp_buffer_new = tbuf_new;
+            inner_ref.temp_buffers = tbufs;
+            inner_ref.temp_buffer_old = tbuf_old;
+            inner_ref.temp_buffer_new = tbuf_new;
             return;
         }
 
         // 正常模式：构造 ProcessParams 并调用 process_audio。
         let in_ch = inner.pipeline_context.input_channels;
         let out_ch = inner.pipeline_context.output_channels;
-        let frames = unsafe { (**pp_inputs).u32ValidFrameCount as usize };
+        let frames =
+            (unsafe { (**pp_inputs).u32ValidFrameCount as usize }).min(max_frames);
         let params = ProcessParams {
             input_channels: in_ch,
             output_channels: out_ch,
             sample_rate: inner.pipeline_context.sample_rate,
-            max_frame_count: inner.pipeline_context.max_frame_count,
+            max_frame_count: max_frames,
             valid_frame_count: frames,
             error_policy: ErrorPolicy::Bypass,
             allow_silent_buffer: true,
@@ -839,14 +843,19 @@ impl ApoObject {
         let inputs = std::slice::from_ref(input_one);
         let output_one = unsafe { &mut **pp_outputs };
         let outputs = std::slice::from_mut(output_one);
-        let mut owned_chain = std::mem::replace(&mut inner.current_chain, Box::new(Chain::new()));
-        let mut tbufs = std::mem::take(&mut inner.temp_buffers);
+        // MutexGuard 的 Deref 不参与字段拆分，先取 `&mut *inner` 再拆字段。
+        let inner_ref = &mut *inner;
+        let current_chain = &mut inner_ref.current_chain;
+        let mut tbufs = std::mem::take(&mut inner_ref.temp_buffers);
         // v9.15 诊断：处理前先取输入峰值（in-place 缓冲处理后会被输出覆盖）。
         let in_peak = if frames > 0 && in_ch > 0 {
+            // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             unsafe {
-                std::slice::from_raw_parts(
+                checked_interleaved_slice(
                     input_one.pBuffer as *const f32,
-                    frames * in_ch as usize,
+                    frames,
+                    in_ch as usize,
+                    max_frames,
                 )
             }
             .iter()
@@ -858,7 +867,7 @@ impl ApoObject {
             inputs,
             outputs,
             &params,
-            owned_chain.as_mut(),
+            current_chain.as_mut(),
             &self.process_stats,
             tbufs.as_mut_slice(),
         );
@@ -866,14 +875,17 @@ impl ApoObject {
         // 引擎在设备切换后可能边加载目标链边开播，首段断续慢速；
         // 淡入把听感变为“加载完再播”。仅 PreMix 实例启用（PostMix 直通）。
         let output_one = unsafe { &mut **pp_outputs };
+        // SAFETY: 输出缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
         let out_slice = unsafe {
-            std::slice::from_raw_parts_mut(
+            checked_interleaved_slice_mut(
                 output_one.pBuffer as *mut f32,
-                frames * out_ch as usize,
+                frames,
+                out_ch as usize,
+                max_frames,
             )
         };
-        if inner.startup_fade_remaining > 0 {
-            inner.apply_startup_fade(out_slice, frames, out_ch as usize);
+        if inner_ref.startup_fade_remaining > 0 {
+            inner_ref.apply_startup_fade(out_slice, frames, out_ch as usize);
         }
         // v9.6/v9.15 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前
         // 引擎是否送了最后一段真实音频（嗡声幅度随播放音量变化）。
@@ -883,7 +895,7 @@ impl ApoObject {
             .unwrap_or(0);
         let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
         record_rt_call(
-            &mut inner,
+            inner_ref,
             secs,
             frames as u32,
             input_one.u32BufferFlags.0 as u32,
@@ -892,8 +904,7 @@ impl ApoObject {
             out_peak,
         );
 
-        inner.current_chain = owned_chain;
-        inner.temp_buffers = tbufs;
+        inner_ref.temp_buffers = tbufs;
     }
 
     /// RT 入口 panic 兜底（P0-5，debug `panic="unwind"` 测试态防御路径）。
@@ -912,12 +923,18 @@ impl ApoObject {
         // Safety: 引擎保证 num_output>=1 时 pp_outputs 非空且指向有效 APO_CONNECTION_PROPERTY。
         let output_prop = unsafe { &mut **pp_outputs };
         // u32ValidFrameCount 由引擎在调用 APOProcess 前填充（即使内部 panic，引擎侧已设置）。
-        let frames = output_prop.u32ValidFrameCount as usize;
-        let out_ch = self.out_channel_count_safe();
+        let (out_ch, max_frames) = self.out_channel_count_safe();
+        // 兜底同样 clamp：引擎违约（valid_frame_count > max_frame_count）时以截断代替越界。
+        let frames = (output_prop.u32ValidFrameCount as usize).min(max_frames);
         if frames > 0 && out_ch > 0 {
-            // Safety: 输出缓冲由引擎按 max_frame_count × out_ch 分配，valid_frame_count ≤ max_frame_count。
+            // Safety: 输出缓冲由引擎按 max_frame_count × out_ch 分配；frames 已 clamp。
             let out = unsafe {
-                std::slice::from_raw_parts_mut(output_prop.pBuffer as *mut f32, frames * out_ch)
+                checked_interleaved_slice_mut(
+                    output_prop.pBuffer as *mut f32,
+                    frames,
+                    out_ch,
+                    max_frames,
+                )
             };
             out.fill(0.0);
         }
@@ -929,13 +946,16 @@ impl ApoObject {
         log::error!("APOProcess: panic caught — output silenced");
     }
 
-    /// 读取当前输出通道数（panic 兜底路径专用）。
+    /// 读取当前输出通道数与最大帧数（panic 兜底路径专用）。
     ///
     /// 使用 `PoisonError::into_inner()` 容忍被前序 panic 污染的 mutex——panic 发生时
     /// 锁内数据本身仍有效（仅锁标记 poisoned），此路径保证**不二次 panic**（P0-5）。
-    fn out_channel_count_safe(&self) -> usize {
+    fn out_channel_count_safe(&self) -> (usize, usize) {
         let inner = self.mutex.lock().unwrap_or_else(|e| e.into_inner());
-        inner.pipeline_context.output_channels as usize
+        (
+            inner.pipeline_context.output_channels as usize,
+            inner.pipeline_context.max_frame_count,
+        )
     }
 }
 
@@ -957,6 +977,7 @@ mod tests {
         {
             let mut inner = apo.mutex.lock().unwrap();
             inner.pipeline_context.output_channels = 2;
+            inner.pipeline_context.max_frame_count = 960;
         }
         let mut buffer = vec![1.0f32; 960 * 2];
         let mut prop = APO_CONNECTION_PROPERTY {

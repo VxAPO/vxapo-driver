@@ -15,9 +15,6 @@ use crate::pipeline::dsp::filter::Filter;
 
 /// 默认 Aural Tune（对应原 Quick preset 1 / MIDI 53 映射，约 1.76 kHz）。
 pub const DEFAULT_TUNE_HZ: f32 = 1760.0;
-const DRIVE_MAX: f32 = 4.25;
-const ODD_MAX: f32 = 1.5;
-const EVEN_MAX: f32 = 0.75;
 /// 电平跟随器 release 时间常数。
 const ENV_RELEASE_S: f32 = 0.120;
 /// 偶次谐波 DC 阻塞高通频率。
@@ -46,58 +43,6 @@ impl Default for AuralParams {
             dry: 0.0,
         }
     }
-}
-
-pub fn parse_aural_params(params: &str) -> Option<AuralParams> {
-    let mut p = AuralParams::default();
-    let mut matched = false;
-    let tokens: Vec<&str> = params.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        let key = tokens[i].to_ascii_lowercase();
-        let value = *tokens.get(i + 1)?;
-        match key.as_str() {
-            "tunehz" | "tune" => {
-                p.tune_hz = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("hz")) {
-                    i += 1;
-                }
-            }
-            "drive" => {
-                p.drive = value.parse().ok()?;
-                i += 2;
-            }
-            "odd" => {
-                p.odd = value.parse().ok()?;
-                i += 2;
-            }
-            "even" => {
-                p.even = value.parse().ok()?;
-                i += 2;
-            }
-            "wet" => {
-                p.wet = value.parse().ok()?;
-                i += 2;
-            }
-            "dry" => {
-                p.dry = value.parse().ok()?;
-                i += 2;
-            }
-            _ => return None,
-        }
-        matched = true;
-    }
-    if !matched {
-        return None;
-    }
-    p.tune_hz = p.tune_hz.clamp(500.0, 10_000.0);
-    p.drive = p.drive.clamp(0.0, DRIVE_MAX);
-    p.odd = p.odd.clamp(0.0, ODD_MAX);
-    p.even = p.even.clamp(0.0, EVEN_MAX);
-    p.wet = p.wet.clamp(0.0, 1.0);
-    p.dry = p.dry.clamp(0.0, 1.0);
-    Some(p)
 }
 
 /// 二阶 Butterworth 高通状态（Direct Form II transposed，与原设计一致）。
@@ -266,36 +211,6 @@ impl Filter for AuralEnhancerFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_defaults_and_overrides() {
-        let p = parse_aural_params("Drive 2 Odd 0.5 Wet 0.3 Dry 0.7").unwrap();
-        assert!((p.drive - 2.0).abs() < 1e-6);
-        assert!((p.odd - 0.5).abs() < 1e-6);
-        assert_eq!(p.even, 0.0);
-        assert!((p.tune_hz - DEFAULT_TUNE_HZ).abs() < 1e-3);
-        assert!((p.wet - 0.3).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_empty_is_none() {
-        assert!(parse_aural_params("").is_none());
-    }
-
-    #[test]
-    fn parse_unknown_key_is_none() {
-        assert!(parse_aural_params("Bogus 1").is_none());
-    }
-
-    #[test]
-    fn clamp_extremes() {
-        let p = parse_aural_params("Drive 999 Odd 999 Even 999 Wet 2 Dry -1").unwrap();
-        assert_eq!(p.drive, DRIVE_MAX);
-        assert_eq!(p.odd, ODD_MAX);
-        assert_eq!(p.even, EVEN_MAX);
-        assert_eq!(p.wet, 1.0);
-        assert_eq!(p.dry, 0.0);
-    }
 
     #[test]
     fn dry_only_is_passthrough() {
@@ -478,8 +393,8 @@ mod tests {
         for sr in [44_100u32, 48_000, 96_000] {
             let mut f = AuralEnhancerFilter::new(AuralParams {
                 tune_hz: 9000.0,
-                drive: DRIVE_MAX,
-                even: EVEN_MAX,
+                drive: 4.25, // 参数上限（原 DRIVE_MAX，parse 死代码清理后内联）
+                even: 0.75,  // 参数上限（原 EVEN_MAX）
                 ..Default::default()
             });
             f.initialize(sr, &["L".into(), "R".into()]);

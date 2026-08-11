@@ -137,7 +137,7 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     use windows::Win32::System::Threading::{CreateEventW, SetEvent};
 
     // 幂等：已有 watcher 线程则不重复。
-    let mut st = apo.watcher_state.lock().unwrap();
+    let mut st = apo.watcher_state.lock().unwrap_or_else(|e| e.into_inner());
     if st.thread.is_some() {
         return Ok(());
     }
@@ -147,7 +147,11 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     let shutdown_event = unsafe { CreateEventW(None, true, false, None)? };
 
     // 2. 目录级监控器（不自启线程，v7.10）。watch_dir = config_path 父目录。
-    let config_path = apo.config_path.lock().unwrap().clone();
+    let config_path = apo
+        .config_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let watch_dir = std::path::Path::new(&config_path)
         .parent()
         .map(|p| p.to_path_buf())
@@ -169,18 +173,6 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     let handle = std::thread::spawn(move || loop {
         if !watcher.wait_and_handle() {
             break; // shutdown 或句柄失效。
-        }
-        // watcher 事件探针（debug 门控，验证目录变更是否到达线程）。
-        #[cfg(debug_assertions)]
-        {
-            let _ = std::fs::write(
-                r"C:\ProgramData\VxAPO\watcher_probe.txt",
-                format!(
-                    "dir change at {:?} clsid={clsid:?} obj=0x{obj_ptr:x} thread={:?}\n",
-                    std::time::SystemTime::now(),
-                    std::thread::current().id()
-                ),
-            );
         }
         // 目录级变更 → 热重载（spec 短路 + 128KB 闸门内部处理）。
         hot_reload_impl(&cfg, &inner, clsid, obj_ptr);
@@ -204,7 +196,7 @@ pub(crate) fn stop_watcher(apo: &ApoObject_Impl) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::SetEvent;
 
-    let mut st = apo.watcher_state.lock().unwrap();
+    let mut st = apo.watcher_state.lock().unwrap_or_else(|e| e.into_inner());
 
     // 1. 置位退出事件（唤醒等待中的 wait_and_handle）。
     if let Some(evt) = st.shutdown_event {
@@ -232,23 +224,10 @@ pub(crate) fn hot_reload_impl(
     clsid: GUID,
     obj_ptr: usize,
 ) {
-
     // 1. R2 阻塞式（短锁检查，不构建新链）。
     {
-        let mut guard = inner.lock().unwrap();
+        let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
         if guard.transition.is_some() || guard.reloading {
-            #[cfg(debug_assertions)]
-            {
-                let transition = guard.transition.is_some();
-                let reloading = guard.reloading;
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    format!(
-                        "hot_reload pending/stale: clsid={clsid:?} obj=0x{obj_ptr:x} transition={transition} reloading={reloading} thread={:?}\n",
-                        std::thread::current().id(),
-                    ),
-                );
-            }
             // 过渡在途：不丢弃，记 pending，过渡完成后 APOProcess 会触发一次重载。
             // 若过渡对象已到终点但未被 APOProcess 清掉（实例可能未走 RT 路径），
             // 直接清掉陈旧 transition，让本次变更立即走正常解析。
@@ -260,16 +239,26 @@ pub(crate) fn hot_reload_impl(
                 guard.transition = None;
             } else {
                 guard.pending_reload = true;
-                diag_append(&format!(
+                let msg = format!(
                     "RELOAD pending(transition) clsid={clsid:?} obj=0x{obj_ptr:x}"
-                ));
+                );
+                drop(guard);
+                diag_append(&msg); // 锁外写盘（R5/v9.17：不持 inner 锁做磁盘 I/O）
                 return;
             }
         }
+        // 决策继续解析 → 立即置位防覆盖（R2/v9.17：reloading 表示“正在解析中”），
+        // 并发 watcher 事件在短锁检查看到 true 时只记 pending_reload。
+        guard.reloading = true;
     }
+    // RAII：任意提前返回路径（大小闸门/解析失败/spec 相同/二次过渡）都复位标志。
+    let _reloading_clear = ReloadingClear { inner };
 
     // 2. 128KB 文件大小闸门（控制线程 IO 安全上限，主文件提前短路）。
-    let config_path = config_path.lock().unwrap().clone();
+    let config_path = config_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if std::fs::metadata(&config_path)
         .map(|m| m.len() > crate::config::parser::MAX_CONFIG_FILE_SIZE)
         .unwrap_or(false)
@@ -280,7 +269,13 @@ pub(crate) fn hot_reload_impl(
     }
 
     // 3. 锁外解析（不持有 mutex）。parse_file_with_spec 双返回。
-    let current_ctx = { inner.lock().unwrap().pipeline_context.clone() };
+    let current_ctx = {
+        inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pipeline_context
+            .clone()
+    };
     let dsp_ctx = build_dsp_context(&current_ctx, 32);
     let parser = ConfigParser::new();
     let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
@@ -288,32 +283,18 @@ pub(crate) fn hot_reload_impl(
         Err(e) => {
             log::warn!("hot_reload: config parse failed — keeping old chain");
             diag_append(&format!("RELOAD parse-fail clsid={clsid:?} err={e}"));
-            #[cfg(debug_assertions)]
-            {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    "hot_reload parse failed\n",
-                );
-            }
             return;
         }
     };
 
     // 4. spec 指纹短路（短锁内比较，避免与交换的 TOCTOU）。
     {
-        let guard = inner.lock().unwrap();
+        let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
         let same = guard.active_spec.len() == new_spec.len()
             && guard.active_spec.iter().zip(&new_spec).all(|(a, b)| a == b);
         if same {
             log::debug!("hot_reload: config unchanged — skip");
             diag_append(&format!("RELOAD spec-same clsid={clsid:?}"));
-            #[cfg(debug_assertions)]
-            {
-                let _ = std::fs::write(
-                    r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-                    "hot_reload unchanged (spec same)\n",
-                );
-            }
             return;
         }
     }
@@ -330,7 +311,7 @@ pub(crate) fn hot_reload_impl(
     // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
     new_chain.initialize(dsp_ctx.sample_rate, &dsp_ctx.channel_names);
 
-    let mut guard = inner.lock().unwrap();
+    let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
     if guard.transition.is_some() {
         guard.pending_reload = true;
         return;
@@ -346,37 +327,52 @@ pub(crate) fn hot_reload_impl(
         dsp_ctx.channel_names.clone(),
     ));
     guard.active_spec = new_spec;
-    diag_append(&format!(
-        "RELOAD applied clsid={clsid:?} filters={} spec={}",
-        guard.current_chain.filter_count(),
-        spec_len
-    ));
-
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\hot_reload_probe.txt",
-            format!(
-                "hot_reload applied clsid={clsid:?} obj=0x{obj_ptr:x} spec_len={spec_len} path={config_path} thread={:?}\n",
-                std::thread::current().id(),
-            ),
-        );
-    }
-
+    let filter_count = guard.current_chain.filter_count();
     let length = default_smoothing_length(guard.pipeline_context.sample_rate);
     let mut sm = SmoothingProvider::new(length);
     sm.begin();
     guard.transition = Some(sm);
+    drop(guard);
+    // 锁外写盘（R5/v9.17）。
+    diag_append(&format!(
+        "RELOAD applied clsid={clsid:?} filters={filter_count} spec={spec_len}"
+    ));
+}
+
+/// RAII 清位（R2/v9.17）：`reloading` 表示“正在解析中”，任意提前返回路径
+/// （大小闸门/解析失败/spec 相同/add_filter 失败/二次过渡）都必须复位，
+/// 防止后续重载被自己拦截。
+struct ReloadingClear<'a> {
+    inner: &'a Arc<Mutex<ApoObjectInner>>,
+}
+
+impl Drop for ReloadingClear<'_> {
+    fn drop(&mut self) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.reloading = false;
+    }
 }
 
 /// 运行期诊断日志（v9.4，仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
 /// 记录 Lock/热重载的关键事件，供设备切换/热重载失效问题定位；失败静默。
 pub(crate) fn diag_append(line: &str) {
     use std::io::Write;
+    /// 诊断日志单文件上限（v9.17）：达到后轮转为 `diag.1.log`，防止无界增长。
+    const DIAG_MAX_BYTES: u64 = 1024 * 1024;
+    const DIAG_PATH: &str = r"C:\ProgramData\VxAPO\diag.log";
+    const DIAG_ROTATED_PATH: &str = r"C:\ProgramData\VxAPO\diag.1.log";
     // v9.15: serialize log writes across all watcher/control threads to prevent
     // interleaved/corrupted lines during reload storms.
     static DIAG_LOCK: Mutex<()> = Mutex::new(());
     let _diag_guard = DIAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // 1MB 轮转：先移除上一份轮转文件再改名（best-effort，失败继续追加）。
+    if std::fs::metadata(DIAG_PATH)
+        .map(|m| m.len() >= DIAG_MAX_BYTES)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(DIAG_ROTATED_PATH);
+        let _ = std::fs::rename(DIAG_PATH, DIAG_ROTATED_PATH);
+    }
     let secs = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -384,7 +380,7 @@ pub(crate) fn diag_append(line: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(r"C:\ProgramData\VxAPO\diag.log")
+        .open(DIAG_PATH)
     {
         let _ = writeln!(f, "[{secs}] {line}");
     }

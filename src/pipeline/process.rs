@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::pipeline::buffer::{evaluate_buffer, BufferAction, BufferInfo, is_silent};
+use crate::pipeline::buffer::{evaluate_buffer, BufferAction, BufferInfo};
 use crate::pipeline::chain::Chain;
 use crate::pipeline::interleave::{deinterleave_into, interleave_from_guarded};
 use crate::sys::com::apo_types::{APO_CONNECTION_PROPERTY, BUFFER_SILENT, BUFFER_VALID};
@@ -121,14 +121,16 @@ pub fn process_audio(
 ) -> Result<()> {
     let in_ch = params.input_channels as usize;
     let out_ch = params.output_channels as usize;
-    let frames = params.valid_frame_count;
+    // v9.17（审查 #12）：切片长度由 valid_frame_count 生成时，防御检查恒真——
+    // 必须先 clamp 到 max_frame_count 再构造切片，引擎违约时以截断代替越界。
+    let frames = params.valid_frame_count.min(params.max_frame_count);
 
     for (input_prop, output_prop) in input_props.iter().zip(output_props.iter_mut()) {
         let input_info = BufferInfo::from_prop(input_prop, in_ch);
         let mut output_info = BufferInfo::from_prop_mut(output_prop, out_ch);
 
         // Step 1: evaluate_buffer
-        let (action, mut output_flags) = evaluate_buffer(input_prop.u32BufferFlags, params.allow_silent_buffer);
+        let (action, _) = evaluate_buffer(input_prop.u32BufferFlags, params.allow_silent_buffer);
         match action {
             BufferAction::Skip | BufferAction::Silent => {
                 output_info.zero();
@@ -187,20 +189,7 @@ pub fn process_audio(
             deinterleave_into(input_slice, &mut temp_buffers[..in_ch], in_ch, frames);
         }
 
-        // Step 3: is_silent 优化检测（仅对 VALID 输入：SILENT 标志已由引擎声明，
-        // 不再用内容二次判断——残留大数值会被误判为有效音频）
-        if output_flags == BUFFER_SILENT && !input_silent {
-            if is_silent(&temp_buffers[..out_ch.min(temp_buffers.len())], frames) {
-                output_info.zero();
-                output_prop.u32BufferFlags = BUFFER_SILENT;
-                output_prop.u32ValidFrameCount = frames as u32;
-                continue;
-            } else {
-                output_flags = BUFFER_VALID;
-            }
-        }
-
-        // Step 4: 输出通道扩展（后通道清零 + mono 上混）
+        // Step 3: 输出通道扩展（后通道清零 + mono 上混）
         if out_ch > in_ch {
             for ch in in_ch..out_ch.min(temp_buffers.len()) {
                 temp_buffers[ch][..frames].fill(0.0);
@@ -212,7 +201,7 @@ pub fn process_audio(
             }
         }
 
-        // Step 5: DSP 处理（先取长度避免借用冲突）
+        // Step 4: DSP 处理（先取长度避免借用冲突）
         let active_ch = out_ch.min(temp_buffers.len());
 
         // R3（v6.9）：空链快路径——去交织缓冲原样即输出，跳过链遍历。
@@ -225,7 +214,7 @@ pub fn process_audio(
             chain.process(&mut temp_buffers[..active_ch], frames)
         };
 
-        // Step 6: 错误恢复
+        // Step 5: 错误恢复
         if result.is_err() {
             apply_error_policy(result, input_slice, output_slice, params.error_policy, stats);
             output_prop.u32BufferFlags = match params.error_policy {
@@ -236,7 +225,7 @@ pub fn process_audio(
             continue;
         }
 
-        // Step 7: 去交织 → 交织
+        // Step 6: 去交织 → 交织
         interleave_from_guarded(
             &temp_buffers[..out_ch.min(temp_buffers.len())],
             output_slice,
@@ -248,7 +237,7 @@ pub fn process_audio(
             output_slice.fill(0.0);
             output_prop.u32BufferFlags = BUFFER_SILENT;
         } else {
-            output_prop.u32BufferFlags = output_flags;
+            output_prop.u32BufferFlags = BUFFER_VALID;
         }
         // EAPO:482 对齐：显式设置输出帧数（APO 契约要求 APO 写回）——
         // 缺失 → 引擎判输出无效 → 完全无声（2026-08-04 实测 audiodg 加载但无声根因）。
@@ -298,7 +287,7 @@ mod tests {
         let stats = ProcessStatistics::new();
         let mut input_buf = vec![5.0f32; 4]; // 残留“上一帧输出”式的大数值
         let mut output_buf = vec![1.0f32; 4];
-        let mut input_prop = APO_CONNECTION_PROPERTY {
+        let input_prop = APO_CONNECTION_PROPERTY {
             pBuffer: input_buf.as_mut_ptr() as usize,
             u32ValidFrameCount: 4,
             u32BufferFlags: BUFFER_SILENT,
@@ -332,5 +321,49 @@ mod tests {
         assert!(output_buf.iter().all(|&v| v == 0.0), "silent input must zero output");
         assert_eq!(output_prop.u32BufferFlags, BUFFER_SILENT);
         assert_eq!(output_prop.u32ValidFrameCount, 4);
+    }
+
+    /// v9.17 回归（审查 #12）：引擎违约给出超过 max_frame_count 的帧数时，
+    /// 必须先 clamp 再处理——不得在切片构造处越界，输出帧数按实际写入上报。
+    #[test]
+    fn process_audio_clamps_frames_to_max_frame_count() {
+        let mut chain = Chain::new();
+        let stats = ProcessStatistics::new();
+        // 缓冲按 max_frame_count=4 分配，但引擎违约报 99 帧。
+        let mut input_buf = vec![0.0f32; 4];
+        let mut output_buf = vec![9.0f32; 4];
+        let input_prop = APO_CONNECTION_PROPERTY {
+            pBuffer: input_buf.as_mut_ptr() as usize,
+            u32ValidFrameCount: 99,
+            u32BufferFlags: BUFFER_VALID,
+            u32Signature: 0,
+        };
+        let mut output_prop = APO_CONNECTION_PROPERTY {
+            pBuffer: output_buf.as_mut_ptr() as usize,
+            u32ValidFrameCount: 99,
+            u32BufferFlags: BUFFER_VALID,
+            u32Signature: 0,
+        };
+        let params = ProcessParams {
+            input_channels: 1,
+            output_channels: 1,
+            sample_rate: 48_000,
+            max_frame_count: 4,
+            valid_frame_count: 99,
+            error_policy: ErrorPolicy::Bypass,
+            allow_silent_buffer: true,
+        };
+        let mut temp = vec![vec![0.0f32; 4]; 1];
+        process_audio(
+            std::slice::from_ref(&input_prop),
+            std::slice::from_mut(&mut output_prop),
+            &params,
+            &mut chain,
+            &stats,
+            &mut temp,
+        )
+        .unwrap();
+        assert_eq!(output_prop.u32ValidFrameCount, 4, "必须上报实际写入的 clamp 后帧数");
+        assert!(output_buf.iter().all(|&v| v == 0.0));
     }
 }

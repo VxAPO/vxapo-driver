@@ -88,7 +88,7 @@ impl InstallConfig {
 #[derive(Debug)]
 enum RollbackAction {
     /// 删除指定键路径（安装新建的键）。
-    DeleteKey(String),
+    DeleteKey { root: windows::Win32::System::Registry::HKEY, path: String },
     /// 恢复指定值（原名 + 备份 GUID 字符串——槽位必须写 REG_SZ，
     /// 见 `write_apo_slot` 的 REG_SZ 实证说明）。
     RestoreValue { key_path: String, name: String, backup: String },
@@ -122,9 +122,10 @@ impl Drop for Transaction {
         // 逆序回滚所有已记录动作。
         for action in self.actions.iter().rev() {
             match action {
-                RollbackAction::DeleteKey(path) => {
-                    let _ = RegKey::open(HKEY_LOCAL_MACHINE, path)
-                        .and_then(|k| k.delete_sub_key(path));
+                RollbackAction::DeleteKey { root, path } => {
+                    // v9.17（审查 #7）：delete_sub_key 是相对句柄语义，此处持完整
+                    // 路径必须走 delete_tree（幂等）；旧实现打开后传全路径 → 静默空操作。
+                    let _ = crate::sys::registry::delete_tree(*root, path);
                 }
                 RollbackAction::RestoreValue { key_path, name, backup } => {
                     if let Ok(key) = RegKey::create(HKEY_LOCAL_MACHINE, key_path) {
@@ -222,7 +223,7 @@ pub fn install_endpoint(
     // capture 不装 PostMix → childPostMix 无意义，强制 None。
 
     let child_postmix = if is_capture { None } else { original_postmix };
-    write_child_apo_config(device_guid, &fx_key, config, original_premix, child_postmix)?;
+    write_child_apo_config(device_guid, &fx_key, config, original_premix, child_postmix, &mut tx)?;
 
     // ── Step 5: 按模式写入 APO GUID（capture 只写 PreMix）───────────────
 
@@ -301,7 +302,11 @@ pub fn install_endpoint(
     }
 
     // 全流程收尾：重启音频服务使新槽位拓扑/注册生效（EAPO 安装对齐）。
-    crate::install::audiodg::restart_audio_service()?;
+    // v9.17：注册表已 commit，重启为 best-effort——失败仅记录，不把“已安装”
+    // 报成失败（与 audiodg 文档“best-effort 仅日志”统一）。
+    if let Err(e) = crate::install::audiodg::restart_audio_service() {
+        log::warn!("install_endpoint: 音频服务重启失败（安装已生效，重启后生效）：{e}");
+    }
     Ok(())
 }
 
@@ -346,7 +351,9 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     };
 
     // 全流程前置：确认已安装后才停音频服务，避免 audiodg 锁住槽位导致删不掉。
-    let _ = crate::install::audiodg::stop_audio_service();
+    if let Err(e) = crate::install::audiodg::stop_audio_service() {
+        log::warn!("uninstall: 停止音频服务失败（后续删槽位可能被占用）：{e}");
+    }
 
     // ── 删除 VxAPO CLSID ──────────────────────────────────────────────────
     // 注意：**不能**用 read_all_slots(&fx_key)——它期望端点根键（内部再 open
@@ -389,9 +396,12 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // 莫名回到父槽位（错误语义）。
 
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
-    if let Ok((root, sub_key)) = split_hklm_path(&info_key) {
-        let _ = crate::sys::registry::delete_tree(root, sub_key);
-    }
+    let (root, sub_key) = split_hklm_path(&info_key)?;
+    // v9.17（审查 #8 同族）：信息区删除失败必须返回 Err——残留会让下次安装
+    // 误判为“非全量路径”；delete_tree 对“键不存在”幂等返回 Ok。
+    crate::sys::registry::delete_tree(root, sub_key).map_err(|e| {
+        VxApoError::internal(&format!("卸载失败：删除安装信息区 {info_key} 失败：{e}"))
+    })?;
 
     // ── 删除子 APO 配置（旧遗留值，best-effort） ─────────────────────────
 
@@ -404,7 +414,9 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     let _ = fx_key.delete_value("DisableEnhancements");
 
     // 全流程收尾：重启音频服务恢复输出（槽位删除后引擎需重枚举）。
-    crate::install::audiodg::restart_audio_service()?;
+    if let Err(e) = crate::install::audiodg::restart_audio_service() {
+        log::warn!("uninstall: 音频服务重启失败（卸载已生效，重启后恢复输出）：{e}");
+    }
     Ok(())
 }
 
@@ -552,14 +564,20 @@ fn ensure_fx_properties(fx_path: &str, tx: &mut Transaction) -> Result<(RegKey, 
         };
         let key = RegKey::open_for_write(HKEY_LOCAL_MACHINE, fx_path)?;
         if is_new {
-            tx.record(RollbackAction::DeleteKey(fx_path.to_string()));
+            tx.record(RollbackAction::DeleteKey {
+                root: HKEY_LOCAL_MACHINE,
+                path: fx_path.to_string(),
+            });
         }
         return Ok((key, is_new));
     }
 
     // 不存在 → 创建（SAM_ALL）。
     let key = RegKey::create(HKEY_LOCAL_MACHINE, fx_path)?;
-    tx.record(RollbackAction::DeleteKey(fx_path.to_string()));
+    tx.record(RollbackAction::DeleteKey {
+        root: HKEY_LOCAL_MACHINE,
+        path: fx_path.to_string(),
+    });
     Ok((key, true))
 }
 
@@ -635,12 +653,19 @@ fn write_child_apo_config(
     config: &InstallConfig,
     original_premix: Option<GUID>,
     original_postmix: Option<GUID>,
+    tx: &mut Transaction,
 ) -> Result<()> {
     // 独立安装信息区：HKLM\SOFTWARE\VxAPO\Child APOs\{device_guid}
     // （HKLM\SOFTWARE 管理员可建子键；require_admin 探测键同区已验证）。
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
     let (root, sub_key) = split_hklm_path(&info_key)?;
     let info = RegKey::create(root, sub_key)?;
+    // v9.17（审查 #8）：新建信息区必须登记回滚——安装中途失败时随事务一起删除，
+    // 否则残留信息区会让下次安装误判为“非全量路径”。
+    tx.record(RollbackAction::DeleteKey {
+        root: HKEY_LOCAL_MACHINE,
+        path: info_key,
+    });
 
     // PreMixChild / PostMixChild — 保留的原始 APO GUID（有才写）。
     if let Some(g) = original_premix {
@@ -939,5 +964,35 @@ mod tests {
         assert!(!c.use_original_apo_postmix);
         assert!(!c.allow_silent_buffer);
         assert!(c.auto_adjust);
+    }
+
+    #[test]
+    fn transaction_rollback_deletes_recorded_key() {
+        use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+
+        // v9.17 回归（审查 #7/#8）：未 commit 的事务 Drop 必须真实删除记录的键。
+        // 旧实现“打开后传完整路径给 delete_sub_key”是静默空操作，安装中途失败
+        // 时 FxProperties/信息区永久残留。用 HKCU 测试键验证（无需管理员）。
+        const TEST_ROOT: &str = r"SOFTWARE\VxAPO_Test_Tx_Rollback";
+        let _ = crate::sys::registry::delete_tree(HKEY_CURRENT_USER, TEST_ROOT);
+
+        // 模拟“安装新建了键但后续步骤失败”：先真实建键，再构造未 commit 事务。
+        let key = RegKey::create(HKEY_CURRENT_USER, TEST_ROOT).unwrap();
+        key.write_dword("Marker", 1).unwrap();
+        drop(key);
+        assert!(RegKey::open(HKEY_CURRENT_USER, TEST_ROOT).is_ok());
+
+        let mut tx = Transaction::new();
+        tx.record(RollbackAction::DeleteKey {
+            root: HKEY_CURRENT_USER,
+            path: TEST_ROOT.to_string(),
+        });
+        drop(tx); // 未 commit → Drop 执行回滚
+
+        assert!(
+            RegKey::open(HKEY_CURRENT_USER, TEST_ROOT).is_err(),
+            "回滚后新建键必须被删除"
+        );
+        let _ = crate::sys::registry::delete_tree(HKEY_CURRENT_USER, TEST_ROOT);
     }
 }

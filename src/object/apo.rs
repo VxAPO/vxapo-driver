@@ -29,7 +29,7 @@ use crate::sys::com::apo_interfaces::{
 use crate::sys::com::apo_types::{
     APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES,
 };
-use crate::sys::com::prelude::{GUID, implement};
+use crate::sys::com::prelude::{E_FAIL, GUID, implement};
 
 // ═══ ApoObject ═══
 #[implement(
@@ -82,6 +82,7 @@ impl ApoObject {
             &self.config_path,
             &self.mutex,
             self.clsid,
+            // 仅诊断日志用（不 deref），保持整数约定防止与对象生命周期耦合。
             self as *const _ as usize,
         );
     }
@@ -96,11 +97,15 @@ impl Drop for ApoObject {
 // ═══ IAudioProcessingObject 实现（windows-rs _Impl trait 签名 → 子模块转发） ═══
 impl IAudioProcessingObject_Impl for ApoObject_Impl {
     fn Reset(&self) -> Result<()> {
-        process::reset(self)
+        // R4（v9.17）：控制型 COM 入口统一 catch_unwind——内部 mutex 中毒/format!
+        // 等 panic 不得跨 extern "system" 边界 unwind（release panic=abort 时为空操作）。
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process::reset(self)))
+            .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
     }
 
     fn GetLatency(&self) -> Result<i64> {
-        process::get_latency(self)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process::get_latency(self)))
+            .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
     }
 
     fn GetRegistrationProperties(&self) -> Result<*mut APO_REG_PROPERTIES> {
@@ -128,7 +133,10 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn GetInputChannelCount(&self) -> Result<u32> {
-        process::get_input_channel_count(self)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process::get_input_channel_count(self)
+        }))
+        .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
     }
 }
 
@@ -165,14 +173,23 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
         num_output: u32,
         pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
     ) -> Result<()> {
-        process::lock_for_process(self, num_input, pp_inputs, num_output, pp_outputs)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process::lock_for_process(self, num_input, pp_inputs, num_output, pp_outputs)
+        }))
+        .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
     }
 
     fn UnlockForProcess(&self) -> Result<()> {
-        process::unlock_for_process(self)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process::unlock_for_process(self)
+        }))
+        .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
     }
 }
 
+// SAFETY: 引擎保证同一 ApoObject 的 COM 方法不重叠调用；跨线程访问仅经
+// `Arc<Mutex<...>>` / `AtomicU32` / `StateCell`（内部同步），`#[implement]`
+// 对象生命周期由 COM 引用计数管理（规范 7.1 原文语义）。
 unsafe impl Send for ApoObject {}
 unsafe impl Sync for ApoObject {}
 

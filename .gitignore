@@ -10,6 +10,9 @@
 *.csv
 *.pml
 
+# 依赖铁律校验脚本（v9.17 治理工具，与主规范第十一节三文件联动，需入库）
+!scripts/check_deps.ps1
+
 # 系统生成
 .DS_Store
 Thumbs.db

@@ -42,6 +42,8 @@ pub struct RegKey {
     handle: HKEY,
 }
 
+// SAFETY: HKEY 为值语义句柄（内部无借用状态），Windows 注册表句柄跨线程
+// 传递/使用合法；RAII Drop 只在句柄最后持有者释放时 RegCloseKey。
 unsafe impl Send for RegKey {}
 unsafe impl Sync for RegKey {}
 
@@ -348,6 +350,25 @@ impl RegKey {
         win32_ok(err)
     }
 
+    /// 写入 REG_QWORD。
+    ///
+    /// v9.17 新增（配套 .reg 导出 QWORD 修复）：此前只读不写，QWORD 备份/
+    /// 导出无法 round-trip 验证。
+    pub fn write_qword(&self, name: &str, value: u64) -> Result<()> {
+        let name = HSTRING::from(name);
+        let data = value.to_le_bytes();
+        let err = unsafe {
+            RegSetValueExW(
+                self.handle,
+                &name,
+                None,
+                REG_QWORD,
+                Some(&data),
+            )
+        };
+        win32_ok(err)
+    }
+
     /// 写入 REG_BINARY。
     pub fn write_binary(&self, name: &str, data: &[u8]) -> Result<()> {
         let name = HSTRING::from(name);
@@ -403,10 +424,15 @@ impl RegKey {
         }
     }
 
-    /// 递归删除子键（幂等）。
-    pub fn delete_sub_key(&self, name: &str) -> Result<()> {
-        let name = HSTRING::from(name);
-        let err = unsafe { RegDeleteTreeW(self.handle, &name) };
+    /// 递归删除当前键下的直接/间接子键（幂等）。
+    ///
+    /// `relative_child` 是**相对当前句柄的子键路径**（如 `"Child"`），不是完整
+    /// 注册表路径——`RegDeleteTreeW` 的 name 相对句柄解析，传完整路径会静默
+    /// 空操作（v9.17 语义修正，审查 #7 根因）。删除整棵绝对路径子树请用
+    /// [`delete_tree`]。
+    pub fn delete_sub_key(&self, relative_child: &str) -> Result<()> {
+        let relative_child = HSTRING::from(relative_child);
+        let err = unsafe { RegDeleteTreeW(self.handle, &relative_child) };
         if err.0 == 0 || is_not_found(err) {
             Ok(())
         } else {
@@ -525,7 +551,7 @@ pub fn save_to_file(root: HKEY, sub_key: &str, path: &str) -> Result<()> {
     let key = RegKey::open(root, sub_key)?;
     let mut content = String::new();
     content.push_str("Windows Registry Editor Version 5.00\r\n\r\n");
-    dump_key_recursive(&key, "", sub_key, &mut content)?;
+    dump_key_recursive(&key, "", sub_key, root_display_name(root), &mut content)?;
     let mut bytes = vec![0xFF, 0xFE]; // UTF-16LE BOM
     let mut utf16: Vec<u8> = content
         .encode_utf16()
@@ -546,6 +572,7 @@ fn dump_key_recursive(
     key: &RegKey,
     display_path: &str,
     sub_key: &str,
+    root_display: &str,
     content: &mut String,
 ) -> Result<()> {
     let full_display = if display_path.is_empty() {
@@ -554,7 +581,7 @@ fn dump_key_recursive(
         format!("{}\\{}", display_path, sub_key)
     };
 
-    content.push_str(&format!("[HKEY_LOCAL_MACHINE\\{}]\r\n", full_display));
+    content.push_str(&format!("[{}\\{}]\r\n", root_display, full_display));
 
     // 枚举本键所有值。
     let value_names = key.enum_values()?;
@@ -572,12 +599,17 @@ fn dump_key_recursive(
                         "\"{}\"=dword:{:08x}\r\n",
                         display_name, d
                     )),
-                    RegValue::Qword(q) => content.push_str(&format!(
-                        "\"{}\"=hex(b):{},{}\r\n",
-                        display_name,
-                        (q & 0xFF) as u8,
-                        ((q >> 8) & 0xFF) as u8
-                    )),
+                    RegValue::Qword(q) => {
+                        // .reg 的 QWORD 类型为 hex(b)：8 字节完整小端序（v9.17 修复：
+                        // 旧实现只导出低 2 字节，恢复必然损坏）。
+                        let bytes = q.to_le_bytes();
+                        let hex: Vec<String> = bytes.iter().map(|x| format!("{:02x}", x)).collect();
+                        content.push_str(&format!(
+                            "\"{}\"=hex(b):{}\r\n",
+                            display_name,
+                            hex.join(",")
+                        ));
+                    }
                     RegValue::Binary(b) => {
                         let hex: Vec<String> = b.iter().map(|x| format!("{:02x}", x)).collect();
                         content.push_str(&format!(
@@ -587,19 +619,31 @@ fn dump_key_recursive(
                         ));
                     }
                     RegValue::MultiSz(v) => {
-                        let items: Vec<String> = v
-                            .iter()
-                            .map(|s| s.replace('\\', "\\\\").replace('"', "\\\""))
-                            .collect();
+                        // .reg 的 REG_MULTI_SZ 为 hex(7)：每项 UTF-16LE hex + 00,00
+                        // 终止，列表末尾再补 00,00 双终止（v9.17 修复：旧实现写
+                        // 转义文本 + 字面 \0，生成的 .reg 无效）。
+                        let mut hex: Vec<String> = Vec::new();
+                        for item in v {
+                            for u in item.encode_utf16() {
+                                hex.push(format!("{:02x}", (u & 0xFF) as u8));
+                                hex.push(format!("{:02x}", (u >> 8) as u8));
+                            }
+                            hex.push("00".to_string());
+                            hex.push("00".to_string());
+                        }
+                        hex.push("00".to_string());
+                        hex.push("00".to_string());
                         content.push_str(&format!(
-                            "\"{}\"=hex(7):{}\\0\r\n",
+                            "\"{}\"=hex(7):{}\r\n",
                             display_name,
-                            items.join(",00,")
+                            hex.join(",")
                         ));
                     }
                 }
             }
-            Err(_) => continue,
+            Err(e) => log::warn!(
+                "save_to_file: 读取值 {name} 失败：{e}——备份不完整（调用方应视为警告）"
+            ),
         }
     }
     content.push('\n');
@@ -608,10 +652,27 @@ fn dump_key_recursive(
     let sub_keys = key.enum_sub_keys()?;
     for child in &sub_keys {
         let child_key = key.open_sub_key(child)?;
-        dump_key_recursive(&child_key, &full_display, child, content)?;
+        dump_key_recursive(&child_key, &full_display, child, root_display, content)?;
     }
 
     Ok(())
+}
+
+/// 根键 → `.reg` 文件头部名称（v9.17：不再固定写 HKEY_LOCAL_MACHINE）。
+fn root_display_name(root: HKEY) -> &'static str {
+    if root.0 == HKEY_LOCAL_MACHINE.0 {
+        "HKEY_LOCAL_MACHINE"
+    } else if root.0 == HKEY_CURRENT_USER.0 {
+        "HKEY_CURRENT_USER"
+    } else if root.0 == HKEY_CLASSES_ROOT.0 {
+        "HKEY_CLASSES_ROOT"
+    } else if root.0 == HKEY_USERS.0 {
+        "HKEY_USERS"
+    } else if root.0 == HKEY_CURRENT_CONFIG.0 {
+        "HKEY_CURRENT_CONFIG"
+    } else {
+        "HKEY_LOCAL_MACHINE"
+    }
 }
 
 #[cfg(test)]
@@ -624,8 +685,7 @@ mod tests {
 
     #[test]
     fn create_write_read_roundtrip() {
-        let _ = RegKey::open(TEST_ROOT, TEST_KEY)
-            .and_then(|k| k.delete_sub_key(TEST_KEY));
+        let _ = delete_tree(TEST_ROOT, TEST_KEY);
         let key = RegKey::create(TEST_ROOT, TEST_KEY).unwrap();
 
         key.write_sz("TestSz", "hello").unwrap();
@@ -641,8 +701,7 @@ mod tests {
         assert!(!key.value_exists("TestSz").unwrap());
 
         drop(key);
-        let _ = RegKey::open(TEST_ROOT, TEST_KEY)
-            .and_then(|k| k.delete_sub_key(TEST_KEY));
+        let _ = delete_tree(TEST_ROOT, TEST_KEY);
     }
 
     #[test]
@@ -650,5 +709,66 @@ mod tests {
         assert_eq!(split_key(r"HKLM\SOFTWARE").unwrap().0, HKEY_LOCAL_MACHINE);
         assert_eq!(split_key(r"HKCU\SOFTWARE").unwrap().0, HKEY_CURRENT_USER);
         assert!(split_key(r"BADROOT\X").is_err());
+    }
+
+    #[test]
+    fn delete_sub_key_uses_relative_child() {
+        const REL_CHILD_KEY: &str = r"SOFTWARE\VxAPO_Test_Registry_RelChild";
+
+        // v9.17 回归：delete_sub_key 接受相对当前句柄的子键名；传完整路径会
+        // 静默空操作（审查 #7 根因），因此调用方必须先 open 再传相对名。
+        let _ = delete_tree(TEST_ROOT, REL_CHILD_KEY);
+        let parent = RegKey::create(TEST_ROOT, REL_CHILD_KEY).unwrap();
+        let child = RegKey::create(TEST_ROOT, &format!(r"{REL_CHILD_KEY}\Child")).unwrap();
+        drop(child);
+        assert!(parent.key_exists_child("Child").unwrap());
+
+        parent.delete_sub_key("Child").unwrap();
+        assert!(!parent.key_exists_child("Child").unwrap());
+        // 父键本身仍在（只删了相对子键）。
+        assert!(RegKey::open(TEST_ROOT, REL_CHILD_KEY).is_ok());
+
+        drop(parent);
+        let _ = delete_tree(TEST_ROOT, REL_CHILD_KEY);
+    }
+
+    #[test]
+    fn reg_export_qword_multi_sz_roundtrip() {
+        const EXPORT_KEY: &str = r"SOFTWARE\VxAPO_Test_Registry_Export";
+
+        // v9.17 回归：.reg 导出中 QWORD 为 8 字节小端 hex(b)，MULTI_SZ 为
+        // UTF-16LE hex(7) + 双终止；旧实现分别只导低 2 字节/写转义文本。
+        let _ = delete_tree(TEST_ROOT, EXPORT_KEY);
+        let key = RegKey::create(TEST_ROOT, EXPORT_KEY).unwrap();
+        key.write_dword("Dword", 0x01020304).unwrap();
+        key.write_qword("Qword", 0x1122_3344_5566_7788).unwrap();
+        key.write_multi_value("Modes", &["{mode-1}".to_string(), "{mode-2}".to_string()])
+            .unwrap();
+        drop(key);
+
+        let path = std::env::temp_dir().join("vxapo_reg_export_test.reg");
+        let path_str = path.display().to_string();
+        save_to_file(TEST_ROOT, EXPORT_KEY, &path_str).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        // UTF-16LE with BOM。
+        let content = String::from_utf16(
+            &bytes[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = delete_tree(TEST_ROOT, EXPORT_KEY);
+
+        // 根头不再固定 HKLM。
+        assert!(content.contains("[HKEY_CURRENT_USER\\"));
+        // QWORD 完整 8 字节小端（0x88 在前：88,77,66,55,44,33,22,11）。
+        assert!(content.contains("=hex(b):88,77,66,55,44,33,22,11"));
+        // MULTI_SZ 走 hex(7) 且以 00,00,00,00 双终止。
+        assert!(content.contains("=hex(7):"));
+        assert!(content.contains("00,00,00,00"));
+        // 每项 GUID 的 UTF-16LE hex 应出现（'{' = 7b 00）。
+        assert!(content.contains("7b,00"));
     }
 }

@@ -110,91 +110,6 @@ impl Default for ReverbParams {
     }
 }
 
-pub fn parse_reverb_params(params: &str) -> Option<ReverbParams> {
-    let mut p = ReverbParams::default();
-    let mut matched = false;
-    let tokens: Vec<&str> = params.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        let key = tokens[i].to_ascii_lowercase();
-        let value = *tokens.get(i + 1)?;
-        match key.as_str() {
-            "roomsize" | "room" | "size" => {
-                p.room_size = value.parse().ok()?;
-                i += 2;
-            }
-            "decay" => {
-                p.decay = value.parse().ok()?;
-                i += 2;
-            }
-            "damping" => {
-                p.damping = value.parse().ok()?;
-                i += 2;
-            }
-            "bandwidth" | "rolloff" => {
-                p.bandwidth = value.parse().ok()?;
-                i += 2;
-            }
-            "density" => {
-                p.density = value.parse().ok()?;
-                i += 2;
-            }
-            "lat5" => {
-                p.lat5 = value.parse().ok()?;
-                i += 2;
-            }
-            "lat6" => {
-                p.lat6 = value.parse().ok()?;
-                i += 2;
-            }
-            "predelay" | "pre_delay" => {
-                p.pre_delay_ms = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("ms")) {
-                    i += 1;
-                }
-            }
-            "motionrate" | "motion_rate" => {
-                p.motion_rate = value.parse().ok()?;
-                i += 2;
-            }
-            "motiondepth" | "motion_depth" => {
-                p.motion_depth_ms = value.parse().ok()?;
-                i += 2;
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("ms")) {
-                    i += 1;
-                }
-            }
-            "wet" => {
-                p.wet = value.parse().ok()?;
-                i += 2;
-            }
-            "dry" => {
-                p.dry = value.parse().ok()?;
-                i += 2;
-            }
-            _ => return None,
-        }
-        matched = true;
-    }
-    if !matched {
-        return None;
-    }
-    p.room_size = p.room_size.clamp(0.5, 1.5);
-    p.decay = p.decay.clamp(0.0, 1.0);
-    p.damping = p.damping.clamp(0.0, 1.0);
-    p.bandwidth = p.bandwidth.clamp(0.0, 1.0);
-    p.density = p.density.clamp(0.0, 1.0);
-    p.lat5 = p.lat5.clamp(0.0, 1.0);
-    p.lat6 = p.lat6.clamp(0.0, 1.0);
-    p.pre_delay_ms = p.pre_delay_ms.clamp(0.0, 100.0);
-    p.motion_rate = p.motion_rate.clamp(0.05, 2.0);
-    p.motion_depth_ms = p.motion_depth_ms.clamp(0.0, 2.0);
-    p.wet = p.wet.clamp(0.0, 1.0);
-    p.dry = p.dry.clamp(0.0, 1.0);
-    Some(p)
-}
-
 /// 循环延迟线：`read(delay)` 返回 `delay` 个采样前写入的值。
 #[derive(Debug, Clone)]
 struct DelayLine {
@@ -700,35 +615,6 @@ impl Filter for ReverbFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_valid() {
-        let p = parse_reverb_params(
-            "RoomSize 1.2 Decay 0.5 Damping 0.4 Bandwidth 0.3 PreDelay 20 ms MotionRate 0.2 MotionDepth 1 ms Wet 0.4 Dry 0.8",
-        )
-        .unwrap();
-        assert!((p.room_size - 1.2).abs() < 1e-6);
-        assert!((p.pre_delay_ms - 20.0).abs() < 1e-6);
-        assert!((p.wet - 0.4).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_empty_is_none() {
-        assert!(parse_reverb_params("").is_none());
-    }
-
-    #[test]
-    fn parse_unknown_is_none() {
-        assert!(parse_reverb_params("Bogus 1").is_none());
-    }
-
-    #[test]
-    fn clamps_extremes() {
-        let p = parse_reverb_params("RoomSize 99 Decay 99 MotionDepth 99").unwrap();
-        assert_eq!(p.room_size, 1.5);
-        assert_eq!(p.decay, 1.0);
-        assert_eq!(p.motion_depth_ms, 2.0);
-    }
 
     #[test]
     fn silence_stays_silent() {

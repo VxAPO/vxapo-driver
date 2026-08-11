@@ -20,17 +20,6 @@ use crate::sys::com::prelude::{CoTaskMemAlloc, E_OUTOFMEMORY, HRESULT, guid_to_s
 ///
 /// 数据非法时仍初始化成功并降级默认配置，不阻断 APO 加载（object 7.1.8）。
 pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *const u8) -> Result<()> {
-    // ---- P0-7 无声诊断探针 5（2026-08-04，debug 门控，排查完删除）----
-    // Initialize 被调与否：引擎拿到 IAudioProcessingObject 后先调 Initialize。
-    // 之前只有 lock/apoprocess 探针，Initialize 失败被拒时 lock 自然不触发——补上。
-    #[cfg(debug_assertions)]
-    {
-        let _ = std::fs::write(
-            r"C:\ProgramData\VxAPO\initialize_probe.txt",
-            format!("Initialize clsid={:?} cb={}\n", apo.clsid, cb_data_size),
-        );
-    }
-
     // 1. 参数校验：pby_data 非空、cb_data_size 足以容纳 APOInitSystemEffects
     //    （SDK 约定：Initialize 的 pby_data 指向完整的 APOInitSystemEffects）。
     let valid_init_data = !pby_data.is_null()
@@ -65,7 +54,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         }
         None => None,
     };
-    *apo.child_apo.lock().unwrap() = child;
+    *apo.child_apo.lock().unwrap_or_else(|e| e.into_inner()) = child;
 
     // 5b. 运行期自愈（v9.4）：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX
     //     重新灌回 `MSFX\N`，与 VxAPO 同时加载导致断断续续/慢放。本 DLL 在
@@ -109,7 +98,9 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         );
         resolve_config_path(None)
     };
-    *apo.config_path.lock().unwrap() = path;
+    *apo.config_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = path;
 
     Ok(())
 }
