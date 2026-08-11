@@ -7,28 +7,18 @@
 
 pub mod aural;
 pub mod biquad;
-pub mod convolution;
-pub mod copy;
-pub mod delay;
 pub mod factory;
+pub mod fir;
 pub mod filter;
 pub mod gain;
-pub mod graphic_eq;
-pub mod hp_lp;
 pub mod loudness;
 pub mod math;
 pub mod maximizer;
-pub mod peq;
+pub mod model;
+pub mod peq_hybrid;
 pub mod reverb;
 pub mod transition;
-pub mod vst;
 pub mod wide;
-
-/// 注册所有内置 Filter 工厂到 FilterRegistry（v6.3 规范 4.10）。
-///
-/// 实现位于 `factory::register_builtin_filters`——这里是重导出，
-/// 供 `config/commands.rs` 的 `register_all_commands` 调用。
-pub use factory::register_builtin_filters;
 
 #[cfg(test)]
 mod test_support {

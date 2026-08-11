@@ -38,10 +38,14 @@ impl Chain {
         let base_names = channel_names.to_vec();
         let mut names = base_names.clone();
         for filter in self.filters.iter_mut() {
-            let indices: Vec<usize> = names
-                .iter()
-                .filter_map(|name| base_names.iter().position(|base| base == name))
-                .collect();
+            // v9.11：per-effect `channels` 固定槽位优先，否则按当前通道名自动计算。
+            let indices: Vec<usize> = match filter.fixed_channel_indices() {
+                Some(fixed) => fixed,
+                None => names
+                    .iter()
+                    .filter_map(|name| base_names.iter().position(|base| base == name))
+                    .collect(),
+            };
             filter.set_channel_indices(&indices);
             if let Some(next) = filter.initialize(sample_rate, &names) {
                 names = next;

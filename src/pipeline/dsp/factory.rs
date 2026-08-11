@@ -1,657 +1,60 @@
-﻿//! pipeline/dsp/factory.rs — FilterRegistry + 工厂注册 + 工厂遍历匹配（v6.3 规范 4.10）
+//! pipeline/dsp/factory.rs — 模型 → Filter 静态分派（v9.11）
 //!
-//! 职责：注册表持有按优先级排序的工厂列表，按遍历顺序尝试创建过滤器。
-//! 同时定义内置 DSP 工厂（IIR/Biquad/Preamp/Delay/Copy/...）与 `register_builtin_filters`。
-//!
-//! 引用来源：
-//! - `crate::pipeline::dsp::filter::*`
-//! - `crate::utils::vx_error::VxApoError`
-//!
-//! 导出给：`config/commands/*.rs`、`config/parser.rs`。
+//! 参数已由 config 层完成 TOML 反序列化与校验；本层按 `EffectType` 穷尽
+//! `match` 构造 Filter，不再有动态注册表 / 字符串参数解析
+//! （已删除 `FilterFactory` / `FilterRegistry` / `FilterCreateResult` /
+//! `OutcomeKind` / `index` 常量）。
 
-use crate::pipeline::dsp::biquad::{BiquadCoeffs, BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
-use crate::pipeline::dsp::convolution::{parse_convolution_params, ConvolutionFilter};
-use crate::pipeline::dsp::copy::{parse_copy_ops, CopyFilter};
-use crate::pipeline::dsp::delay::DelayFilter;
-use crate::pipeline::dsp::filter::{
-    ConfigLoader, DspContext, Filter, FilterCreateResult, FilterFactory,
-};
-use crate::pipeline::dsp::aural::AuralEnhancerFactory;
-use crate::pipeline::dsp::maximizer::MaximizerFactory;
-use crate::pipeline::dsp::reverb::ReverbFactory;
-use crate::pipeline::dsp::wide::WideFactory;
-use crate::pipeline::dsp::graphic_eq::{parse_graphic_eq_params, GraphicEqFilter};
-use crate::pipeline::dsp::hp_lp::HighLowPassFilter;
-use crate::pipeline::dsp::loudness::{parse_loudness_params, LoudnessFilter};
-use crate::pipeline::dsp::math::{
-    DELAY_MS_MAX, FILTER_FREQ_MAX_RATIO, FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN, clamp_gain_db,
-    is_stable_biquad, warn_rate_limited,
-};
-use crate::pipeline::dsp::peq::PeakingFilter;
+use crate::pipeline::dsp::aural::AuralEnhancerFilter;
+use crate::pipeline::dsp::filter::{DspContext, Filter, PassthroughFilter};
+use crate::pipeline::dsp::gain::GainFilter;
+use crate::pipeline::dsp::loudness::LoudnessFilter;
+use crate::pipeline::dsp::maximizer::MaximizerFilter;
+use crate::pipeline::dsp::model::{EffectConfig, EffectParams, EffectType};
+use crate::pipeline::dsp::peq_hybrid::HybridPeqFilter;
+use crate::pipeline::dsp::reverb::ReverbFilter;
+use crate::pipeline::dsp::wide::WideFilter;
 
-// ══════════════════════════════════════════════════════════════════════════════
-// FilterRegistry — 工厂注册表
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 过滤器工厂注册表。
-///
-/// 持有按优先级排序的工厂列表。
-pub struct FilterRegistry {
-    factories: Vec<Box<dyn FilterFactory>>,
-}
-
-impl FilterRegistry {
-    /// 创建空注册表。
-    pub fn new() -> Self {
-        Self {
-            factories: Vec::new(),
-        }
+/// 由 DSP 模型构造 Filter（校验已前置，构造不失败）。
+pub fn create_from_model(effect: &EffectConfig, ctx: &DspContext) -> Box<dyn Filter> {
+    debug_assert!(matches_kind(&effect.kind, &effect.params));
+    if !effect.enabled {
+        return Box::new(PassthroughFilter);
     }
-
-    /// 注册工厂（追加到末尾，优先级 = 注册顺序）。
-    pub fn register(&mut self, factory: Box<dyn FilterFactory>) {
-        self.factories.push(factory);
-    }
-
-    /// 工厂数量。
-    pub fn len(&self) -> usize {
-        self.factories.len()
-    }
-
-    /// 是否为空。
-    pub fn is_empty(&self) -> bool {
-        self.factories.is_empty()
-    }
-
-    /// 按索引获取工厂引用。
-    pub fn get(&self, index: usize) -> Option<&dyn FilterFactory> {
-        self.factories.get(index).map(|f| f.as_ref())
-    }
-
-    /// 遍历所有工厂的命令名。
-    pub fn factory_names(&self) -> Vec<&str> {
-        self.factories.iter().map(|f| f.command_name()).collect()
-    }
-
-    /// 按遍历顺序尝试创建过滤器。
-    ///
-    /// 第一个返回 `Filter` 或 `NoFilter` 的工厂胜出。
-    pub fn try_create(
-        &self,
-        params: &str,
-        ctx: &DspContext,
-        loader: &dyn ConfigLoader,
-    ) -> TryCreateOutcome {
-        for (index, factory) in self.factories.iter().enumerate() {
-            match factory.create_filter(params, ctx, loader) {
-                FilterCreateResult::Filter(f) => {
-                    return TryCreateOutcome {
-                        result: OutcomeKind::FilterAdded(f),
-                        factory_index: Some(index),
-                        factory_name: Some(factory.command_name().to_owned()),
-                    };
-                }
-                FilterCreateResult::NoFilter => {
-                    return TryCreateOutcome {
-                        result: OutcomeKind::MatchedNoFilter,
-                        factory_index: Some(index),
-                        factory_name: Some(factory.command_name().to_owned()),
-                    };
-                }
-                FilterCreateResult::AbortFile => {
-                    return TryCreateOutcome {
-                        result: OutcomeKind::Aborted,
-                        factory_index: Some(index),
-                        factory_name: Some(factory.command_name().to_owned()),
-                    };
-                }
-                FilterCreateResult::NoMatch => {
-                    // 继续尝试下一工厂
-                }
-            }
-        }
-        TryCreateOutcome {
-            result: OutcomeKind::Unmatched,
-            factory_index: None,
-            factory_name: None,
-        }
-    }
-
-    /// 按命令名精确分派（v9.1）。
-    ///
-    /// 只尝试 `command_name()` 与给定命令（不区分大小写）一致的工厂；
-    /// 无工厂命中时返回 `Unmatched`。用于 parser 默认分支，避免宽容工厂
-    /// （如 `Convolution:`）把已知命令的非法参数当作自己的参数吞掉。
-    pub fn try_create_named(
-        &self,
-        command: &str,
-        params: &str,
-        ctx: &DspContext,
-        loader: &dyn ConfigLoader,
-    ) -> TryCreateOutcome {
-        for (index, factory) in self.factories.iter().enumerate() {
-            if !factory.command_name().eq_ignore_ascii_case(command) {
-                continue;
-            }
-            match factory.create_filter(params, ctx, loader) {
-                FilterCreateResult::Filter(f) => {
-                    return TryCreateOutcome {
-                        result: OutcomeKind::FilterAdded(f),
-                        factory_index: Some(index),
-                        factory_name: Some(factory.command_name().to_owned()),
-                    };
-                }
-                FilterCreateResult::NoFilter => {
-                    return TryCreateOutcome {
-                        result: OutcomeKind::MatchedNoFilter,
-                        factory_index: Some(index),
-                        factory_name: Some(factory.command_name().to_owned()),
-                    };
-                }
-                FilterCreateResult::AbortFile => {
-                    return TryCreateOutcome {
-                        result: OutcomeKind::Aborted,
-                        factory_index: Some(index),
-                        factory_name: Some(factory.command_name().to_owned()),
-                    };
-                }
-                FilterCreateResult::NoMatch => {
-                    // 该命令自己的工厂不匹配 → 继续（同名工厂可能多个）。
-                }
-            }
-        }
-        TryCreateOutcome {
-            result: OutcomeKind::Unmatched,
-            factory_index: None,
-            factory_name: Some(command.to_owned()),
+    match &effect.params {
+        EffectParams::Peq(p) => Box::new(HybridPeqFilter::new(p.clone())),
+        EffectParams::Preamp(p) => Box::new(GainFilter::new(p.gain_db)),
+        EffectParams::Aural(p) => Box::new(AuralEnhancerFilter::new(*p)),
+        EffectParams::Reverb(p) => Box::new(ReverbFilter::new(*p)),
+        EffectParams::Maximizer(p) => Box::new(MaximizerFilter::new(*p)),
+        EffectParams::Wide(p) => Box::new(WideFilter::new(*p)),
+        EffectParams::Loudness(p) => {
+            let mut f = LoudnessFilter::new(p.phon, p.reference_phon);
+            f.set_enabled(ctx.loudness_enabled.get());
+            Box::new(f)
         }
     }
 }
 
-impl Default for FilterRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
+fn matches_kind(kind: &EffectType, params: &EffectParams) -> bool {
+    matches!(
+        (kind, params),
+        (EffectType::Peq, EffectParams::Peq(_))
+            | (EffectType::Preamp, EffectParams::Preamp(_))
+            | (EffectType::Aural, EffectParams::Aural(_))
+            | (EffectType::Reverb, EffectParams::Reverb(_))
+            | (EffectType::Maximizer, EffectParams::Maximizer(_))
+            | (EffectType::Wide, EffectParams::Wide(_))
+            | (EffectType::Loudness, EffectParams::Loudness(_))
+    )
 }
-
-/// `try_create` 的返回结果。
-#[derive(Debug)]
-pub struct TryCreateOutcome {
-    pub result: OutcomeKind,
-    pub factory_index: Option<usize>,
-    pub factory_name: Option<String>,
-}
-
-/// 匹配结果种类。
-#[derive(Debug)]
-pub enum OutcomeKind {
-    /// 匹配成功，产生了过滤器实例。
-    FilterAdded(Box<dyn Filter>),
-    /// 匹配成功，无需产生过滤器。
-    MatchedNoFilter,
-    /// 应中止当前文件解析。
-    Aborted,
-    /// 无工厂匹配。
-    Unmatched,
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 工厂索引常量（v6.3 规范 4.10）
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 内置工厂总数（19，v9.2 新增 Wide）。
-pub const FACTORY_COUNT: usize = 19;
-
-/// 工厂索引常量表。
-pub mod index {
-    pub const DEVICE: usize = 0;
-    pub const IF: usize = 1;
-    pub const EVAL: usize = 2;
-    pub const INCLUDE: usize = 3;
-    pub const STAGE: usize = 4;
-    pub const CHANNEL: usize = 5;
-    pub const IIR: usize = 6;
-    pub const BIQUAD: usize = 7;
-    pub const PREAMP: usize = 8;
-    pub const DELAY: usize = 9;
-    pub const COPY: usize = 10;
-    pub const CONVOLUTION: usize = 11;
-    pub const GRAPHIC_EQ: usize = 12;
-    pub const VST_PLUGIN: usize = 13;
-    pub const LOUDNESS_CORRECTION: usize = 14;
-    pub const AURAL_ENHANCER: usize = 15;
-    pub const REVERB: usize = 16;
-    pub const MAXIMIZER: usize = 17;
-    pub const WIDE: usize = 18;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 内置工厂
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// `IIR:` 命令工厂 → 参数化滤波器（PK/LP/HP/LS/HS/AP/NO）。
-///
-/// 语法（Filter/REW 传入的已是 `TYPE 参数...` 形式）：
-/// - `PK Fc 1000 Hz Gain +3.0 dB Q 1.0`
-/// - `LP Fc 1000 Hz Q 0.707`
-///
-/// 类型映射：
-/// - PK → `PeakingFilter`
-/// - LP/HP → `HighLowPassFilter`
-/// - LS/HS/AP/NO → `compute_coeffs` + `BiquadFilter`（临时封装）
-/// - Modal → `NoMatch`（无 DSP 实现，留作未来扩展）
-#[derive(Debug)]
-pub struct IirFactory;
-
-/// 解析 `Fc <val> Hz` / `Gain <val> dB` / `Q <val>` 键值流。
-///
-/// 返回 `(fc, gain_db, q)`。任一必需参数缺失或非法时返回 `None`。
-fn parse_iir_params(tokens: &[&str], sample_rate: u32) -> Option<(f32, f32, f32)> {
-    let mut fc: Option<f32> = None;
-    let mut gain_db: f32 = 0.0;
-    let mut q: Option<f32> = None;
-
-    let mut i = 0;
-    while i < tokens.len() {
-        match tokens[i].to_ascii_uppercase().as_str() {
-            "FC" => {
-                let v = tokens.get(i + 1)?.parse::<f32>().ok()?;
-                fc = Some(v);
-                i += 2;
-                // 跳过可选的 "Hz" 单位
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("hz")) {
-                    i += 1;
-                }
-            }
-            "GAIN" => {
-                gain_db = tokens.get(i + 1)?.parse::<f32>().ok()?;
-                i += 2;
-                // 跳过可选的 "dB" 单位
-                if tokens.get(i).is_some_and(|t| t.eq_ignore_ascii_case("db")) {
-                    i += 1;
-                }
-            }
-            "Q" => {
-                let v = tokens.get(i + 1)?.parse::<f32>().ok()?;
-                q = Some(v);
-                i += 2;
-            }
-            _ => return None,
-        }
-    }
-
-    let fc = fc?;
-    let q = q?;
-    if !fc.is_finite() || fc <= 0.0 || !q.is_finite() || q <= 0.0 || !gain_db.is_finite() {
-        return None;
-    }
-    // P0：数字合法但离谱 → clamp（非 RT）。
-    let max_fc = (sample_rate as f32 * FILTER_FREQ_MAX_RATIO).max(FILTER_FREQ_MIN_HZ);
-    let fc = fc.clamp(FILTER_FREQ_MIN_HZ, max_fc);
-    let q = q.clamp(Q_MIN, Q_MAX);
-    let gain_db = clamp_gain_db(gain_db);
-    Some((fc, gain_db, q))
-}
-
-impl FilterFactory for IirFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        let tokens: Vec<&str> = params.split_whitespace().collect();
-        if tokens.is_empty() {
-            return FilterCreateResult::NoMatch;
-        }
-
-        let ftype = match tokens[0].to_ascii_uppercase().as_str() {
-            "PK" | "PEAK" | "PEAKING" => BiquadType::Peaking,
-            "LP" | "LOWPASS" => BiquadType::LowPass,
-            "HP" | "HIGHPASS" => BiquadType::HighPass,
-            "LS" | "LOWSHELF" => BiquadType::LowShelf,
-            "HS" | "HIGHSHELF" => BiquadType::HighShelf,
-            "AP" | "ALLPASS" => BiquadType::AllPass,
-            "NO" | "NOTCH" => BiquadType::Notch,
-            // Modal：无 DSP 实现，留作未来扩展（不报错，继续尝试下一工厂）。
-            "MODAL" => return FilterCreateResult::NoMatch,
-            _ => return FilterCreateResult::NoMatch,
-        };
-
-        let (fc, gain_db, q) = match parse_iir_params(&tokens[1..], ctx.sample_rate) {
-            Some(v) => v,
-            None => return FilterCreateResult::NoMatch,
-        };
-
-        let filter: Box<dyn Filter> = match ftype {
-            BiquadType::Peaking => Box::new(PeakingFilter::new(fc, gain_db, q)),
-            BiquadType::LowPass | BiquadType::HighPass => {
-                Box::new(HighLowPassFilter::new(ftype, fc, q))
-            }
-            // LS/HS/AP/NO：直接由系数构造 BiquadFilter（无需专用 Filter 类型）。
-            _ => {
-                let coeffs = compute_coeffs(ftype, fc, gain_db, q, ctx.sample_rate);
-                Box::new(BiquadFilter::new(
-                    coeffs,
-                    BiquadStructure::DirectFormIITransposed,
-                ))
-            }
-        };
-
-        FilterCreateResult::Filter(filter)
-    }
-
-    fn command_name(&self) -> &str {
-        "IIR"
-    }
-}
-
-/// `Biquad:` 命令工厂 → 原始系数输入（调试/自定义滤波器底层接口）。
-///
-/// 语法：`Biquad: b0 b1 b2 a1 a2`
-/// 与 `IirFactory`（参数化）用途不同：直接暴露系数。
-#[derive(Debug)]
-pub struct BiquadFactory;
-
-impl FilterFactory for BiquadFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        let tokens: Vec<&str> = params.split_whitespace().collect();
-        if tokens.len() != 5 {
-            return FilterCreateResult::NoMatch;
-        }
-
-        let b0 = match tokens[0].parse::<f32>() {
-            Ok(v) if v.is_finite() => v,
-            _ => return FilterCreateResult::NoMatch,
-        };
-        let b1 = match tokens[1].parse::<f32>() {
-            Ok(v) if v.is_finite() => v,
-            _ => return FilterCreateResult::NoMatch,
-        };
-        let b2 = match tokens[2].parse::<f32>() {
-            Ok(v) if v.is_finite() => v,
-            _ => return FilterCreateResult::NoMatch,
-        };
-        let a1 = match tokens[3].parse::<f32>() {
-            Ok(v) if v.is_finite() => v,
-            _ => return FilterCreateResult::NoMatch,
-        };
-        let a2 = match tokens[4].parse::<f32>() {
-            Ok(v) if v.is_finite() => v,
-            _ => return FilterCreateResult::NoMatch,
-        };
-
-        let coeffs = BiquadCoeffs { b0, b1, b2, a1, a2 };
-        // P0：裸系数路径——有限性已保证，稳定性失败拒绝创建。
-        if !is_stable_biquad(coeffs.a1, coeffs.a2) {
-            warn_rate_limited("biquad_raw_unstable", "Biquad 裸系数不稳定，拒绝创建");
-            return FilterCreateResult::NoMatch;
-        }
-        FilterCreateResult::Filter(Box::new(BiquadFilter::new(
-            coeffs,
-            BiquadStructure::DirectFormIITransposed,
-        )))
-    }
-
-    fn command_name(&self) -> &str {
-        "Biquad"
-    }
-}
-
-/// `Preamp:` 命令工厂 → GainFilter。
-///
-/// 语法：`Preamp: -6.0 dB`（可选 "dB" 后缀）。
-#[derive(Debug)]
-pub struct PreampFactory;
-
-impl FilterFactory for PreampFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        let trimmed = params.trim();
-        // 移除可选的 "dB" 后缀。
-        let num = trimmed
-            .strip_suffix("dB")
-            .map(str::trim)
-            .unwrap_or(trimmed);
-        match num.parse::<f32>() {
-            Ok(db) if db.is_finite() => {
-                let clamped = clamp_gain_db(db);
-                if clamped != db {
-                    warn_rate_limited(
-                        "preamp_clamp",
-                        "Preamp 增益超出 [-120, +48] dB，已 clamp 到边界",
-                    );
-                }
-                FilterCreateResult::Filter(Box::new(crate::pipeline::dsp::gain::GainFilter::new(
-                    clamped,
-                )))
-            }
-            _ => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Preamp"
-    }
-}
-
-/// `Delay:` 命令工厂 → DelayFilter。
-///
-/// 语法：`Delay: 500 ms`（可选 "ms" 后缀，无需后缀的纯数字也接受）。
-#[derive(Debug)]
-pub struct DelayFactory;
-
-impl FilterFactory for DelayFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        let trimmed = params.trim();
-        // 移除可选的 "ms" 后缀。
-        let num = trimmed
-            .strip_suffix("ms")
-            .map(str::trim)
-            .unwrap_or(trimmed);
-        match num.parse::<f32>() {
-            Ok(ms) if ms.is_finite() => {
-                let abs_ms = ms.abs();
-                let clamped = abs_ms.clamp(0.0, DELAY_MS_MAX);
-                if clamped != abs_ms {
-                    warn_rate_limited("delay_clamp", "Delay 超出 [0, 1000] ms，已 clamp 到边界");
-                }
-                FilterCreateResult::Filter(Box::new(DelayFilter::new(clamped)))
-            }
-            _ => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Delay"
-    }
-}
-
-/// `Copy:` 命令工厂 → CopyFilter。
-///
-/// 语法：`Copy: L2=L R2=R`
-#[derive(Debug)]
-pub struct CopyFactory;
-
-impl FilterFactory for CopyFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_copy_ops(params, &ctx.channel_names) {
-            Some(ops) => FilterCreateResult::Filter(Box::new(CopyFilter::new(ops))),
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Copy"
-    }
-}
-
-/// `Convolution:` 命令工厂 → ConvolutionFilter。
-///
-/// 语法：`Convolution: ir.wav -6`（路径 + 可选增益 dB）。
-#[derive(Debug)]
-pub struct ConvolutionFactory;
-
-impl FilterFactory for ConvolutionFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        // v7.11（pipeline 4.19）：参数严格化——Empty/TooManyTokens/InvalidGain 均 NoMatch，
-        // 由 parser 层将「未知命令」包装为 SyntaxError（config 6.1 Unmatched → SyntaxError）。
-        match parse_convolution_params(params) {
-            Ok((path, gain_db)) => {
-                let clamped = clamp_gain_db(gain_db);
-                if clamped != gain_db {
-                    warn_rate_limited(
-                        "convolution_gain_clamp",
-                        "Convolution 增益超出 [-120, +48] dB，已 clamp 到边界",
-                    );
-                }
-                FilterCreateResult::Filter(Box::new(ConvolutionFilter::new(&path, clamped)))
-            }
-            // v7.11：参数严格化（≥3 tokens / 第 2 个非数值）→ NoMatch，
-            // 由 parser 层将 Unmatched 包装为 SyntaxError（config 6.1 Unmatched → SyntaxError）。
-            Err(_) => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "Convolution"
-    }
-}
-
-/// `GraphicEQ:` 命令工厂 → GraphicEqFilter。
-///
-/// 语法：`GraphicEQ: 25 0; 40 -3; 63 6; ...`
-#[derive(Debug)]
-pub struct GraphicEqFactory;
-
-impl FilterFactory for GraphicEqFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_graphic_eq_params(params) {
-            Some(bands) => FilterCreateResult::Filter(Box::new(GraphicEqFilter::new(bands))),
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "GraphicEQ"
-    }
-}
-
-/// `VSTPlugin:` 命令工厂（预留入口）。
-///
-/// 当前行为：**恒返回 NoMatch**（VST 插件加载暂不需要，见 `dsp/vst.rs` 注释）。
-/// 未来如需 VST2/VST3 支持，在此处恢复参数解析并创建对应 Filter。
-///
-/// 语法（预留）：`VSTPlugin: "plugin_name" "path/to/plugin.dll" [param=value ...]`
-#[derive(Debug)]
-pub struct VstFactory;
-
-impl FilterFactory for VstFactory {
-    fn create_filter(
-        &self,
-        _params: &str,
-        _ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        // 预留：VST 不支持，静默跳过（NoMatch → 继续尝试下一工厂 / 最终 Unmatched）。
-        FilterCreateResult::NoMatch
-    }
-
-    fn command_name(&self) -> &str {
-        "VSTPlugin"
-    }
-}
-
-/// `LoudnessCorrection:` 命令工厂 → LoudnessFilter。
-///
-/// 语法：`LoudnessCorrection: 40 [80]`（phon [reference_phon]）。
-#[derive(Debug)]
-pub struct LoudnessFactory;
-
-impl FilterFactory for LoudnessFactory {
-    fn create_filter(
-        &self,
-        params: &str,
-        ctx: &DspContext,
-        _loader: &dyn ConfigLoader,
-    ) -> FilterCreateResult {
-        match parse_loudness_params(params) {
-            Some((phon, reference_phon)) => {
-                let mut filter = LoudnessFilter::new(phon, reference_phon);
-                filter.set_enabled(ctx.loudness_enabled.get());
-                FilterCreateResult::Filter(Box::new(filter))
-            }
-            None => FilterCreateResult::NoMatch,
-        }
-    }
-
-    fn command_name(&self) -> &str {
-        "LoudnessCorrection"
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// register_builtin_filters
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// 注册所有内置 Filter 工厂到 FilterRegistry（v6.3 规范 4.10）。
-///
-/// 注册顺序与 `index` 常量保持一致（优先级从高到低）：
-/// IIR → BIQUAD → PREAMP → DELAY → COPY → CONVOLUTION → GRAPHIC_EQ → VST_PLUGIN
-/// → LOUDNESS_CORRECTION → AURAL_ENHANCER → REVERB → MAXIMIZER → WIDE
-pub fn register_builtin_filters(registry: &mut FilterRegistry) {
-    registry.register(Box::new(IirFactory));
-    registry.register(Box::new(BiquadFactory));
-    registry.register(Box::new(PreampFactory));
-    registry.register(Box::new(DelayFactory));
-    registry.register(Box::new(CopyFactory));
-    registry.register(Box::new(ConvolutionFactory));
-    registry.register(Box::new(GraphicEqFactory));
-    registry.register(Box::new(VstFactory));
-    registry.register(Box::new(LoudnessFactory));
-    registry.register(Box::new(AuralEnhancerFactory));
-    registry.register(Box::new(ReverbFactory));
-    registry.register(Box::new(MaximizerFactory));
-    registry.register(Box::new(WideFactory));
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 测试
-// ══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::filter::{DeviceType, ProcessingStage, PassthroughFilter};
+    use crate::pipeline::dsp::filter::{DeviceType, ProcessingStage};
+    use crate::pipeline::dsp::model::{LoudnessParams, PeqBand, PeqParams, PreampParams};
+    use crate::pipeline::dsp::wide::WideParams;
     use std::collections::HashMap;
 
     fn test_ctx() -> DspContext {
@@ -670,491 +73,89 @@ mod tests {
         }
     }
 
-    struct NullLoader;
-    impl ConfigLoader for NullLoader {
-        fn load_config(&self, _path: &str, _ctx: &DspContext) -> Vec<Box<dyn Filter>> {
-            vec![]
+    fn effect(kind: EffectType, params: EffectParams) -> EffectConfig {
+        EffectConfig {
+            kind,
+            enabled: true,
+            channels: None,
+            params,
         }
     }
 
-    // ── IIR 工厂 ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn iir_parses_pk() {
-        let factory = IirFactory;
-        let result = factory.create_filter(
-            "PK Fc 1000 Hz Gain +3.0 dB Q 1.0",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
+    fn peq_params() -> PeqParams {
+        PeqParams {
+            crossover_hz: 200.0,
+            bands: vec![
+                PeqBand { fc: 100.0, gain_db: 3.0, q: 1.0 },
+                PeqBand { fc: 200.0, gain_db: 3.0, q: 1.0 },
+                PeqBand { fc: 400.0, gain_db: 3.0, q: 1.0 },
+                PeqBand { fc: 800.0, gain_db: 3.0, q: 1.0 },
+                PeqBand { fc: 1600.0, gain_db: 3.0, q: 1.0 },
+                PeqBand { fc: 3200.0, gain_db: 3.0, q: 1.0 },
+            ],
+        }
     }
 
     #[test]
-    fn iir_parses_lp() {
-        let factory = IirFactory;
-        // LP 无 Gain：默认 0dB。
-        let result = factory.create_filter("LP Fc 1000 Hz Q 0.707", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn iir_parses_hp() {
-        let factory = IirFactory;
-        let result = factory.create_filter("HP Fc 100 Hz Q 0.707", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn iir_parses_ls_hs() {
-        let factory = IirFactory;
-        let ls = factory.create_filter("LS Fc 200 Hz Gain 6.0 dB Q 0.707", &test_ctx(), &NullLoader);
-        assert!(matches!(ls, FilterCreateResult::Filter(_)));
-        let hs = factory.create_filter("HS Fc 5000 Hz Gain -3.0 dB Q 0.707", &test_ctx(), &NullLoader);
-        assert!(matches!(hs, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn iir_parses_ap_no() {
-        let factory = IirFactory;
-        let ap = factory.create_filter("AP Fc 1000 Hz Gain 0 dB Q 1.0", &test_ctx(), &NullLoader);
-        assert!(matches!(ap, FilterCreateResult::Filter(_)));
-        let no = factory.create_filter("NO Fc 1000 Hz Gain 0 dB Q 1.0", &test_ctx(), &NullLoader);
-        assert!(matches!(no, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn iir_modal_returns_no_match() {
-        let factory = IirFactory;
-        // Modal 无 DSP 实现 → 不报错，返回 NoMatch（留作未来扩展）。
-        let result = factory.create_filter("Modal Fc 100 Hz Q 10", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    #[test]
-    fn iir_invalid_no_match() {
-        let factory = IirFactory;
-        let result = factory.create_filter("PK no params", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── Biquad 工厂 ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn biquad_parses_coefficients() {
-        let factory = BiquadFactory;
-        let result = factory.create_filter("1.0 0.0 0.0 0.0 0.0", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn biquad_invalid_no_match() {
-        let factory = BiquadFactory;
-        // 非 5 个系数。
-        assert!(matches!(
-            factory.create_filter("1.0 0.0 0.0", &test_ctx(), &NullLoader),
-            FilterCreateResult::NoMatch
-        ));
-        // 非法数值。
-        assert!(matches!(
-            factory.create_filter("1.0 0.0 0.0 0.0 abc", &test_ctx(), &NullLoader),
-            FilterCreateResult::NoMatch
-        ));
-    }
-
-    // ── Delay 工厂 ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn delay_parses_ms() {
-        let factory = DelayFactory;
-        let result = factory.create_filter("500 ms", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn delay_parses_plain_number() {
-        let factory = DelayFactory;
-        let result = factory.create_filter("12.5", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn delay_invalid_no_match() {
-        let factory = DelayFactory;
-        let result = factory.create_filter("oops", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── GraphicEQ 工厂 ──────────────────────────────────────────────────────
-
-    #[test]
-    fn graphic_eq_parses_bands() {
-        let factory = GraphicEqFactory;
-        let result = factory.create_filter("25 0; 40 -3; 63 6", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn graphic_eq_invalid_no_match() {
-        let factory = GraphicEqFactory;
-        let result = factory.create_filter("", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── Convolution 工厂 ────────────────────────────────────────────────────
-
-    #[test]
-    fn convolution_parses_path() {
-        let factory = ConvolutionFactory;
-        let result = factory.create_filter("ir.wav", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn convolution_parses_gain() {
-        let factory = ConvolutionFactory;
-        let result = factory.create_filter("ir.wav -6", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn convolution_invalid_no_match() {
-        let factory = ConvolutionFactory;
-        let result = factory.create_filter("", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── VST 工厂（预留 NoMatch，无测试） ──────────────────────────────────
-    // 当前行为恒 NoMatch（见 VstFactory 注释）。未来实现 VST 后补测试。
-
-    // ── Loudness 工厂 ───────────────────────────────────────────────────────
-
-    #[test]
-    fn loudness_parses_phon() {
-        let factory = LoudnessFactory;
-        let result = factory.create_filter("40", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn loudness_parses_reference() {
-        let factory = LoudnessFactory;
-        let result = factory.create_filter("60 80", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn loudness_invalid_no_match() {
-        let factory = LoudnessFactory;
-        let result = factory.create_filter("", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── FxSound 工厂（v9.1） ───────────────────────────────────────────────
-
-    #[test]
-    fn aural_factory_parses_params() {
-        let factory = AuralEnhancerFactory;
-        let result = factory.create_filter(
-            "TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "AuralEnhancer");
-    }
-
-    #[test]
-    fn aural_factory_invalid_no_match() {
-        let factory = AuralEnhancerFactory;
-        let result = factory.create_filter("", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    #[test]
-    fn reverb_factory_parses_params() {
-        let factory = ReverbFactory;
-        let result = factory.create_filter(
-            "RoomSize 1.2 Decay 0.5 Damping 0.4 Bandwidth 0.3 PreDelay 20 ms Wet 0.4 Dry 0.8",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "Reverb");
-    }
-
-    #[test]
-    fn reverb_factory_invalid_no_match() {
-        let factory = ReverbFactory;
-        let result = factory.create_filter("", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    #[test]
-    fn maximizer_factory_parses_params() {
-        let factory = MaximizerFactory;
-        let result = factory.create_filter(
-            "GainBoost 6 dB MaxOutput -0.3 dB Release 100 ms Target 0.32 Lookahead 0.75 ms Dither Shaped",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "Maximizer");
-    }
-
-    #[test]
-    fn maximizer_factory_invalid_no_match() {
-        let factory = MaximizerFactory;
-        let result = factory.create_filter("Bogus 1", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    #[test]
-    fn wide_factory_parses_params() {
-        let factory = WideFactory;
-        let result = factory.create_filter("Intensity 0.7", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-        assert_eq!(factory.command_name(), "Wide");
-    }
-
-    #[test]
-    fn wide_factory_invalid_no_match() {
-        let factory = WideFactory;
-        let result = factory.create_filter("", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── Preamp / Copy 工厂 ──────────────────────────────────────────────────
-
-    #[test]
-    fn preamp_factory_parses_db() {
-        let factory = PreampFactory;
-        let result = factory.create_filter("-6.0 dB", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn preamp_factory_invalid_no_match() {
-        let factory = PreampFactory;
-        let result = factory.create_filter("oops", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    #[test]
-    fn copy_factory_parses_mapping() {
-        let factory = CopyFactory;
-        let result = factory.create_filter("L=R", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::Filter(_)));
-    }
-
-    #[test]
-    fn copy_factory_invalid_no_match() {
-        let factory = CopyFactory;
-        let result = factory.create_filter("X=Y", &test_ctx(), &NullLoader);
-        assert!(matches!(result, FilterCreateResult::NoMatch));
-    }
-
-    // ── 注册与遍历 ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn register_registers_known_factories() {
-        let mut registry = FilterRegistry::new();
-        register_builtin_filters(&mut registry);
-        let names = registry.factory_names();
-        assert!(names.contains(&"IIR"));
-        assert!(names.contains(&"Biquad"));
-        assert!(names.contains(&"Preamp"));
-        assert!(names.contains(&"Delay"));
-        assert!(names.contains(&"Copy"));
-        assert!(names.contains(&"Convolution"));
-        assert!(names.contains(&"GraphicEQ"));
-        assert!(names.contains(&"VSTPlugin"));
-        assert!(names.contains(&"LoudnessCorrection"));
-        assert!(names.contains(&"AuralEnhancer"));
-        assert!(names.contains(&"Reverb"));
-        assert!(names.contains(&"Maximizer"));
-        assert!(names.contains(&"Wide"));
-        assert_eq!(registry.len(), 13);
-    }
-
-    #[test]
-    fn registration_order_matches_index() {
-        let mut registry = FilterRegistry::new();
-        register_builtin_filters(&mut registry);
-        let names = registry.factory_names();
-
-        // 与 index 常量顺序一致：IIR → ... → AURAL_ENHANCER → REVERB → MAXIMIZER → WIDE
-        let expected = [
-            index::IIR,
-            index::BIQUAD,
-            index::PREAMP,
-            index::DELAY,
-            index::COPY,
-            index::CONVOLUTION,
-            index::GRAPHIC_EQ,
-            index::VST_PLUGIN,
-            index::LOUDNESS_CORRECTION,
-            index::AURAL_ENHANCER,
-            index::REVERB,
-            index::MAXIMIZER,
-            index::WIDE,
+    fn creates_all_effect_types() {
+        let ctx = test_ctx();
+        let cases: Vec<EffectConfig> = vec![
+            effect(EffectType::Peq, EffectParams::Peq(peq_params())),
+            effect(
+                EffectType::Preamp,
+                EffectParams::Preamp(PreampParams { gain_db: -3.0 }),
+            ),
+            effect(
+                EffectType::Aural,
+                EffectParams::Aural(crate::pipeline::dsp::aural::AuralParams::default()),
+            ),
+            effect(
+                EffectType::Reverb,
+                EffectParams::Reverb(crate::pipeline::dsp::reverb::ReverbParams::default()),
+            ),
+            effect(
+                EffectType::Maximizer,
+                EffectParams::Maximizer(crate::pipeline::dsp::maximizer::MaximizerParams::default()),
+            ),
+            effect(
+                EffectType::Wide,
+                EffectParams::Wide(WideParams::default()),
+            ),
+            effect(
+                EffectType::Loudness,
+                EffectParams::Loudness(LoudnessParams { phon: 80.0, reference_phon: 90.0 }),
+            ),
         ];
-
-        for (i, &idx) in expected.iter().enumerate() {
-            assert_eq!(
-                names[i],
-                factory_name_for_index(idx),
-                "factory at registry position {i} should match index constant {idx}"
-            );
-        }
-    }
-
-    /// 根据 index 常量映射工厂命令名（测试用）。
-    fn factory_name_for_index(idx: usize) -> &'static str {
-        match idx {
-            index::IIR => "IIR",
-            index::BIQUAD => "Biquad",
-            index::PREAMP => "Preamp",
-            index::DELAY => "Delay",
-            index::COPY => "Copy",
-            index::CONVOLUTION => "Convolution",
-            index::GRAPHIC_EQ => "GraphicEQ",
-            index::VST_PLUGIN => "VSTPlugin",
-            index::LOUDNESS_CORRECTION => "LoudnessCorrection",
-            index::AURAL_ENHANCER => "AuralEnhancer",
-            index::REVERB => "Reverb",
-            index::MAXIMIZER => "Maximizer",
-            index::WIDE => "Wide",
-            _ => "<unregistered>",
+        for cfg in cases {
+            let f = create_from_model(&cfg, &ctx);
+            assert!(format!("{f:?}").len() > 0);
         }
     }
 
     #[test]
-    fn empty_registry_unmatched() {
-        let registry = FilterRegistry::new();
-        let outcome = registry.try_create("x", &test_ctx(), &NullLoader);
-        assert!(matches!(outcome.result, OutcomeKind::Unmatched));
+    fn disabled_effect_is_passthrough() {
+        let mut cfg = effect(EffectType::Wide, EffectParams::Wide(WideParams::default()));
+        cfg.enabled = false;
+        let mut f = create_from_model(&cfg, &test_ctx());
+        // PassthroughFilter：处理不改动样本。
+        let mut samples = vec![vec![0.3f32; 8], vec![0.2f32; 8]];
+        let before = samples.clone();
+        f.process(&mut samples, 8);
+        assert_eq!(samples, before);
     }
 
     #[test]
-    fn register_and_len() {
-        let mut registry = FilterRegistry::new();
-        assert!(registry.is_empty());
-        registry.register(Box::new(CopyFactory));
-        assert_eq!(registry.len(), 1);
-    }
-
-    #[test]
-    fn factory_names_lists_all() {
-        let mut registry = FilterRegistry::new();
-        registry.register(Box::new(CopyFactory));
-        assert_eq!(registry.factory_names(), vec!["Copy"]);
-    }
-
-    /// 匹配一切的工厂（返回 PassthroughFilter）。
-    #[derive(Debug)]
-    struct MatchAllFactory;
-
-    impl FilterFactory for MatchAllFactory {
-        fn create_filter(
-            &self,
-            _params: &str,
-            _ctx: &DspContext,
-            _loader: &dyn ConfigLoader,
-        ) -> FilterCreateResult {
-            FilterCreateResult::Filter(Box::new(PassthroughFilter))
-        }
-
-        fn command_name(&self) -> &str {
-            "*"
-        }
-    }
-
-    #[test]
-    fn try_create_first_match_wins() {
-        let mut registry = FilterRegistry::new();
-        registry.register(Box::new(MatchAllFactory));
-        let outcome = registry.try_create("anything", &test_ctx(), &NullLoader);
-        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
-        assert_eq!(outcome.factory_index, Some(0));
-    }
-
-    #[test]
-    fn try_create_iir_dispatch() {
-        let mut registry = FilterRegistry::new();
-        register_builtin_filters(&mut registry);
-        // "PK ..." 应命中 IirFactory（第一个注册的 DSP 工厂）。
-        let outcome = registry.try_create(
-            "PK Fc 1000 Hz Gain +3.0 dB Q 1.0",
-            &test_ctx(),
-            &NullLoader,
+    fn loudness_respects_ctx_flag() {
+        let cfg = effect(
+            EffectType::Loudness,
+            EffectParams::Loudness(LoudnessParams { phon: 80.0, reference_phon: 90.0 }),
         );
-        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
-        assert_eq!(outcome.factory_name.as_deref(), Some("IIR"));
-    }
-
-    #[test]
-    fn try_create_named_dispatches_exact_command() {
-        let mut registry = FilterRegistry::new();
-        register_builtin_filters(&mut registry);
-
-        // 同名工厂才被尝试。
-        let outcome = registry.try_create_named(
-            "AuralEnhancer",
-            "Drive 1.77",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
-        assert_eq!(outcome.factory_name.as_deref(), Some("AuralEnhancer"));
-
-        // 非法参数不会落给 Convolution（宽容解析）→ Unmatched。
-        let outcome = registry.try_create_named(
-            "AuralEnhancer",
-            "Bogus 1",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(outcome.result, OutcomeKind::Unmatched));
-
-        // 大小写不敏感。
-        let outcome = registry.try_create_named(
-            "maximizer",
-            "GainBoost 6 dB",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
-
-        let outcome = registry.try_create_named(
-            "Wide",
-            "Intensity 0.4",
-            &test_ctx(),
-            &NullLoader,
-        );
-        assert!(matches!(outcome.result, OutcomeKind::FilterAdded(_)));
-    }
-
-    #[test]
-    fn index_constants_order() {
-        assert!(index::DEVICE < index::IF);
-        assert!(index::IF < index::EVAL);
-        assert!(index::EVAL < index::INCLUDE);
-        assert!(index::INCLUDE < index::STAGE);
-        assert!(index::STAGE < index::CHANNEL);
-        assert!(index::CHANNEL < index::IIR);
-        assert!(index::IIR < index::BIQUAD);
-        assert!(index::BIQUAD < index::PREAMP);
-        assert!(index::PREAMP < index::DELAY);
-        assert!(index::DELAY < index::COPY);
-        assert!(index::COPY < index::CONVOLUTION);
-        assert!(index::CONVOLUTION < index::GRAPHIC_EQ);
-        assert!(index::GRAPHIC_EQ < index::VST_PLUGIN);
-        assert!(index::VST_PLUGIN < index::LOUDNESS_CORRECTION);
-        assert!(index::LOUDNESS_CORRECTION < index::AURAL_ENHANCER);
-        assert!(index::AURAL_ENHANCER < index::REVERB);
-        assert!(index::REVERB < index::MAXIMIZER);
-        assert!(index::MAXIMIZER < index::WIDE);
-        assert!(index::WIDE + 1 == FACTORY_COUNT);
+        let mut ctx = test_ctx();
+        ctx.loudness_enabled.set(false);
+        let mut f = create_from_model(&cfg, &ctx);
+        let mut samples = vec![vec![0.5f32; 64], vec![0.5f32; 64]];
+        let before = samples.clone();
+        f.process(&mut samples, 64);
+        assert_eq!(samples, before, "loudness disabled in ctx must passthrough");
     }
 }

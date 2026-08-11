@@ -42,6 +42,14 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
     /// 并在 `process` 中只处理对应槽位；无通道语义的滤波器（Copy 等）保持默认忽略。
     fn set_channel_indices(&mut self, _indices: &[usize]) {}
 
+    /// 配置模型 per-effect `channels` 指定的固定通道槽位（v9.11）。
+    ///
+    /// `Some` 时 Chain 跳过自动计算、直接使用固定槽位（仅 `ChannelScopedFilter`
+    /// 返回）；`None` = 由 Chain 按当前通道名自动设置。
+    fn fixed_channel_indices(&self) -> Option<Vec<usize>> {
+        None
+    }
+
     /// 是否就地处理（in-place，E1/v6.7）。
     ///
     /// 默认 true：滤波器直接修改传入的 `samples` 缓冲，无需额外中间副本。
@@ -79,6 +87,57 @@ impl Filter for PassthroughFilter {
 
     fn initialize(&mut self, _sample_rate: u32, _channel_names: &[String]) -> Option<Vec<String>> {
         None
+    }
+}
+
+/// 按配置模型 `channels` 固定作用通道的包装（v9.11）。
+///
+/// config 层解析出平面槽位后包一层；`Chain::initialize` 通过
+/// `fixed_channel_indices` 识别并跳过自动通道计算。
+#[derive(Debug)]
+pub struct ChannelScopedFilter {
+    inner: Box<dyn Filter>,
+    indices: Vec<usize>,
+}
+
+impl ChannelScopedFilter {
+    pub fn new(inner: Box<dyn Filter>, indices: Vec<usize>) -> Self {
+        Self { inner, indices }
+    }
+}
+
+impl Filter for ChannelScopedFilter {
+    fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
+        self.inner.process(samples, frame_count);
+    }
+
+    fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>> {
+        self.inner.initialize(sample_rate, channel_names)
+    }
+
+    fn latency(&self) -> u32 {
+        self.inner.latency()
+    }
+
+    fn set_channel_indices(&mut self, indices: &[usize]) {
+        self.indices = indices.to_vec();
+        self.inner.set_channel_indices(indices);
+    }
+
+    fn fixed_channel_indices(&self) -> Option<Vec<usize>> {
+        Some(self.indices.clone())
+    }
+
+    fn is_in_place(&self) -> bool {
+        self.inner.is_in_place()
+    }
+
+    fn max_frame_count(&self) -> Option<usize> {
+        self.inner.max_frame_count()
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
     }
 }
 

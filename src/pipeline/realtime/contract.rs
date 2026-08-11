@@ -1,5 +1,6 @@
 ﻿//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（Note 12/58，v6.3 规范 4.5）
 
+#[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // ══════════════════════════════════════════════════════════════════════════════

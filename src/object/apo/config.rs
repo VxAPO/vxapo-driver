@@ -11,11 +11,9 @@ use windows::core::Result;
 
 use once_cell::sync::Lazy;
 
-use crate::config::commands::register_all_commands;
 use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
 use crate::pipeline::chain::Chain;
-use crate::pipeline::dsp::factory::FilterRegistry;
 use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
 use crate::sys::com::apo_types::{
     APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
@@ -26,7 +24,7 @@ use super::ApoObject_Impl;
 use super::inner::{ApoObjectInner, build_dsp_context};
 
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
-pub(crate) const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.txt";
+pub(crate) const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.toml";
 
 /// per-device 配置根目录（方案 A，2026-08-04 用户确认）。
 pub(crate) const CONFIG_ROOT: &str = r"C:\ProgramData\VxAPO";
@@ -79,8 +77,8 @@ pub(crate) fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID>
 }
 
 /// 确定 per-device 配置路径（object 7.1.8，方案 A）：
-/// `C:\ProgramData\VxAPO\{GUID}\config.txt`；无 GUID / 解析失败 → `_default` 兜底。
-/// 目录自动创建；config.txt 缺失时写默认 passthrough（空配置 → 链为空即 passthrough）。
+/// `C:\ProgramData\VxAPO\{GUID}\config.toml`；无 GUID / 解析失败 → `_default` 兜底。
+/// 目录自动创建；config.toml 缺失时写默认 passthrough（空配置 → 链为空即 passthrough）。
 pub(crate) fn resolve_config_path(init: Option<&APOInitSystemEffects>) -> String {
     resolve_config_path_from(CONFIG_ROOT, init)
 }
@@ -104,9 +102,9 @@ pub(crate) fn resolve_config_path_from(
         log::warn!("create_dir_all({}) failed: {} — fallback to shared default config", dir.display(), e);
         return DEFAULT_CONFIG_PATH.to_owned();
     }
-    let path = dir.join("config.txt");
+    let path = dir.join("config.toml");
 
-    // config.txt 缺失 → 写默认 passthrough（空文件 = 无滤波器 = passthrough）。
+    // config.toml 缺失 → 写默认 passthrough（空文件 = 无滤波器 = passthrough）。
     if !path.exists() {
         log::info!("config not found at {}, writing default passthrough", path.display());
         if let Err(e) = std::fs::write(&path, "# VxAPO default passthrough\n") {
@@ -238,7 +236,7 @@ pub(crate) fn hot_reload_impl(
     obj_ptr: usize,
 ) {
     // 0. 文件级预检（v9.4）：`FindFirstChangeNotificationW` 是目录级通知，
-    //    目录里任何文件变化（如无关文件）都会触发。按 config.txt 的
+    //    目录里任何文件变化（如无关文件）都会触发。按 config.toml 的
     //    (mtime, size) 与上次**已应用**状态比较，未变化直接跳过——避免事件风暴
     //    导致重复解析/重建链（audiodg CPU 高位、声音设置页卡顿的诱因之一）。
     //    注意：**只比较不记录**——记录必须发生在真正应用之后，否则 R2 阻塞
@@ -300,9 +298,7 @@ pub(crate) fn hot_reload_impl(
     // 3. 锁外解析（不持有 mutex）。parse_file_with_spec 双返回。
     let current_ctx = { inner.lock().unwrap().pipeline_context.clone() };
     let dsp_ctx = build_dsp_context(&current_ctx, 32);
-    let mut registry = FilterRegistry::new();
-    register_all_commands(&mut registry);
-    let parser = ConfigParser::new(registry);
+    let parser = ConfigParser::new();
     let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
         Ok(r) => r,
         Err(_) => {
@@ -387,7 +383,7 @@ pub(crate) fn hot_reload_impl(
     guard.transition = Some(sm);
 }
 
-/// 目录级事件 ≠ config.txt 变化：按 (mtime, size) 判断是否与上次**已应用**状态一致。
+/// 目录级事件 ≠ config.toml 变化：按 (mtime, size) 判断是否与上次**已应用**状态一致。
 /// 只比较、不记录（记录由 [`mark_config_applied`] 在真正处理后写入）。
 fn config_file_unchanged(config_path: &str) -> bool {
     static LAST: Lazy<Mutex<HashMap<String, (SystemTime, u64)>>> =
@@ -402,7 +398,7 @@ fn config_file_unchanged(config_path: &str) -> bool {
     map.get(config_path) == Some(&key)
 }
 
-/// 记录 config.txt 已处理的 (mtime, size)（v9.4）。
+/// 记录 config.toml 已处理的 (mtime, size)（v9.4）。
 ///
 /// 仅在以下时机调用：spec 相同跳过、解析失败（文件已处理）、链成功交换应用。
 /// **不得**在 R2 阻塞（transition/reloading）提前返回时调用——否则补重载被吞。

@@ -93,7 +93,7 @@ struct FirSplit {
 impl FirSplit {
     fn new(ir: Vec<f32>, channels: usize) -> Self {
         #[cfg(target_arch = "x86_64")]
-        crate::pipeline::dsp::convolution::init_fir_simd();
+        crate::pipeline::dsp::fir::init_fir_simd();
         let ir_len = ir.len().max(1);
         let delay_len = ir_len.next_power_of_two();
         Self {
@@ -124,11 +124,11 @@ impl FirSplit {
         let oldest = (*pos + delay_len - ir_len) & mask;
         let ir_rev = &self.ir_rev;
         let lp = if oldest <= start {
-            crate::pipeline::dsp::convolution::dot(ir_rev, &delay[oldest..=start])
+            crate::pipeline::dsp::fir::dot(ir_rev, &delay[oldest..=start])
         } else {
             let len_old = delay_len - oldest;
-            crate::pipeline::dsp::convolution::dot(&ir_rev[..len_old], &delay[oldest..])
-                + crate::pipeline::dsp::convolution::dot(
+            crate::pipeline::dsp::fir::dot(&ir_rev[..len_old], &delay[oldest..])
+                + crate::pipeline::dsp::fir::dot(
                     &ir_rev[len_old..],
                     &delay[0..=start],
                 )

@@ -36,7 +36,7 @@ const DEDUP_WINDOW_MS: u32 = 10;
 pub enum WatchEvent {
     /// 监控目录内发生变更（**目录级通知**——`FindFirstChangeNotificationW`
     ///   不提供具体文件名（v7.9 澄清），无法逐文件过滤）。
-    /// 触发方（object/apo.rs hot_reload）重新解析 config.txt，经 spec 指纹
+    /// 触发方（object/apo.rs hot_reload）重新解析 config.toml，经 spec 指纹
     /// 比对决定是否真正切换（内容未变 → 幂等跳过，无听感副作用）。
     DirectoryChanged(PathBuf), // watch_dir
     /// 注册表配置变化（保留：poll_registry 哈希兜底，低频）。
@@ -66,7 +66,7 @@ pub struct ConfigWatcher {
 impl ConfigWatcher {
     /// 创建监控器并建立目录变更通知句柄。
     ///
-    /// - `watch_dir`：**监控目录**（如 `Documents\VxAPO\{GUID}`），非 config.txt 文件本身
+/// - `watch_dir`：**监控目录**（如 `Documents\VxAPO\{GUID}`），非 config.toml 文件本身
     /// - `shutdown_event`：外部持有的退出事件（APO 实例持有；UnlockForProcess 时
     ///   `SetEvent` 后 join 线程——v7.9 生命周期随锁定周期）
     ///

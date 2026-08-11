@@ -47,7 +47,7 @@ pub struct ApoObject {
     pub(crate) latency_samples: AtomicU32,
     pub(crate) latency_frames_atomic: AtomicU32,
     pub(crate) process_stats: ProcessStatistics,
-    /// 配置文件路径（Initialize 确定，per-device `Documents\VxAPO\{GUID}\config.txt`）。
+    /// 配置文件路径（Initialize 确定，per-device `Documents\VxAPO\{GUID}\config.toml`）。
     /// Arc<Mutex>：spawn 线程可 clone（hot_reload 独立访问）。
     pub(crate) config_path: Arc<Mutex<String>>,
     /// watcher 运行时状态（v7.10，P0-4 外部驱动模型）：Lock 末尾启动 / Unlock 停止。
@@ -194,14 +194,14 @@ mod tests {
 
     #[test]
     fn config_path_default_device_dir_when_no_guid() {
-        // 无端点 GUID（属性存储缺失）→ `{config_root}\_default\config.txt`。
+        // 无端点 GUID（属性存储缺失）→ `{config_root}\_default\config.toml`。
         let root = std::env::temp_dir().join("vxapo_apo_test").join("cfg");
         let root_str = root.display().to_string();
         let init = empty_init();
         let path = resolve_config_path_from(&root_str, Some(&init));
         let p = Path::new(&path);
         assert!(p.starts_with(&root));
-        assert!(p.ends_with("config.txt"));
+        assert!(p.ends_with("config.toml"));
         // 目录应包含 `_default`。
         assert!(path.contains("_default"));
         // 目录已创建 + 默认 passthrough 文件已写入。
