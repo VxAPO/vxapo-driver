@@ -267,12 +267,39 @@ pub(crate) fn lock_for_process(
         (Vec::new(), Vec::new())
     } else {
         let parser = ConfigParser::new();
-        parser
-            .parse_file_with_spec(&config_path, &dsp_ctx)
-            .map_err(|_| windows::core::Error::from(E_FAIL))?
+        match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
+            Ok(r) => r,
+            Err(e) => {
+                // v9.12：Lock 解析失败降级为 passthrough（有声无 EQ）——
+                // 配置缺失/损坏/保存中间态时新流 Lock 若返回错误会直接无声
+                // （实证：config.toml 坏状态期间关闭网页后新网页无声音）。
+                crate::object::apo::config::diag_append(&format!(
+                    "LOCK parse-fail fallback clsid={:?} err={e}",
+                    apo.clsid
+                ));
+                (Vec::new(), Vec::new())
+            }
+        }
     };
+    // Step 3.5: 复用键与复用判定（v9.12，供日志与 Step 4 使用）。
+    let lock_key = if is_postmix {
+        None
+    } else {
+        Some((
+            spec_chain.clone(),
+            format.sample_rate,
+            channel_names.clone(),
+        ))
+    };
+    let reuse_cached;
+    {
+        let inner = apo.mutex.lock().unwrap();
+        reuse_cached = lock_key.as_ref().is_some_and(|k| {
+            inner.last_lock_key.as_ref() == Some(k) && !inner.current_chain.is_empty()
+        });
+    }
     crate::object::apo::config::diag_append(&format!(
-        "LOCK clsid={:?} postmix={} rate={} in={} out={} maxframes={} filters={} spec={} first_spec={} lock_ms={} agg_created={} agg_destroyed={}",
+        "LOCK clsid={:?} postmix={} rate={} in={} out={} maxframes={} filters={} spec={} first_spec={} reuse={} lock_ms={} agg_created={} agg_destroyed={}",
         apo.clsid,
         is_postmix,
         format.sample_rate,
@@ -282,6 +309,7 @@ pub(crate) fn lock_for_process(
         filters.len(),
         spec_chain.len(),
         spec_chain.first().cloned().unwrap_or_default(),
+        reuse_cached as u8,
         lock_start.elapsed().as_millis(),
         crate::object::apo::aggregate::AGG_CREATED.load(std::sync::atomic::Ordering::Relaxed),
         crate::object::apo::aggregate::AGG_DESTROYED.load(std::sync::atomic::Ordering::Relaxed)
@@ -302,14 +330,21 @@ pub(crate) fn lock_for_process(
     }
 
     // Step 4: 组装 Chain。
-    let mut chain = Chain::new();
-    for f in filters {
+    // v9.12 修订：同 config/格式的 Unlock→Relock（如关闭网页触发的端点重协商）
+    // 直接复用现有链、保留滤波器状态，避免重建瞬态（哔声 + 断流一瞬间）。
+    let chain = if reuse_cached {
+        Chain::new() // 占位：复用路径在 Step 6 保留现有 current_chain。
+    } else {
+        let mut chain = Chain::new();
+        for f in filters {
+            chain
+                .add_filter(f)
+                .map_err(|_| windows::core::Error::from(E_FAIL))?;
+        }
+        // DSP 依赖 initialize 预计算系数/状态（PEQ/IIR/Convolution）。
+        chain.initialize(format.sample_rate, &channel_names);
         chain
-            .add_filter(f)
-            .map_err(|_| windows::core::Error::from(E_FAIL))?;
-    }
-    // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
-    chain.initialize(format.sample_rate, &channel_names);
+    };
 
     // Step 5: 预分配过渡缓冲区（v7.8 修订，杜绝 RT 线程过渡首次 resize 扩容——
     //          EAPO 对齐：按 max_frame_count × max_ch 预分配充足容量）。
@@ -335,7 +370,10 @@ pub(crate) fn lock_for_process(
     // Step 6: 更新内部状态。（R1：退役链由控制线程锁内统一析构）
     {
         let mut inner = apo.mutex.lock().unwrap();
-        inner.current_chain = Box::new(chain);
+        if !reuse_cached {
+            inner.current_chain = Box::new(chain);
+            inner.last_lock_key = lock_key;
+        }
         inner.outgoing_chain = None;
         inner.retired_chain = None;
         inner.transition = None;
@@ -427,8 +465,8 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.transition = None;
     inner.pending_reload = false;
     inner.reloading = false;
-    // v7.9：释放配置指纹基线（重新 Lock 时重建）。
-    inner.active_spec.clear();
+    // v7.9 指纹基线保留；v9.12：Unlock 不再清除 last_lock_key——
+    // 同 config 的 Relock 复用现有链（保留状态），避免重协商瞬态。
     inner.startup_fade_total = 0;
     inner.startup_fade_remaining = 0;
     crate::object::apo::config::diag_append(&format!(

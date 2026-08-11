@@ -301,11 +301,11 @@ pub(crate) fn hot_reload_impl(
     let parser = ConfigParser::new();
     let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
         Ok(r) => r,
-        Err(_) => {
+        Err(e) => {
             log::warn!("hot_reload: config parse failed — keeping old chain");
             // 文件已尝试处理（失败）；记录状态避免事件风暴反复解析同一坏文件。
             mark_config_applied(&config_path);
-            diag_append(&format!("RELOAD parse-fail clsid={clsid:?}"));
+            diag_append(&format!("RELOAD parse-fail clsid={clsid:?} err={e}"));
             #[cfg(debug_assertions)]
             {
                 let _ = std::fs::write(
@@ -358,6 +358,12 @@ pub(crate) fn hot_reload_impl(
     guard.outgoing_chain = Some(old);
     guard.pending_reload = false;
     guard.reloading = false;
+    // v9.12：热重载后同步复用键，下次 Relock 直接复用热重载后的链。
+    guard.last_lock_key = Some((
+        new_spec.clone(),
+        dsp_ctx.sample_rate,
+        dsp_ctx.channel_names.clone(),
+    ));
     guard.active_spec = new_spec;
     mark_config_applied(&config_path);
     diag_append(&format!(

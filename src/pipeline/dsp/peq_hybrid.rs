@@ -14,7 +14,7 @@ use rustfft::FftPlanner;
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
 use crate::pipeline::dsp::math::warn_rate_limited;
-use crate::pipeline::dsp::model::{CROSSOVER_HZ, PeqParams};
+use crate::pipeline::dsp::model::{CROSSOVER_HZ, PeqBand, PeqParams};
 
 /// FIR 长度下限（@44.1k/48k）。
 const FIR_MIN_LEN: usize = 1024;
@@ -22,6 +22,14 @@ const FIR_MIN_LEN: usize = 1024;
 const FIR_MAX_LEN: usize = 8192;
 /// 直接 FIR 最大长度（超过走分块 FFT）。
 const DIRECT_FIR_MAX_LEN: usize = 2048;
+/// 静音恢复淡入时长（秒）：audiodg 端点重协商会把输入先置静音再恢复，
+/// IIR 对阶跃的瞬态产生“哔”声，恢复时线性淡入抑制。
+const MUTE_RECOVERY_FADE_S: f32 = 0.008;
+/// 输入“有声”判定阈值（峰值，约 -80 dBFS）。
+const INPUT_ACTIVE_THRESHOLD: f32 = 1.0e-4;
+/// 静音确认保持帧数（约 1.3 ms @48k）：避免低频正弦过零附近的单帧
+/// 低样本被误判为静音（否则每周期输出被吃掉 → 频响衰减）。
+const SILENCE_HOLD_FRAMES: usize = 64;
 /// 频响幅值下限，避免 log(0)。
 const MIN_MAG: f32 = 1e-5;
 
@@ -130,6 +138,11 @@ pub struct HybridPeqFilter {
     fir: PeqFir,
     channel_indices: Vec<usize>,
     channels: Vec<PeqChannel>,
+    /// 静音检测与恢复淡入状态（v9.12 修订）。
+    input_active: bool,
+    fade_total: usize,
+    fade_remaining: usize,
+    silence_count: usize,
 }
 
 impl HybridPeqFilter {
@@ -147,6 +160,10 @@ impl HybridPeqFilter {
             },
             channel_indices: Vec::new(),
             channels: Vec::new(),
+            input_active: false,
+            fade_total: 0,
+            fade_remaining: 0,
+            silence_count: 0,
         }
     }
 
@@ -177,7 +194,7 @@ impl Filter for HybridPeqFilter {
         bands.sort_by(|a, b| a.fc.total_cmp(&b.fc));
         self.iir = bands
             .iter()
-            .filter(|b| b.fc < CROSSOVER_HZ)
+            .filter(|b| in_iir_band(b, CROSSOVER_HZ, sample_rate))
             .filter_map(|b| {
                 let c = Biquad::peaking(b.fc, b.gain_db, b.q, sample_rate);
                 if c.is_none() {
@@ -194,6 +211,11 @@ impl Filter for HybridPeqFilter {
         let n = Self::fir_len_for(sample_rate);
         let ir = build_min_phase_ir(&bands, &self.iir, sample_rate, n);
         let count = self.channel_indices.len();
+        self.fade_total =
+            ((sample_rate.max(1) as f32) * MUTE_RECOVERY_FADE_S).round() as usize;
+        self.fade_remaining = 0;
+        self.input_active = false;
+        self.silence_count = 0;
         if n <= DIRECT_FIR_MAX_LEN {
             let delay_len = n.next_power_of_two();
             self.fir = PeqFir::Direct {
@@ -221,16 +243,54 @@ impl Filter for HybridPeqFilter {
         }
         let n_ch = self.channel_indices.len().min(self.channels.len());
         let iir = &self.iir;
+        let frames = (0..n_ch)
+            .filter_map(|k| samples.get(self.channel_indices[k]).map(|s| s.len()))
+            .min()
+            .map(|l| frame_count.min(l))
+            .unwrap_or(0);
 
-        for k in 0..n_ch {
-            let slot = self.channel_indices[k];
-            if slot >= samples.len() {
-                continue;
+        for f in 0..frames {
+            // 静音检测（整帧输入峰值）与淡入系数。
+            let mut peak = 0.0f32;
+            for k in 0..n_ch {
+                let slot = self.channel_indices[k];
+                if slot < samples.len() {
+                    peak = peak.max(samples[slot][f].abs());
+                }
             }
-            let ch = &mut self.channels[k];
-            let frames = frame_count.min(samples[slot].len());
+            if peak > INPUT_ACTIVE_THRESHOLD {
+                if !self.input_active {
+                    self.fade_remaining = self.fade_total;
+                }
+                self.input_active = true;
+                self.silence_count = 0;
+            } else if self.input_active {
+                self.silence_count += 1;
+                if self.silence_count >= SILENCE_HOLD_FRAMES {
+                    // 输入确认静音：输出强制 0（抑制 IIR 振铃的“哔”），
+                    // 状态照常更新（衰减到 0），恢复时从干净状态淡入。
+                    self.input_active = false;
+                    self.fade_remaining = 0;
+                }
+            }
+            let fade = if !self.input_active {
+                0.0
+            } else if self.fade_remaining > 0 {
+                // 线性 0→1：恢复第 1 帧 ≈ 0，最后一帧 = 1。
+                let g = (self.fade_total - self.fade_remaining + 1) as f32
+                    / self.fade_total.max(1) as f32;
+                self.fade_remaining -= 1;
+                g
+            } else {
+                1.0
+            };
 
-            for f in 0..frames {
+            for k in 0..n_ch {
+                let slot = self.channel_indices[k];
+                if slot >= samples.len() {
+                    continue;
+                }
+                let ch = &mut self.channels[k];
                 let mut x = samples[slot][f];
                 // IIR 级联（低频段）。
                 for (i, bq) in iir.iter().enumerate() {
@@ -245,6 +305,8 @@ impl Filter for HybridPeqFilter {
                         let p = &mut pos[k];
                         d[*p] = x;
                         *p = (*p + 1) & mask;
+                        // delay_len == fir_len（均为 2 的幂），oldest == start 不会
+                        // 出现：pos==0 时整段连续（if 分支），其余环绕两段（else）。
                         let start = p.wrapping_sub(1) & mask;
                         let oldest = (*p + delay_len - fir_len) & mask;
                         if oldest <= start {
@@ -260,14 +322,17 @@ impl Filter for HybridPeqFilter {
                     }
                     PeqFir::Partitioned(pf) => pf.process_channel(k, x),
                 };
-                samples[slot][f] = if out.is_finite() { out } else { 0.0 };
+                samples[slot][f] = if out.is_finite() { out * fade } else { 0.0 };
             }
         }
     }
 
     fn latency(&self) -> u32 {
         match &self.fir {
-            PeqFir::Direct { fir_len, .. } => fir_len.saturating_sub(1) as u32,
+            // 最小相位 FIR 能量集中在前端，实际群延迟远小于线性相位 (N-1)/2；
+            // 保守取 fir_len/4（1024 → 256 ≈ 5.3 ms @48k），不上报引擎，
+            // 仅链记账/诊断/缓冲预留使用。
+            PeqFir::Direct { fir_len, .. } => (*fir_len / 4).max(1) as u32,
             PeqFir::Partitioned(pf) => pf.latency(),
         }
     }
@@ -277,6 +342,9 @@ impl Filter for HybridPeqFilter {
     }
 
     fn reset(&mut self) {
+        self.input_active = false;
+        self.fade_remaining = 0;
+        self.silence_count = 0;
         for ch in self.channels.iter_mut() {
             ch.iir.fill(BiquadState::default());
         }
@@ -290,6 +358,28 @@ impl Filter for HybridPeqFilter {
             PeqFir::Partitioned(pf) => pf.reset(),
         }
     }
+}
+
+/// 段是否由 IIR 主实现。
+///
+/// - `Fc < 分频点` → IIR（低频主责任）；
+/// - `Fc == 分频点`（200.0）→ FIR（定稿：分频点归属高频路径）；
+/// - `Fc > 分频点` 且影响范围**实质跨过**分频点（分频点处 |dB| > 0.25）→ 也进
+///   IIR——宽 Q 段的低频泄漏由 biquad 解析精确实现，避免 FIR 低频分辨率不足
+///   （1024 点 @48k = 46.9 Hz/bin）造成的衔接误差；其余段由 FIR 主实现，
+///   其在低频的泄漏 < 0.25 dB，FIR 误差无感。
+///
+/// 注意：判据是**影响**而非 fc——如 fc=500/Q=1.5 的宽段在 200 Hz 处仍有
+/// 明显响应时也会进 IIR（属设计意图：它的低频影响由 IIR 精确承担，FIR
+/// 目标自动扣除其高频残余）。
+fn in_iir_band(b: &PeqBand, crossover: f32, sr: u32) -> bool {
+    if b.fc < crossover {
+        return true;
+    }
+    if b.fc == crossover {
+        return false;
+    }
+    peaking_response_db(b.fc, b.gain_db, b.q, crossover, sr as f32).abs() > 0.25
 }
 
 /// 由「全段频响 − IIR 频响」生成最小相位 FIR（cepstrum，逻辑对齐 GraphicEQ）。
@@ -335,12 +425,14 @@ fn build_min_phase_ir(
         v.im = 0.0;
     }
 
-    // 3) 最小相位倒谱：n>N/2 置 0，0<n<N/2 加倍。
+    // 3) 最小相位倒谱：n>N/2 置 0，0<n<N/2 加倍，n=N/2 保留原值
+    //   （奈奎斯特 bin 参与变换，避免 IR 高频幅度误差）。
     let mut cep_min = vec![Complex::new(0.0, 0.0); n];
     cep_min[0] = spectrum[0];
     for k in 1..n / 2 {
         cep_min[k] = Complex::new(spectrum[k].re * 2.0, 0.0);
     }
+    cep_min[n / 2] = spectrum[n / 2];
 
     // 4) FFT → 最小相位复频谱，exp 恢复幅值并产生相位。
     fft.process_with_scratch(&mut cep_min, &mut scratch);
@@ -362,8 +454,15 @@ fn build_min_phase_ir(
     ir
 }
 
-/// peaking 频响（dB）——与 Biquad::peaking 同一 RBJ 数字传输函数。
+/// peaking 频响（dB）——与 IIR 路径**同一计算路径**（v9.12 修订）。
+///
+/// 稳定段直接走 `Biquad::peaking + response_db`（f64 设计 → f32 存储，
+/// 与 L(f) 合成完全一致，T−L 对同段精确归零）；仅在不稳定段（IIR 已直通、
+/// L 不含它，无差分问题）回退到独立 f32 RBJ 公式作为目标值。
 pub(crate) fn peaking_response_db(fc: f32, gain_db: f32, q: f32, freq: f32, sr: f32) -> f32 {
+    if let Some(bq) = Biquad::peaking(fc, gain_db, q, sr as u32) {
+        return bq.response_db(freq, sr as u32);
+    }
     if sr <= 0.0 || !fc.is_finite() || !q.is_finite() || q <= 0.0 {
         return 0.0;
     }
@@ -485,6 +584,59 @@ mod tests {
     }
 
     #[test]
+    fn wide_q_crossing_band_goes_to_iir() {
+        // 宽 Q 段（fc=250, q=0.6）影响范围跨过分频点 → IIR 主实现；
+        // 窄 Q 段（fc=300, q=5）影响完全在 200 Hz 以上 → FIR。
+        let bands = vec![
+            PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6 },
+            PeqBand { fc: 300.0, gain_db: -6.0, q: 8.0 },
+            PeqBand { fc: 400.0, gain_db: -6.0, q: 2.0 },
+            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0 },
+            PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0 },
+            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0 },
+        ];
+        let mut f = HybridPeqFilter::new(PeqParams {
+            crossover_hz: CROSSOVER_HZ,
+            bands,
+        });
+        f.initialize(48000, &["L".into()]);
+        assert_eq!(f.iir.len(), 2, "250/q0.6 与 400/q2.0 应进 IIR，300/q8 不进");
+    }
+
+    #[test]
+    fn crossing_band_fits_across_crossover() {
+        // 宽 Q 段跨分频点：低频由 IIR 精确、高频由 FIR 补偿，总响应 = 目标。
+        let bands = vec![
+            PeqBand { fc: 150.0, gain_db: -3.0, q: 0.8 },
+            PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6 },
+            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.5 },
+            PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0 },
+            PeqBand { fc: 8000.0, gain_db: 2.0, q: 1.0 },
+            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0 },
+        ];
+        for sr in [48_000u32, 96_000] {
+            let mut f = HybridPeqFilter::new(PeqParams {
+                crossover_hz: CROSSOVER_HZ,
+                bands: bands.clone(),
+            });
+            f.initialize(sr, &["L".into(), "R".into()]);
+            for freq in [
+                60.0f32, 100.0, 150.0, 180.0, 220.0, 250.0, 300.0, 400.0, 600.0, 1000.0, 4000.0,
+            ] {
+                let frames = 12000usize;
+                let out_rms = sr_amp(&mut f, freq, 0.25, sr, frames);
+                let in_rms = 0.25 / std::f32::consts::SQRT_2;
+                let measured = 20.0 * (out_rms / in_rms).log10();
+                let target = target_db(&bands, freq, sr);
+                assert!(
+                    (measured - target).abs() < 0.6,
+                    "sr {sr} freq {freq}: measured {measured:.2} dB vs target {target:.2} dB"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn silence_stays_silent() {
         let bands = vec![
             PeqBand { fc: 100.0, gain_db: 6.0, q: 1.0 },
@@ -506,6 +658,41 @@ mod tests {
                 assert_eq!(v, 0.0);
             }
         }
+    }
+
+    #[test]
+    fn mute_recovery_fades_in_without_glitch() {
+        // 静音 500 帧 → 恢复正弦：输出应从 0 线性淡入（前 8 ms），无阶跃。
+        let bands = vec![
+            PeqBand { fc: 160.0, gain_db: -2.0, q: 2.0 },
+            PeqBand { fc: 600.0, gain_db: -6.0, q: 1.5 },
+            PeqBand { fc: 1000.0, gain_db: 6.0, q: 2.0 },
+            PeqBand { fc: 2000.0, gain_db: 2.0, q: 1.0 },
+            PeqBand { fc: 4000.0, gain_db: 1.0, q: 2.0 },
+            PeqBand { fc: 8000.0, gain_db: -2.0, q: 1.5 },
+        ];
+        let mut f = HybridPeqFilter::new(PeqParams {
+            crossover_hz: CROSSOVER_HZ,
+            bands,
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let n = 2048usize;
+        let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 500..n {
+            let v = 0.25 * (std::f32::consts::TAU * 1000.0 * i as f32 / 48000.0).sin();
+            samples[0][i] = v;
+            samples[1][i] = v;
+        }
+        f.process(&mut samples, n);
+        // 恢复第 1 帧：淡入起点 ≈ 0（无阶跃）。
+        assert!(
+            samples[0][500].abs() < 0.01,
+            "fade-in start should be ~0, got {}",
+            samples[0][500]
+        );
+        // 约 8 ms（384 帧）后淡入完成，幅度恢复正常（目标 1000 Hz +6 dB）。
+        let later = samples[0][500 + 400].abs();
+        assert!(later > 0.05, "fade should complete, got {later}");
     }
 
     #[test]
@@ -547,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn latency_reports_fir_len_minus_one() {
+    fn latency_reports_fir_len_div_4() {
         let bands = vec![
             PeqBand { fc: 100.0, gain_db: 3.0, q: 1.0 },
             PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0 },
@@ -561,7 +748,8 @@ mod tests {
             bands,
         });
         f.initialize(48_000, &["L".into()]);
-        assert_eq!(f.latency(), (1024 - 1) as u32);
+        // 1024 抽头最小相位：保守群延迟估计 = 1024/4 = 256。
+        assert_eq!(f.latency(), 256);
         let mut f2 = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
             bands: vec![

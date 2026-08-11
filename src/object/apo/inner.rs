@@ -25,6 +25,9 @@ pub struct ApoObjectInner {
     pub reloading: bool,
     /// 生效配置指纹（v7.9，P0-4 配置变更检测）——当前生效链的 filter_spec 有序序列。
     pub active_spec: Vec<String>,
+    /// 上次成功 Lock 的 (spec, 采样率, 通道) 键（v9.12 修订：同键 Relock 直接
+    /// 复用现有链、保留滤波器状态，避免端点重协商时的重建瞬态/哔声）。
+    pub last_lock_key: Option<(Vec<String>, u32, Vec<String>)>,
     /// 启动淡入总长度（采样，v9.6）：流建立初期引擎可能仍在加载目标 APO 链，
     /// 直接播会产生“首秒断续慢速”。先静音保持再线性淡入，听感为“加载完再播”。
     pub startup_fade_total: usize,
@@ -57,6 +60,7 @@ impl ApoObjectInner {
             pending_reload: false,
             reloading: false,
             active_spec: Vec::new(),
+            last_lock_key: None,
             startup_fade_total: 0,
             startup_fade_remaining: 0,
             last_calls: [(0, 0, 0, 0.0); 4],

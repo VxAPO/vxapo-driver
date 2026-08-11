@@ -45,6 +45,12 @@ impl ConfigParser {
         ctx: &DspContext,
     ) -> Result<(Vec<Box<dyn Filter>>, SpecChain), ConfigError> {
         let path_ref = Path::new(path);
+        // v9.12 防御：配置文件缺失 = 无配置 passthrough（空链）。
+        // 若按解析失败处理，新流 LockForProcess 会失败 → APO 不生效 → 无声
+        // （实证：config.toml 被删后热重载保留旧链、新流直接无声）。
+        if !path_ref.exists() {
+            return Ok((Vec::new(), SpecChain::new()));
+        }
         if std::fs::metadata(path_ref)
             .map(|m| m.len() > MAX_CONFIG_FILE_SIZE)
             .unwrap_or(false)
