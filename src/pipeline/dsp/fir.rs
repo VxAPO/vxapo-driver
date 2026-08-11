@@ -3,8 +3,8 @@
 //! - SIMD 点积（AVX2+FMA 运行时探测，标量 mul_add 回退）——从 convolution.rs
 //!   迁出，供 Wide / 混合 PEQ 共用；
 //! - 直接 FIR 延迟线与分段点积（2 的幂环形缓冲，v9.7 语义）；
-//! - 分块 FFT 卷积（uniform partitioned overlap-add，输出驱动 + 补块 flush，
-//!   流停止时尾部不压块——修复历史切换“嗡声”）。
+//! - 分块 FFT 卷积（uniform partitioned overlap-add，块跨调用累积、输出驱动，
+//!   语义对齐 EAPO libHybridConv：不做 per-call flush，Reset 才清空）。
 
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
@@ -165,9 +165,9 @@ impl PartitionedFir {
 
     /// 每帧进样 + 输出一个样本。
     ///
-    /// 输出驱动：块满立即处理；`is_last = true` 且输入缓冲有残留时补零处理
-    /// （调用结束输入缓冲恒为空，流停止不压块丢尾音）。
-    pub(crate) fn process_channel(&mut self, k: usize, x: f32, is_last: bool) -> f32 {
+    /// 块固定跨调用累积：输入不满块时输出 0（对齐 EAPO），块满立即处理；
+    /// 不做 per-call flush——`Reset` 时才清空（流停止时不满块与 EAPO 一致丢弃）。
+    pub(crate) fn process_channel(&mut self, k: usize, x: f32) -> f32 {
         let block_len = self.block_len;
         let ch = &mut self.channels[k];
         ch.in_buf[ch.in_len] = x;
@@ -177,10 +177,7 @@ impl PartitionedFir {
             let idx = ch.out_buf.len() - ch.out_len;
             ch.out_len -= 1;
             ch.out_buf[idx]
-        } else if ch.in_len == block_len || (is_last && ch.in_len > 0) {
-            if ch.in_len < block_len {
-                ch.in_buf[ch.in_len..block_len].fill(0.0);
-            }
+        } else if ch.in_len == block_len {
             process_block(
                 &self.fft,
                 &self.ifft,
@@ -198,7 +195,7 @@ impl PartitionedFir {
             0.0
         };
 
-        if ch.in_len == block_len || (is_last && ch.in_len > 0) {
+        if ch.in_len == block_len {
             ch.in_len = 0;
         }
         out
@@ -301,7 +298,7 @@ mod tests {
         let block_len = CONVOLUTION_PARTITION_SIZE;
         let mut out = Vec::with_capacity(input.len());
         for &x in &input {
-            out.push(pf.process_channel(0, x, false));
+            out.push(pf.process_channel(0, x));
         }
         // 延迟 = block_len - 1 帧（输出下标 i 对应 naive[i - (block_len-1)]）。
         for i in (block_len - 1)..input.len() {
@@ -316,28 +313,64 @@ mod tests {
     }
 
     #[test]
-    fn partitioned_tail_flush_is_finite_and_resumes() {
+    fn partitioned_reset_clears_and_resumes() {
         let ir: Vec<f32> = (0..256).map(|i| ((i as f32) * 0.3).cos() * 0.2).collect();
         let mut pf = PartitionedFir::new(&ir, 2);
 
-        // 短流（< 块大小）：最后一帧补零 flush，输出全部有限。
+        // 短流（< 块大小）：不满块不处理，输出 0（有限）。
         let short: Vec<f32> = (0..50).map(|i| i as f32 * 0.01).collect();
         let mut out = Vec::new();
-        for (i, &x) in short.iter().enumerate() {
-            out.push(pf.process_channel(0, x, i == short.len() - 1));
+        for &x in &short {
+            out.push(pf.process_channel(0, x));
         }
         for v in &out {
             assert!(v.is_finite());
         }
 
-        // 后续长流继续处理无错位（不 panic、有限）。
+        // Reset（模拟切流）：清空后长流正常处理（不 panic、有限）。
+        pf.reset();
         let long: Vec<f32> = (0..400).map(|i| ((i as f32) * 0.2).sin() * 0.3).collect();
-        for (i, &x) in long.iter().enumerate() {
-            let v = pf.process_channel(0, x, i == long.len() - 1);
+        for &x in &long {
+            let v = pf.process_channel(0, x);
             assert!(v.is_finite());
         }
         // 双通道状态独立。
-        let v = pf.process_channel(1, 0.5, true);
+        let v = pf.process_channel(1, 0.5);
         assert!(v.is_finite());
+    }
+
+    #[test]
+    fn partitioned_accumulates_across_calls() {
+        // 块边界跨多次 process 调用保持：分多次喂入与一次喂入输出一致。
+        let ir: Vec<f32> = (0..300).map(|i| ((i as f32) * 0.7).sin() * 0.1).collect();
+        let input: Vec<f32> = (0..500).map(|i| ((i as f32) * 0.13).cos() * 0.4).collect();
+
+        let run = |chunks: &[usize]| -> Vec<f32> {
+            let mut pf = PartitionedFir::new(&ir, 1);
+            let mut out = Vec::with_capacity(input.len());
+            let mut pos = 0;
+            for &len in chunks {
+                for _ in 0..len {
+                    let x = if pos < input.len() { input[pos] } else { 0.0 };
+                    out.push(pf.process_channel(0, x));
+                    pos += 1;
+                }
+            }
+            out
+        };
+
+        let one = run(&[500]);
+        // 模拟 APO 变帧数：128/64/200/108 混合（共 500）。
+        let chunks = vec![128usize, 64, 200, 108];
+        let many = run(&chunks);
+        assert_eq!(one.len(), many.len());
+        for i in 0..one.len() {
+            assert!(
+                (one[i] - many[i]).abs() < 1e-6,
+                "i={i}: one {} vs many {}",
+                one[i],
+                many[i]
+            );
+        }
     }
 }

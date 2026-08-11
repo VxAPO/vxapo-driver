@@ -150,7 +150,7 @@ mod tests {
             EffectType::Loudness,
             EffectParams::Loudness(LoudnessParams { phon: 80.0, reference_phon: 90.0 }),
         );
-        let mut ctx = test_ctx();
+        let ctx = test_ctx();
         ctx.loudness_enabled.set(false);
         let mut f = create_from_model(&cfg, &ctx);
         let mut samples = vec![vec![0.5f32; 64], vec![0.5f32; 64]];

@@ -151,6 +151,9 @@ impl HybridPeqFilter {
     }
 
     /// 计算 FIR 长度：`next_pow2(round(sr × 0.0213))`，夹在 [1024, 8192]。
+    ///
+    /// 低频（<200 Hz）由 IIR 承担，IIR 段在邻近频点的叠加是**设计预期**
+    /// （调音时避让），FIR 不做低频精确补偿；高频段 1024+ 点分辨率足够。
     fn fir_len_for(sr: u32) -> usize {
         let n = ((sr as f32 * 0.0213).round() as usize).max(1);
         n.next_power_of_two().clamp(FIR_MIN_LEN, FIR_MAX_LEN)
@@ -233,7 +236,6 @@ impl Filter for HybridPeqFilter {
                 for (i, bq) in iir.iter().enumerate() {
                     x = bq.process(&mut ch.iir[i], x);
                 }
-                let is_last = f == frames - 1;
                 let out = match &mut self.fir {
                     PeqFir::Direct { ir_rev, fir_len, delay_len, mask, delay, pos } => {
                         let fir_len = *fir_len;
@@ -256,7 +258,7 @@ impl Filter for HybridPeqFilter {
                                 )
                         }
                     }
-                    PeqFir::Partitioned(pf) => pf.process_channel(k, x, is_last),
+                    PeqFir::Partitioned(pf) => pf.process_channel(k, x),
                 };
                 samples[slot][f] = if out.is_finite() { out } else { 0.0 };
             }
@@ -405,9 +407,11 @@ mod tests {
         filter.process(&mut samples, frames);
         // 稳态段 RMS（跳过预热）。
         let start = frames / 2;
-        let n = frames - start;
-        let sum: f32 = samples[0][start..].iter().map(|x| x * x).sum();
-        (sum / n as f32).sqrt()
+        // 低频（如 20 Hz @96k）周期很长：取整周期窗口，避免 RMS 测量误差。
+        let period = (sr as f32 / freq).round() as usize;
+        let span = ((frames - start) / period.max(1)) * period.max(1);
+        let sum: f32 = samples[0][start..start + span].iter().map(|x| x * x).sum();
+        (sum / span.max(1) as f32).sqrt()
     }
 
     fn target_db(bands: &[PeqBand], freq: f32, sr: u32) -> f32 {
@@ -443,8 +447,11 @@ mod tests {
                 bands: bands.clone(),
             });
             f.initialize(sr, &["L".into(), "R".into()]);
-            for freq in [60.0f32, 100.0, 200.0, 500.0, 1000.0, 4000.0, 8000.0, 16000.0] {
-                let frames = 8192usize;
+            for freq in [
+                20.0f32, 31.5, 50.0, 60.0, 100.0, 125.0, 200.0, 500.0, 1000.0, 4000.0, 8000.0,
+                16000.0,
+            ] {
+                let frames = 12000usize;
                 let out_rms = sr_amp(&mut f, freq, 0.25, sr, frames);
                 let in_rms = 0.25 / std::f32::consts::SQRT_2;
                 let measured = 20.0 * (out_rms / in_rms).log10();

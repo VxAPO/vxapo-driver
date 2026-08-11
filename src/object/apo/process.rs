@@ -34,7 +34,7 @@ use crate::sys::com::prelude::{E_FAIL, HRESULT};
 /// 临时缓冲按此预留余量，避免引擎按 `CalcInputFrames` 多给帧数时越界
 /// （2026-08-10 实证：引擎实际会多给到 2×latency+1，2048 为安全余量）。
 /// 缓冲余量：覆盖 PEQ 直接 FIR（≤2048 抽头 → 延迟 2047）+ Wide（1023）
-/// 等最坏链延迟组合（v9.11 激活延迟补偿后按 `total_latency` 预分配）。
+/// 等最坏链延迟组合（引擎按 `CalcInputFrames` 可能多给帧的安全余量）。
 const MAX_APO_LATENCY_SAMPLES: usize = 8192;
 
 /// `Reset`：正常重置——重置滤波器状态与过渡，保留配置链（v9.6）。
@@ -310,7 +310,6 @@ pub(crate) fn lock_for_process(
     }
     // DSP 依赖 initialize 预计算系数/状态（GraphicEQ/PEQ/IIR/Delay/Convolution）。
     chain.initialize(format.sample_rate, &channel_names);
-    let total_latency = chain.total_latency();
 
     // Step 5: 预分配过渡缓冲区（v7.8 修订，杜绝 RT 线程过渡首次 resize 扩容——
     //          EAPO 对齐：按 max_frame_count × max_ch 预分配充足容量）。
@@ -354,9 +353,10 @@ pub(crate) fn lock_for_process(
         inner.startup_fade_total = 0;
         inner.startup_fade_remaining = 0;
     }
-    // v9.11：激活引擎帧数补偿（CalcInputFrames/CalcOutputFrames 已支持）。
-    apo.latency_samples.store(total_latency, Ordering::SeqCst);
-    apo.latency_frames_atomic.store(total_latency, Ordering::SeqCst);
+    // 延迟不上报引擎：向引擎上报/补偿会导致帧协商错位、播放卡住
+    // （2026-08-10 实证；v9.11 尝试激活后热重载/切歌均卡住，已回退）。
+    apo.latency_samples.store(0, Ordering::SeqCst);
+    apo.latency_frames_atomic.store(0, Ordering::SeqCst);
 
     // Step 6b（P0-6，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父，Note 57）。
     // 对齐 EAPO 341-347：childCfg->LockForProcess 结果仅 Trace 不 return。
