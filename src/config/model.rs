@@ -139,6 +139,22 @@ impl FileModel {
         for (idx, fe) in self.effects.iter().enumerate() {
             effects.push(fe.into_effect_config(file, idx)?);
         }
+        // v9.16：全局 peq band 合计 ≤ 31（UI 卡片模型：预设块 + 无组裸 band 共享预算）。
+        let total_peq_bands = effects
+            .iter()
+            .filter_map(|e| match &e.params {
+                EffectParams::Peq(p) => Some(p.bands.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        if total_peq_bands > MAX_PEQ_BANDS {
+            return Err(model_err(
+                file,
+                format!(
+                    "total 'peq' bands count {total_peq_bands} exceeds max {MAX_PEQ_BANDS}"
+                ),
+            ));
+        }
         Ok(ChainModel { effects })
     }
 }
@@ -644,11 +660,63 @@ type = "wide"
     #[test]
     fn band_count_out_of_range_rejected() {
         let mut s = String::from("[[effects]]\ntype = \"peq\"\n");
-        for fc in [100.0, 200.0, 400.0, 800.0, 1600.0] {
+        for fc in (0..32).map(|i| 100.0 + i as f32 * 100.0) {
             s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
         }
         let err = convert(&s).unwrap_err();
-        assert!(err.to_string().contains("out of range [6, 31]"));
+        assert!(err.to_string().contains("out of range [1, 31]"));
+    }
+
+    #[test]
+    fn single_band_peq_accepted() {
+        // v9.16：单块下限 1——允许 1 段卡 / 无组裸 band（UI 设计规范 01）。
+        let toml = r#"
+[[effects]]
+type = "peq"
+group = "FPS 预设"
+name = "枪声增强"
+[[effects.bands]]
+fc = 3200
+gain_db = 3.0
+q = 2.0
+"#;
+        let model = convert(toml).unwrap();
+        match &model.effects[0].params {
+            EffectParams::Peq(p) => assert_eq!(p.bands.len(), 1),
+            _ => panic!("expected peq"),
+        }
+    }
+
+    #[test]
+    fn total_peq_band_cap_enforced() {
+        // v9.16：跨块全局合计 ≤ 31（预设块 + 无组裸 band 共享预算）。
+        let mut s = String::new();
+        for _ in 0..2 {
+            s.push_str("[[effects]]\ntype = \"peq\"\n");
+            for fc in (0..16).map(|i| 100.0 + i as f32 * 100.0) {
+                s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+            }
+        }
+        let err = convert(&s).unwrap_err();
+        assert!(err.to_string().contains("total 'peq' bands count 32 exceeds max 31"));
+    }
+
+    #[test]
+    fn total_peq_band_cap_allows_31() {
+        let mut s = String::new();
+        let mut count = 0usize;
+        for block_bands in [15usize, 16] {
+            s.push_str("[[effects]]\ntype = \"peq\"\n");
+            for _ in 0..block_bands {
+                count += 1;
+                s.push_str(&format!(
+                    "[[effects.bands]]\nfc = {}\ngain_db = 0.0\nq = 1.0\n",
+                    100.0 + count as f32 * 100.0
+                ));
+            }
+        }
+        assert_eq!(count, 31);
+        assert!(convert(&s).is_ok());
     }
 
     #[test]

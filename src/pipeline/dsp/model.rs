@@ -11,9 +11,9 @@ use crate::pipeline::dsp::wide::WideParams;
 
 /// 分频点（Hz）：`Fc < CROSSOVER_HZ` 归 IIR，`Fc >= CROSSOVER_HZ` 归 FIR。
 pub const CROSSOVER_HZ: f32 = 200.0;
-/// PEQ 最小段数。
-pub const MIN_PEQ_BANDS: usize = 6;
-/// PEQ 最大段数（沿用 GraphicEQ 上限）。
+/// PEQ 单块最小段数（v9.16：UI 卡片模型允许 1 段卡 / 无组裸 band，见 UI 设计规范 01）。
+pub const MIN_PEQ_BANDS: usize = 1;
+/// PEQ 单块最大段数（沿用 GraphicEQ 上限；跨块全局合计 ≤ MAX，config 层校验）。
 pub const MAX_PEQ_BANDS: usize = 31;
 
 /// 完整 DSP 链模型（有序效果器列表）。
