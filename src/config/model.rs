@@ -24,6 +24,9 @@ use crate::pipeline::dsp::wide::WideParams;
 pub struct FileModel {
     #[serde(default = "default_version")]
     pub version: u32,
+    /// 总开关（v9.18）：`false` = 整链 passthrough，但文件内容保留、不参与校验。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default)]
     pub meta: Option<Meta>,
     #[serde(default)]
@@ -135,6 +138,9 @@ pub struct FilePeqBand {
 impl FileModel {
     /// FileModel → ChainModel（丢弃 APP 元数据 + 校验）。
     pub fn into_chain_model(&self, file: &str) -> Result<ChainModel, ConfigError> {
+        if !self.enabled {
+            return Ok(ChainModel { effects: Vec::new() });
+        }
         let mut effects = Vec::with_capacity(self.effects.len());
         for (idx, fe) in self.effects.iter().enumerate() {
             effects.push(fe.into_effect_config(file, idx)?);

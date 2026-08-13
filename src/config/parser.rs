@@ -243,6 +243,17 @@ intensity = 0.5
     }
 
     #[test]
+    fn disabled_file_is_passthrough_chain() {
+        let toml = "version = 1\nenabled = false\n[[effects]]\ntype = \"wide\"\nintensity = 0.5\n";
+        let parser = ConfigParser::new();
+        let (filters, specs) = parser
+            .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
+            .unwrap();
+        assert!(filters.is_empty(), "总开关关闭后链为空（passthrough）");
+        assert!(specs.is_empty());
+    }
+
+    #[test]
     fn unknown_channel_rejected() {
         let toml = "[[effects]]\ntype = \"wide\"\nchannels = [\"XX\"]\nintensity = 0.5\n";
         let parser = ConfigParser::new();
