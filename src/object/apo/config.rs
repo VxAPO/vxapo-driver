@@ -169,7 +169,8 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     let cfg = apo.config_path.clone();
     let inner = apo.mutex.clone();
     let clsid = apo.clsid;
-    let obj_ptr = apo as *const _ as usize;
+    // 仅诊断日志用（不 deref）：用 mutex Arc 的稳定堆地址，避免 &ApoObject 生命周期耦合。
+    let obj_ptr = Arc::as_ptr(&apo.mutex) as usize;
     let handle = std::thread::spawn(move || loop {
         if !watcher.wait_and_handle() {
             break; // shutdown 或句柄失效。

@@ -82,8 +82,8 @@ impl ApoObject {
             &self.config_path,
             &self.mutex,
             self.clsid,
-            // 仅诊断日志用（不 deref），保持整数约定防止与对象生命周期耦合。
-            self as *const _ as usize,
+            // 仅诊断日志用（不 deref）：用 mutex Arc 的稳定堆地址，避免 &ApoObject 生命周期耦合。
+            Arc::as_ptr(&self.mutex) as usize,
         );
     }
 }
