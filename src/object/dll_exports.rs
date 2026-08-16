@@ -124,6 +124,11 @@ pub unsafe extern "system" fn DllGetClassObject(
     // 预置 null，调用方可以据此判断失败（Note 2）
     unsafe { *ppv = std::ptr::null_mut(); }
 
+    // 惰性安装 telemetry（首次 DllGetClassObject，Loader Lock 之外）。
+    // v9.19/P2：此前 log 宏与 panic hook 全项目未接线，实际为 no-op。
+    let logger = crate::telemetry::logger::Logger::install();
+    crate::telemetry::panic::install_panic_hook(logger);
+
     // SAFETY: 由调用方（COM 运行时）保证 rclsid 有效。
     let clsid = unsafe { *rclsid };
 

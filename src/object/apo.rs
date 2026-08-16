@@ -113,7 +113,11 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn Initialize(&self, cb_data_size: u32, pby_data: *const u8) -> Result<()> {
-        init::initialize(self, cb_data_size, pby_data)
+        // R4（P2）：Initialize 内部含 mutex 锁与自愈 I/O，同样必须 catch_unwind。
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            init::initialize(self, cb_data_size, pby_data)
+        }))
+        .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
     }
 
     fn IsInputFormatSupported(

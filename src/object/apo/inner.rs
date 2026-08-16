@@ -145,7 +145,7 @@ mod tests {
 }
 
 /// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
-pub(crate) fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> DspContext {
+pub(crate) fn build_dsp_context(ctx: &PipelineContext) -> DspContext {
     let channel_names = get_channel_names(ctx.channel_mask);
     DspContext {
         sample_rate: ctx.sample_rate,
@@ -153,7 +153,7 @@ pub(crate) fn build_dsp_context(ctx: &PipelineContext, bits_per_sample: u32) -> 
         channel_mask: ctx.channel_mask,
         channel_names,
         max_frame_count: ctx.max_frame_count as u32,
-        bits_per_sample,
+        bits_per_sample: ctx.bits_per_sample,
         device_type: DeviceType::Render,
         stage: ProcessingStage::None,
         variables: std::collections::HashMap::new(),

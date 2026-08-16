@@ -158,7 +158,7 @@ pub fn query_device_info(endpoint_key: &RegKey) -> Result<Option<DeviceInfo>> {
 
 /// 设备枚举（遍历 MMDevices\\Audio\\Render 和 Capture 下所有端点）。
 ///
-/// 设备枚举唯一入口，供 `install/selector/select.rs` 和 `install/selector/operation.rs` 使用。
+/// 设备枚举唯一入口，供 CLI 与 `install/selector/operation.rs` 使用。
 /// 经 `sys::registry::RegKey::enum_sub_keys` 遍历子键，逐个 `query_device_info`。
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     let mut result = Vec::new();

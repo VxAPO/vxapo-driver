@@ -7,7 +7,11 @@
 //!
 //! 导出给：`object/dll_exports.rs`。
 
+use std::sync::Once;
+
 use crate::telemetry::logger::{LogLevel, Logger};
+
+static INSTALL: Once = Once::new();
 
 /// 安装全局 panic hook。
 ///
@@ -18,17 +22,20 @@ use crate::telemetry::logger::{LogLevel, Logger};
 /// 2. 写入 logger（RtViolation 级别）
 /// 3. `abort()`
 pub fn install_panic_hook(logger: &'static Logger) {
-    std::panic::set_hook(Box::new(move |info| {
-        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            format!("panic: {}", s)
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            format!("panic: {}", s)
-        } else {
-            format!("panic: {}", info)
-        };
-        logger.log(LogLevel::RtViolation, &msg);
-        std::process::abort();
-    }));
+    // 幂等：DllGetClassObject 可能为 PreMix/PostMix 各调一次，只安装首个 hook。
+    INSTALL.call_once(|| {
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                format!("panic: {}", s)
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                format!("panic: {}", s)
+            } else {
+                format!("panic: {}", info)
+            };
+            logger.log(LogLevel::RtViolation, &msg);
+            std::process::abort();
+        }));
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

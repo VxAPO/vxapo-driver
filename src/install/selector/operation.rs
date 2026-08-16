@@ -23,6 +23,7 @@ use crate::sys::com::prelude::{
     guid_to_string,
 };
 use crate::sys::registry::{RegKey, RegValue};
+use crate::utils::guid::parse_guid_string;
 use crate::utils::vx_error::{Result, VxApoError};
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -539,6 +540,10 @@ fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()> {
 /// `pub(crate)`：运行期自愈（object/apo/init.rs `Initialize`）需要按端点 GUID
 /// 定位路径以接管 MSFX 模板（v9.4）。
 pub(crate) fn find_endpoint_path(device_guid: &str) -> Result<String> {
+    // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径（审查 #9）。
+    if parse_guid_string(device_guid).is_none() {
+        return Err(VxApoError::internal(&format!("无效的端点 GUID：{device_guid}")));
+    }
     let render = format!("{}\\{}", RENDER_PATH, device_guid);
     if RegKey::open(HKEY_LOCAL_MACHINE, &render).is_ok() {
         return Ok(render);

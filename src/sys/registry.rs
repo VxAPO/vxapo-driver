@@ -154,7 +154,10 @@ impl RegKey {
                 if buf.len() >= 4 {
                     RegValue::Dword(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
                 } else {
-                    RegValue::Dword(0)
+                    // 数据损坏不可静默（审查 #6）：截断为 0 会掩盖注册表问题。
+                    return Err(windows::core::Error::from_hresult(
+                        windows::core::HRESULT(0x8007_000Du32 as i32),
+                    ));
                 }
             }
             t if t == REG_QWORD => {
@@ -163,7 +166,9 @@ impl RegKey {
                         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
                     ]))
                 } else {
-                    RegValue::Qword(0)
+                    return Err(windows::core::Error::from_hresult(
+                        windows::core::HRESULT(0x8007_000Du32 as i32),
+                    ));
                 }
             }
             t if t == REG_BINARY => RegValue::Binary(buf),
@@ -219,10 +224,21 @@ impl RegKey {
     }
 
     /// 检查值是否存在。
+    ///
+    /// - `Ok(true)`：值存在；
+    /// - `Ok(false)`：值不存在（ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND）；
+    /// - `Err`：访问失败等其它错误（审查 #6：不得把 ERROR_ACCESS_DENIED 当不存在）。
     pub fn value_exists(&self, name: &str) -> Result<bool> {
         let name = HSTRING::from(name);
         let err = unsafe { RegQueryValueExW(self.handle, &name, None, None, None, None) };
-        Ok(err.0 == 0)
+        if err.0 == 0 {
+            Ok(true)
+        } else if is_not_found(err) {
+            Ok(false)
+        } else {
+            win32_ok(err)?;
+            unreachable!()
+        }
     }
 
     /// 检查当前键下指定子键是否存在。
@@ -239,30 +255,40 @@ impl RegKey {
         let mut names = Vec::new();
         let mut index = 0u32;
         loop {
-            let mut buf = [0u16; 512];
-            let mut len = buf.len() as u32;
-            let err = unsafe {
-                RegEnumKeyExW(
-                    self.handle,
-                    index,
-                    Some(PWSTR(buf.as_mut_ptr())),
-                    &mut len,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            };
-            if err.0 == 0 {
-                names.push(String::from_utf16_lossy(&buf[..len as usize]));
-                index += 1;
-            } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
-                break;
-            } else {
-                win32_ok(err)?;
+            let mut buf = vec![0u16; 512];
+            loop {
+                let mut len = buf.len() as u32;
+                let err = unsafe {
+                    RegEnumKeyExW(
+                        self.handle,
+                        index,
+                        Some(PWSTR(buf.as_mut_ptr())),
+                        &mut len,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                };
+                if err.0 == 0 {
+                    names.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    index += 1;
+                    break;
+                } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
+                    return Ok(names);
+                } else if err.0 == 234 /* ERROR_MORE_DATA */ {
+                    // 超长名扩容重试（上限 32767，审查 #6）。
+                    let new_len = (buf.len() * 2).max(len as usize).min(32767);
+                    if new_len <= buf.len() {
+                        win32_ok(err)?;
+                    }
+                    buf.resize(new_len, 0);
+                    continue;
+                } else {
+                    win32_ok(err)?;
+                }
             }
         }
-        Ok(names)
     }
 
     /// 枚举所有值名称（含默认值 `""`）。
@@ -272,30 +298,39 @@ impl RegKey {
         let mut names = Vec::new();
         let mut index = 0u32;
         loop {
-            let mut buf = [0u16; 512];
-            let mut len = buf.len() as u32;
-            let err = unsafe {
-                RegEnumValueW(
-                    self.handle,
-                    index,
-                    Some(PWSTR(buf.as_mut_ptr())),
-                    &mut len,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            };
-            if err.0 == 0 {
-                names.push(String::from_utf16_lossy(&buf[..len as usize]));
-                index += 1;
-            } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
-                break;
-            } else {
-                win32_ok(err)?;
+            let mut buf = vec![0u16; 512];
+            loop {
+                let mut len = buf.len() as u32;
+                let err = unsafe {
+                    RegEnumValueW(
+                        self.handle,
+                        index,
+                        Some(PWSTR(buf.as_mut_ptr())),
+                        &mut len,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                };
+                if err.0 == 0 {
+                    names.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    index += 1;
+                    break;
+                } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
+                    return Ok(names);
+                } else if err.0 == 234 /* ERROR_MORE_DATA */ {
+                    let new_len = (buf.len() * 2).max(len as usize).min(32767);
+                    if new_len <= buf.len() {
+                        win32_ok(err)?;
+                    }
+                    buf.resize(new_len, 0);
+                    continue;
+                } else {
+                    win32_ok(err)?;
+                }
             }
         }
-        Ok(names)
     }
 
     /// 读取 GUID，支持 REG_BINARY（16 字节 LE）和 REG_SZ。

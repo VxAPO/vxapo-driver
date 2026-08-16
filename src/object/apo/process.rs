@@ -206,6 +206,7 @@ pub(crate) fn lock_for_process(
         output_channels: output_format.channels,
         channel_mask,
         max_frame_count: input_descriptor.u32MaxFrameCount as usize,
+        bits_per_sample: format.bits_per_sample,
     };
 
     let channel_names = get_channel_names(channel_mask);
@@ -492,6 +493,21 @@ fn record_rt_call(
 /// 脏静音缓冲判定阈值（v9.15）：输入峰值超过该值视为内容非零。
 const SILENT_DIRTY_THRESHOLD: f32 = 1.0e-3;
 
+// RT 诊断时间戳（v9.19）：debug 构建取 Unix 秒；release 固定 0，
+// 避免 RT 路径每帧 `SystemTime::now()` 系统调用（审查 #5 / R5 边界）。
+#[cfg(debug_assertions)]
+fn rt_diag_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(not(debug_assertions))]
+fn rt_diag_secs() -> u64 {
+    0
+}
+
 /// RT 路径统一交错切片构造（R3/v9.17）。
 ///
 /// 帧数先 clamp 到 `max_frames`，再做 `saturating_mul`，杜绝“切片先于校验构造”
@@ -610,10 +626,7 @@ impl ApoObject {
                 }
                 op.u32ValidFrameCount = frames as u32;
                 op.u32BufferFlags = BUFFER_SILENT;
-                let secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let secs = rt_diag_secs();
                 record_rt_call(
                     inner_ref,
                     secs,
@@ -657,10 +670,7 @@ impl ApoObject {
                 output_prop.u32BufferFlags = BUFFER_VALID;
                 // v9.15 诊断：过渡旁通帧也记录输入/输出峰值。
                 {
-                    let secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                    let secs = rt_diag_secs();
                     let in_peak = src.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                     let out_peak = dst.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                     record_rt_call(
@@ -770,10 +780,7 @@ impl ApoObject {
             output_prop.u32BufferFlags = BUFFER_VALID;
             // v9.15 诊断：过渡混合帧也记录输入/输出峰值。
             {
-                let secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let secs = rt_diag_secs();
                 let in_peak = input_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                 let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
                 record_rt_call(
@@ -889,10 +896,7 @@ impl ApoObject {
         }
         // v9.6/v9.15 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前
         // 引擎是否送了最后一段真实音频（嗡声幅度随播放音量变化）。
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let secs = rt_diag_secs();
         let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
         record_rt_call(
             inner_ref,

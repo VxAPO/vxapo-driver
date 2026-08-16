@@ -1,6 +1,11 @@
 ﻿//! telemetry/logger.rs — 无锁环形日志，实时路径零堆分配（v6.3 规范 9.1）
 
+use std::sync::OnceLock;
+
 use crate::pipeline::realtime::ring::RingBuffer;
+
+/// 进程级日志器（DllGetClassObject 首次调用时惰性初始化）。
+pub static LOGGER: OnceLock<Logger> = OnceLock::new();
 
 /// 日志级别。
 #[repr(u8)]
@@ -45,6 +50,17 @@ impl Logger {
         }
     }
 
+    /// 惰性初始化进程级日志器并安装到 `log` crate。
+    ///
+    /// 首次调用发生在 `DllGetClassObject`（Loader Lock 之外），不在 DllMain。
+    /// 重复调用安全：`set_logger` 失败仅忽略（已安装时）。
+    pub fn install() -> &'static Logger {
+        let logger = LOGGER.get_or_init(|| Logger::new(4096));
+        let _ = log::set_logger(logger);
+        log::set_max_level(log::LevelFilter::Debug);
+        logger
+    }
+
     /// 实时安全：无堆分配，无阻塞。消息超过 255 字节截断。
     pub fn log(&self, level: LogLevel, msg: &str) {
         let bytes = msg.as_bytes();
@@ -69,6 +85,26 @@ impl Logger {
             f(entry.level, msg);
         }
     }
+}
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        // 安装时全局 max level 已设为 Debug；这里对标准级别放行。
+        metadata.level() <= log::Level::Debug
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let level = match record.level() {
+            log::Level::Error => LogLevel::Error,
+            log::Level::Warn => LogLevel::Warning,
+            log::Level::Info => LogLevel::Info,
+            log::Level::Debug | log::Level::Trace => LogLevel::Debug,
+        };
+        // `log` 宏不进入 RT 热路径（RT 诊断走 record_rt_call 定长环形），此处允许分配。
+        self.log(level, &format!("{}: {}", record.target(), record.args()));
+    }
+
+    fn flush(&self) {}
 }
 
 #[cfg(test)]

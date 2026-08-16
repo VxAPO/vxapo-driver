@@ -214,9 +214,9 @@ impl PartitionedFir {
         }
     }
 
-    /// 算法延迟（块大小，采样）。
+    /// 算法延迟（采样）：分块 overlap-add 实际为 `block_len - 1`。
     pub(crate) fn latency(&self) -> u32 {
-        self.block_len as u32
+        (self.block_len - 1) as u32
     }
 }
 

@@ -874,7 +874,7 @@ mod tests {
             ],
         });
         f2.initialize(192_000, &["L".into()]);
-        // 192k → 4096 抽头 > 2048 阈值 → 分块 FFT，延迟 = 块大小 128。
-        assert_eq!(f2.latency(), 128);
+        // 192k → 4096 抽头 > 2048 阈值 → 分块 FFT，延迟 = 块大小 128 - 1。
+        assert_eq!(f2.latency(), 127);
     }
 }

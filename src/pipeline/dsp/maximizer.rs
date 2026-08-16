@@ -83,7 +83,7 @@ impl DitherRng {
 }
 
 /// 限幅事件：某个超限峰值样本到达输出位置时应达成的包络状态。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct LimiterEvent {
     /// 距触发还剩多少帧（0 = 本帧输出该峰值）。
     remaining: usize,
@@ -91,6 +91,84 @@ struct LimiterEvent {
     gain: f32,
     /// 触发后每帧的增益变化（到下一事件，或 release 回弹）。
     slope: f32,
+}
+
+/// 定长限幅事件队列（RT 零分配结构保证，v9.19）。
+///
+/// 事件上限固定 128，存储为 Box<[LimiterEvent]>；`push_back` 仅在 `len < capacity`
+/// 时写入并递增，**不包含任何堆分配路径**（与 VecDeque 不同，容量不会增长）。
+#[derive(Debug)]
+struct EventQueue {
+    buf: Box<[LimiterEvent]>,
+    head: usize,
+    len: usize,
+}
+
+impl EventQueue {
+    const MAX_EVENTS: usize = 128;
+
+    fn new() -> Self {
+        Self {
+            buf: vec![LimiterEvent::default(); Self::MAX_EVENTS].into_boxed_slice(),
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+
+    fn front(&self) -> Option<&LimiterEvent> {
+        if self.len == 0 {
+            None
+        } else {
+            Some(&self.buf[self.head])
+        }
+    }
+
+    fn push_back(&mut self, ev: LimiterEvent) {
+        assert!(self.len < self.capacity(), "limiter event queue overflow");
+        let idx = (self.head + self.len) % self.capacity();
+        self.buf[idx] = ev;
+        self.len += 1;
+    }
+
+    fn pop_front(&mut self) -> Option<LimiterEvent> {
+        if self.len == 0 {
+            None
+        } else {
+            let ev = self.buf[self.head];
+            self.head = (self.head + 1) % self.capacity();
+            self.len -= 1;
+            Some(ev)
+        }
+    }
+
+    fn get(&self, idx: usize) -> &LimiterEvent {
+        assert!(idx < self.len, "limiter event index out of range");
+        &self.buf[(self.head + idx) % self.capacity()]
+    }
+
+    fn get_mut(&mut self, idx: usize) -> &mut LimiterEvent {
+        assert!(idx < self.len, "limiter event index out of range");
+        let cap = self.capacity();
+        let head = self.head;
+        &mut self.buf[(head + idx) % cap]
+    }
 }
 
 #[derive(Debug)]
@@ -105,7 +183,7 @@ pub struct MaximizerFilter {
     w: usize,
     att: f32,
     delta: f32,
-    events: std::collections::VecDeque<LimiterEvent>,
+    events: EventQueue,
     rng: DitherRng,
     shaped_prev: Vec<f32>,
     channel_indices: Vec<usize>,
@@ -125,7 +203,7 @@ impl MaximizerFilter {
             w: 0,
             att: 1.0,
             delta: 0.0,
-            events: std::collections::VecDeque::new(),
+            events: EventQueue::new(),
             rng: DitherRng::new(),
             shaped_prev: Vec::new(),
             channel_indices: Vec::new(),
@@ -167,14 +245,14 @@ impl MaximizerFilter {
         }
 
         for i in 0..self.events.len() {
-            let ev = self.events[i];
+            let ev = *self.events.get(i);
             let dist = remaining.saturating_sub(ev.remaining);
             if dist == 0 {
                 continue;
             }
             let pdelta = (gain - ev.gain) / dist as f32;
             if pdelta < ev.slope {
-                self.events[i].slope = pdelta;
+                self.events.get_mut(i).slope = pdelta;
                 if self.events.len() >= self.events.capacity() {
                     // 容量兜底：改走保守替换，保证新峰值仍被覆盖。
                     self.delta = self.delta.min(d_now);
@@ -223,7 +301,6 @@ impl Filter for MaximizerFilter {
         self.level = 0.0;
         self.lookahead = ((sr * self.params.lookahead_ms * 0.001).round() as usize).max(1);
 
-        let capacity = self.lookahead.min(128).max(1);
         self.delay_lines = self
             .channel_indices
             .iter()
@@ -233,7 +310,7 @@ impl Filter for MaximizerFilter {
         self.w = 0;
         self.att = 1.0;
         self.delta = 0.0;
-        self.events = std::collections::VecDeque::with_capacity(capacity);
+        self.events.clear();
         self.rng = DitherRng::new();
         None
     }
@@ -337,8 +414,8 @@ impl Filter for MaximizerFilter {
                     _ => break,
                 }
             }
-            for ev in self.events.iter_mut() {
-                ev.remaining -= 1;
+            for i in 0..self.events.len() {
+                self.events.get_mut(i).remaining -= 1;
             }
             self.w = (self.w + 1) % lookahead;
         }

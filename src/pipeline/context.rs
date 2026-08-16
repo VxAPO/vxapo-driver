@@ -10,6 +10,8 @@ pub struct PipelineContext {
     pub output_channels: u32,
     pub channel_mask: u32,
     pub max_frame_count: usize,
+    /// 锁定时的实际位深（16/24/32），热重载必须与 LockForProcess 同口径。
+    pub bits_per_sample: u32,
 }
 
 impl PipelineContext {
@@ -21,6 +23,7 @@ impl PipelineContext {
             output_channels: 0,
             channel_mask: 0,
             max_frame_count: 0,
+            bits_per_sample: 0,
         }
     }
 

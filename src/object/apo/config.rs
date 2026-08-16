@@ -196,22 +196,26 @@ pub(crate) fn stop_watcher(apo: &ApoObject_Impl) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::SetEvent;
 
-    let mut st = apo.watcher_state.lock().unwrap_or_else(|e| e.into_inner());
+    // 先取出事件与线程句柄，避免持 watcher_state 锁执行 join（审查 #8）。
+    let (evt, handle) = {
+        let mut st = apo.watcher_state.lock().unwrap_or_else(|e| e.into_inner());
+        (st.shutdown_event.take(), st.thread.take())
+    };
 
     // 1. 置位退出事件（唤醒等待中的 wait_and_handle）。
-    if let Some(evt) = st.shutdown_event {
+    if let Some(evt) = evt {
         // Safety: 事件句柄由 start_watcher 创建且有效。
         let _ = unsafe { SetEvent(evt) };
     }
 
     // 2. join 线程（确保已退出）。watcher 在线程内（move 消费），线程退出时
     //    watcher Drop 已关闭 notify_handle（FindCloseChangeNotification）。
-    if let Some(handle) = st.thread.take() {
+    if let Some(handle) = handle {
         let _ = handle.join();
     }
 
     // 3. 释放事件句柄。
-    if let Some(evt) = st.shutdown_event.take() {
+    if let Some(evt) = evt {
         // Safety: 事件句柄由 start_watcher 创建且有效（此处唯一持有者，关闭后不再使用）。
         let _ = unsafe { CloseHandle(evt) };
     }
@@ -276,7 +280,7 @@ pub(crate) fn hot_reload_impl(
             .pipeline_context
             .clone()
     };
-    let dsp_ctx = build_dsp_context(&current_ctx, 32);
+    let dsp_ctx = build_dsp_context(&current_ctx);
     let parser = ConfigParser::new();
     let (filters, new_spec) = match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
         Ok(r) => r,
