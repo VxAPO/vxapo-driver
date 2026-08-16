@@ -84,7 +84,13 @@ impl EffectConfig {
             EffectParams::Peq(p) => {
                 s.push_str(&format!("crossover={:.6}", p.crossover_hz));
                 for b in &p.bands {
-                    s.push_str(&format!(";{:.6},{:.6},{:.6}", b.fc, b.gain_db, b.q));
+                    s.push_str(&format!(
+                        ";{}:{:.6},{:.6},{:.6}",
+                        b.kind.as_str(),
+                        b.fc,
+                        b.gain_db,
+                        b.q
+                    ));
                 }
             }
             EffectParams::Preamp(p) => s.push_str(&format!("gain={:.6}", p.gain_db)),
@@ -140,12 +146,48 @@ pub struct PeqParams {
     pub bands: Vec<PeqBand>,
 }
 
-/// 单段 peaking。
+/// PEQ 段滤波器类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeqBandType {
+    #[default]
+    Peaking,
+    LowShelf,
+    HighShelf,
+    LowPass,
+    HighPass,
+}
+
+impl PeqBandType {
+    /// TOML 字符串 → 类型（缺省/未知回 `Peaking` 由 config 层决定是否报错）。
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "peaking" | "peak" | "peq" => Some(Self::Peaking),
+            "low_shelf" | "lowshelf" | "low-shelf" => Some(Self::LowShelf),
+            "high_shelf" | "highshelf" | "high-shelf" => Some(Self::HighShelf),
+            "low_pass" | "lowpass" | "low-pass" => Some(Self::LowPass),
+            "high_pass" | "highpass" | "high-pass" => Some(Self::HighPass),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Peaking => "peaking",
+            Self::LowShelf => "low_shelf",
+            Self::HighShelf => "high_shelf",
+            Self::LowPass => "low_pass",
+            Self::HighPass => "high_pass",
+        }
+    }
+}
+
+/// 单段滤波器（默认 peaking）。
 #[derive(Debug, Clone, Copy)]
 pub struct PeqBand {
     pub fc: f32,
     pub gain_db: f32,
     pub q: f32,
+    pub kind: PeqBandType,
 }
 
 /// 全局增益。

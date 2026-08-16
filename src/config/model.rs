@@ -13,8 +13,8 @@ use crate::config::error::ConfigError;
 use crate::pipeline::dsp::aural::AuralParams;
 use crate::pipeline::dsp::maximizer::{DitherType, MaximizerParams};
 use crate::pipeline::dsp::model::{
-    ChainModel, EffectConfig, EffectParams, EffectType, LoudnessParams, PeqBand, PeqParams,
-    PreampParams, MAX_PEQ_BANDS, MIN_PEQ_BANDS,
+    ChainModel, EffectConfig, EffectParams, EffectType, LoudnessParams, PeqBand, PeqBandType,
+    PeqParams, PreampParams, MAX_PEQ_BANDS, MIN_PEQ_BANDS,
 };
 use crate::pipeline::dsp::reverb::ReverbParams;
 use crate::pipeline::dsp::wide::WideParams;
@@ -133,6 +133,9 @@ pub struct FilePeqBand {
     pub fc: f32,
     pub gain_db: f32,
     pub q: f32,
+    /// 段类型：`peaking`（默认）/ `low_shelf` / `high_shelf` / `low_pass` / `high_pass`。
+    #[serde(rename = "type", default)]
+    pub band_type: Option<String>,
 }
 
 impl FileModel {
@@ -352,7 +355,16 @@ impl FileEffect {
             let gain_db =
                 finite_range(b.gain_db, -30.0, 30.0, file, idx, &format!("{what}.gain_db"))?;
             let q = finite_range(b.q, 0.1, 12.0, file, idx, &format!("{what}.q"))?;
-            out.push(PeqBand { fc, gain_db, q });
+            let kind = match &b.band_type {
+                Some(t) => PeqBandType::from_str(t).ok_or_else(|| {
+                    model_err(
+                        file,
+                        format!("effects[{idx}]: bands[{bi}].type '{t}' is invalid"),
+                    )
+                })?,
+                None => PeqBandType::Peaking,
+            };
+            out.push(PeqBand { fc, gain_db, q, kind });
         }
         Ok(PeqParams { crossover_hz, bands: out })
     }
@@ -657,6 +669,79 @@ type = "wide"
             EffectParams::Wide(w) => assert_eq!(w.intensity, WideParams::default().intensity),
             _ => panic!("expected wide"),
         }
+    }
+
+    #[test]
+    fn band_type_parsed_and_defaulted() {
+        let toml = r#"
+[[effects]]
+type = "peq"
+[[effects.bands]]
+fc = 100
+gain_db = -3.0
+q = 1.0
+[[effects.bands]]
+type = "low_shelf"
+fc = 200
+gain_db = 4.0
+q = 0.707
+[[effects.bands]]
+type = "high_shelf"
+fc = 5000
+gain_db = -4.0
+q = 0.707
+[[effects.bands]]
+type = "low_pass"
+fc = 1200
+gain_db = 0.0
+q = 0.707
+[[effects.bands]]
+type = "high_pass"
+fc = 80
+gain_db = 0.0
+q = 0.707
+"#;
+        let model = convert(toml).unwrap();
+        match &model.effects[0].params {
+            EffectParams::Peq(p) => {
+                assert_eq!(p.bands.len(), 5);
+                assert_eq!(p.bands[0].kind, PeqBandType::Peaking, "缺省 type 必须是 peaking");
+                assert_eq!(p.bands[1].kind, PeqBandType::LowShelf);
+                assert_eq!(p.bands[2].kind, PeqBandType::HighShelf);
+                assert_eq!(p.bands[3].kind, PeqBandType::LowPass);
+                assert_eq!(p.bands[4].kind, PeqBandType::HighPass);
+            }
+            _ => panic!("expected peq"),
+        }
+    }
+
+    #[test]
+    fn invalid_band_type_rejected() {
+        let toml = r#"
+[[effects]]
+type = "peq"
+[[effects.bands]]
+type = "ring_mod"
+fc = 1000
+gain_db = 0.0
+q = 1.0
+"#;
+        let err = convert(toml).unwrap_err();
+        assert!(err.to_string().contains("bands[0].type 'ring_mod' is invalid"));
+    }
+
+    #[test]
+    fn band_type_included_in_spec() {
+        let base = |t: &str| {
+            format!(
+                "[[effects]]\ntype = \"peq\"\n[[effects.bands]]\ntype = \"{t}\"\nfc = 1000\ngain_db = 3.0\nq = 1.0\n"
+            )
+        };
+        let a = convert(&base("peaking")).unwrap();
+        let b = convert(&base("low_shelf")).unwrap();
+        assert_ne!(a.effects[0].spec(), b.effects[0].spec());
+        assert!(a.effects[0].spec().contains("peaking"));
+        assert!(b.effects[0].spec().contains("low_shelf"));
     }
 
     #[test]

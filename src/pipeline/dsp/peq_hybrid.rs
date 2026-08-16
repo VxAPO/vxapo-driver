@@ -1,20 +1,22 @@
 //! pipeline/dsp/peq_hybrid.rs — 混合式 PEQ（v9.11）
 //!
-//! 200 Hz 分频：`Fc < CROSSOVER_HZ` 的段走 IIR biquad 级联；`Fc >= CROSSOVER_HZ`
-//! 的段由采样率自适应最小相位 FIR 承担。级联结构：
-//! `输入 → IIR（低频段，按 fc 升序）→ 最小相位 FIR → 输出`。
+//! peaking 段：200 Hz 分频，`Fc < CROSSOVER_HZ` 走 IIR biquad 级联；
+//! `Fc >= CROSSOVER_HZ` 由采样率自适应最小相位 FIR 承担。
+//! shelf/pass 段：RBJ biquad 解析精确，永远走 IIR（零延迟、零逼近误差）。
+//! 级联结构：`输入 → IIR（按 fc 升序）→ 最小相位 FIR → 输出`。
 //!
 //! 频响合成：目标曲线 `T(f) = Σ 所有段频响（dB）`，IIR 路径频响
-//! `L(f) = Σ 低频段频响（dB）`，FIR 目标 `F(f) = T(f) − L(f)`——级联总响应
+//! `L(f) = Σ IIR 段频响（dB）`，FIR 目标 `F(f) = T(f) − L(f)`——级联总响应
 //! `L + F = T`，幅度精确拟合目标曲线（跨分频点段自动处理）。
 
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
+use crate::pipeline::dsp::biquad::{compute_coeffs, BiquadType};
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
 use crate::pipeline::dsp::math::warn_rate_limited;
-use crate::pipeline::dsp::model::{CROSSOVER_HZ, PeqBand, PeqParams};
+use crate::pipeline::dsp::model::{CROSSOVER_HZ, PeqBand, PeqBandType, PeqParams};
 
 /// FIR 长度下限（@44.1k/48k）。
 const FIR_MIN_LEN: usize = 1024;
@@ -50,6 +52,37 @@ struct BiquadState {
 }
 
 impl Biquad {
+    /// 按 PEQ 段类型计算 RBJ biquad 系数。
+    ///
+    /// peaking 段保留既有本地 f64 计算路径（行为不变）；shelf/pass 段统一走
+    /// `biquad::compute_coeffs`（f64 中间计算 + 有限性/稳定性护栏 + 深切地板回退），
+    /// 与生产 biquad 模块同一数值路径。
+    fn from_band(band: &PeqBand, sr: u32) -> Option<Self> {
+        match band.kind {
+            PeqBandType::Peaking => Self::peaking(band.fc, band.gain_db, band.q, sr),
+            _ => {
+                let filter_type = match band.kind {
+                    PeqBandType::LowShelf => BiquadType::LowShelf,
+                    PeqBandType::HighShelf => BiquadType::HighShelf,
+                    PeqBandType::LowPass => BiquadType::LowPass,
+                    PeqBandType::HighPass => BiquadType::HighPass,
+                    PeqBandType::Peaking => unreachable!(),
+                };
+                let c = compute_coeffs(filter_type, band.fc, band.gain_db, band.q, sr);
+                if !c.is_valid() || c == crate::pipeline::dsp::biquad::BiquadCoeffs::BYPASS {
+                    return None;
+                }
+                Some(Self {
+                    b0: c.b0,
+                    b1: c.b1,
+                    b2: c.b2,
+                    a1: c.a1,
+                    a2: c.a2,
+                })
+            }
+        }
+    }
+
     /// RBJ peaking（f64 计算，归一化 + 二阶朱利稳定性检查；不稳定返回 None）。
     fn peaking(fc: f32, gain_db: f32, q: f32, sr: u32) -> Option<Self> {
         if sr == 0 || !fc.is_finite() || !q.is_finite() || q <= 0.0 {
@@ -196,7 +229,7 @@ impl Filter for HybridPeqFilter {
             .iter()
             .filter(|b| in_iir_band(b, CROSSOVER_HZ, sample_rate))
             .filter_map(|b| {
-                let c = Biquad::peaking(b.fc, b.gain_db, b.q, sample_rate);
+                let c = Biquad::from_band(b, sample_rate);
                 if c.is_none() {
                     warn_rate_limited(
                         "peq_hybrid_unstable",
@@ -362,17 +395,23 @@ impl Filter for HybridPeqFilter {
 
 /// 段是否由 IIR 主实现。
 ///
-/// - `Fc < 分频点` → IIR（低频主责任）；
-/// - `Fc == 分频点`（200.0）→ FIR（定稿：分频点归属高频路径）；
-/// - `Fc > 分频点` 且影响范围**实质跨过**分频点（分频点处 |dB| > 0.25）→ 也进
-///   IIR——宽 Q 段的低频泄漏由 biquad 解析精确实现，避免 FIR 低频分辨率不足
-///   （1024 点 @48k = 46.9 Hz/bin）造成的衔接误差；其余段由 FIR 主实现，
-///   其在低频的泄漏 < 0.25 dB，FIR 误差无感。
+/// - 非 peaking 段（low/high shelf、low/high pass）**永远走 IIR**：RBJ biquad
+///   就是这些滤波器的解析精确解，FIR 只是逼近，且 IIR 延迟为 0、CPU 更低。
+/// - peaking 段维持既有混合逻辑：
+///   - `Fc < 分频点` → IIR（低频主责任）；
+///   - `Fc == 分频点`（200.0）→ FIR（定稿：分频点归属高频路径）；
+///   - `Fc > 分频点` 且影响范围**实质跨过**分频点（分频点处 |dB| > 0.25）→ 也进
+///     IIR——宽 Q 段的低频泄漏由 biquad 解析精确实现，避免 FIR 低频分辨率不足
+///     （1024 点 @48k = 46.9 Hz/bin）造成的衔接误差；其余段由 FIR 主实现，
+///     其在低频的泄漏 < 0.25 dB，FIR 误差无感。
 ///
-/// 注意：判据是**影响**而非 fc——如 fc=500/Q=1.5 的宽段在 200 Hz 处仍有
+/// 注意：peaking 判据是**影响**而非 fc——如 fc=500/Q=1.5 的宽段在 200 Hz 处仍有
 /// 明显响应时也会进 IIR（属设计意图：它的低频影响由 IIR 精确承担，FIR
 /// 目标自动扣除其高频残余）。
 fn in_iir_band(b: &PeqBand, crossover: f32, sr: u32) -> bool {
+    if b.kind != PeqBandType::Peaking {
+        return true;
+    }
     if b.fc < crossover {
         return true;
     }
@@ -404,7 +443,7 @@ fn build_min_phase_ir(
         let freq = k as f32 * sr / n as f32;
         let mut t_db = 0.0f32;
         for b in bands {
-            t_db += peaking_response_db(b.fc, b.gain_db, b.q, freq, sr);
+            t_db += band_response_db(b, freq, sample_rate);
         }
         let mut l_db = 0.0f32;
         for bq in iir {
@@ -454,15 +493,38 @@ fn build_min_phase_ir(
     ir
 }
 
-/// peaking 频响（dB）——与 IIR 路径**同一计算路径**（v9.12 修订）。
+/// 单段目标频响（dB），与 IIR 路径**同一计算路径**。
 ///
-/// 稳定段直接走 `Biquad::peaking + response_db`（f64 设计 → f32 存储，
-/// 与 L(f) 合成完全一致，T−L 对同段精确归零）；仅在不稳定段（IIR 已直通、
-/// L 不含它，无差分问题）回退到独立 f32 RBJ 公式作为目标值。
-pub(crate) fn peaking_response_db(fc: f32, gain_db: f32, q: f32, freq: f32, sr: f32) -> f32 {
-    if let Some(bq) = Biquad::peaking(fc, gain_db, q, sr as u32) {
-        return bq.response_db(freq, sr as u32);
+/// 对任一 band 先按 `Biquad::from_band` 计算系数；成功则用与 IIR 级联完全相同的
+/// `response_db`，使 `T−L` 对 IIR 段精确归零。若系数不可用（配置已校验，正常不命中），
+/// peaking 回退到独立 f32 RBJ 公式作为目标值，其余类型回退 0 dB（IIR 路径同样已直通，
+/// 目标与实现一致）。
+pub(crate) fn band_response_db(band: &PeqBand, freq: f32, sr: u32) -> f32 {
+    if let Some(bq) = Biquad::from_band(band, sr) {
+        return bq.response_db(freq, sr);
     }
+    if band.kind == PeqBandType::Peaking {
+        return peaking_response_db_fallback(band.fc, band.gain_db, band.q, freq, sr as f32);
+    }
+    0.0
+}
+
+/// peaking 频响（dB），兼容入口。
+pub(crate) fn peaking_response_db(fc: f32, gain_db: f32, q: f32, freq: f32, sr: f32) -> f32 {
+    band_response_db(
+        &PeqBand {
+            fc,
+            gain_db,
+            q,
+            kind: PeqBandType::Peaking,
+        },
+        freq,
+        sr as u32,
+    )
+}
+
+/// peaking 独立 f32 RBJ 公式（仅用于系数不可用时的目标值回退）。
+fn peaking_response_db_fallback(fc: f32, gain_db: f32, q: f32, freq: f32, sr: f32) -> f32 {
     if sr <= 0.0 || !fc.is_finite() || !q.is_finite() || q <= 0.0 {
         return 0.0;
     }
@@ -494,7 +556,7 @@ pub(crate) fn peaking_response_db(fc: f32, gain_db: f32, q: f32, freq: f32, sr: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::dsp::model::PeqBand;
+    use crate::pipeline::dsp::model::{PeqBand, PeqBandType};
 
     fn sr_amp(filter: &mut HybridPeqFilter, freq: f32, amp: f32, sr: u32, frames: usize) -> f32 {
         let mut samples = vec![vec![0.0f32; frames], vec![0.0f32; frames]];
@@ -516,7 +578,7 @@ mod tests {
     fn target_db(bands: &[PeqBand], freq: f32, sr: u32) -> f32 {
         bands
             .iter()
-            .map(|b| peaking_response_db(b.fc, b.gain_db, b.q, freq, sr as f32))
+            .map(|b| band_response_db(b, freq, sr))
             .sum()
     }
 
@@ -530,15 +592,64 @@ mod tests {
     }
 
     #[test]
+    fn shelf_and_pass_response_math() {
+        // 低架 +6 dB：fc 以下接近 +6 dB，远高于 fc 接近 0。
+        let ls = PeqBand { fc: 200.0, gain_db: 6.0, q: 0.707, kind: PeqBandType::LowShelf };
+        assert!((band_response_db(&ls, 50.0, 48000) - 6.0).abs() < 0.3);
+        assert!(band_response_db(&ls, 10000.0, 48000).abs() < 0.2);
+        // 高通：fc 以下显著衰减，fc 以上接近 0 dB。
+        let hp = PeqBand { fc: 1000.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::HighPass };
+        assert!(band_response_db(&hp, 50.0, 48000) < -20.0);
+        assert!(band_response_db(&hp, 10000.0, 48000).abs() < 0.2);
+        // 低通：fc 以上显著衰减，fc 以下接近 0 dB。
+        let lp = PeqBand { fc: 1000.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::LowPass };
+        assert!(band_response_db(&lp, 10000.0, 48000) < -20.0);
+        assert!(band_response_db(&lp, 50.0, 48000).abs() < 0.2);
+        // 高架 -6 dB：fc 以上接近 -6 dB，远低于 fc 接近 0。
+        let hs = PeqBand { fc: 6000.0, gain_db: -6.0, q: 0.707, kind: PeqBandType::HighShelf };
+        assert!((band_response_db(&hs, 12000.0, 48000) + 6.0).abs() < 0.3);
+        assert!(band_response_db(&hs, 50.0, 48000).abs() < 0.2);
+    }
+
+    #[test]
+    fn hybrid_shelf_and_pass_match_target() {
+        let bands = vec![
+            PeqBand { fc: 120.0, gain_db: 6.0, q: 0.707, kind: PeqBandType::LowShelf },
+            PeqBand { fc: 6000.0, gain_db: -4.0, q: 0.707, kind: PeqBandType::HighShelf },
+            PeqBand { fc: 1200.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::LowPass },
+            PeqBand { fc: 80.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::HighPass },
+        ];
+        for sr in [44_100u32, 48_000, 96_000] {
+            let mut f = HybridPeqFilter::new(PeqParams {
+                crossover_hz: CROSSOVER_HZ,
+                bands: bands.clone(),
+            });
+            f.initialize(sr, &["L".into(), "R".into()]);
+            assert_eq!(f.iir.len(), 4, "shelf/pass 段必须全部走 IIR");
+            for freq in [30.0f32, 60.0, 100.0, 120.0, 1000.0, 1200.0, 6000.0, 12000.0] {
+                let frames = 12000usize;
+                let out_rms = sr_amp(&mut f, freq, 0.25, sr, frames);
+                let in_rms = 0.25 / std::f32::consts::SQRT_2;
+                let measured = 20.0 * (out_rms / in_rms).log10();
+                let target = target_db(&bands, freq, sr);
+                assert!(
+                    (measured - target).abs() < 0.7,
+                    "sr {sr} freq {freq}: measured {measured:.2} dB vs target {target:.2} dB"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hybrid_matches_target_across_crossover() {
         // 多段（含跨 200 Hz）：级联输出频响 ≈ 目标 ±0.5 dB。
         let bands = vec![
-            PeqBand { fc: 100.0, gain_db: -3.0, q: 1.0 },
-            PeqBand { fc: 200.0, gain_db: 4.0, q: 1.2 },
-            PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.0 },
-            PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0 },
-            PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.5 },
-            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0 },
+            PeqBand { fc: 100.0, gain_db: -3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 200.0, gain_db: 4.0, q: 1.2, kind: PeqBandType::Peaking },
+            PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0, kind: PeqBandType::Peaking },
         ];
         for sr in [44_100u32, 48_000, 96_000] {
             let mut f = HybridPeqFilter::new(PeqParams {
@@ -566,7 +677,7 @@ mod tests {
     #[test]
     fn low_band_uses_iir_high_band_fir() {
         // fc=100 的段：低频 IIR 承担；高频路径（fir_ir）应接近 0 dB 补偿。
-        let bands = vec![PeqBand { fc: 100.0, gain_db: -6.0, q: 1.0 }];
+        let bands = vec![PeqBand { fc: 100.0, gain_db: -6.0, q: 1.0, kind: PeqBandType::Peaking }];
         let mut f = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
             bands: bands.clone(),
@@ -588,12 +699,12 @@ mod tests {
         // 宽 Q 段（fc=250, q=0.6）影响范围跨过分频点 → IIR 主实现；
         // 窄 Q 段（fc=300, q=5）影响完全在 200 Hz 以上 → FIR。
         let bands = vec![
-            PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6 },
-            PeqBand { fc: 300.0, gain_db: -6.0, q: 8.0 },
-            PeqBand { fc: 400.0, gain_db: -6.0, q: 2.0 },
-            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0 },
+            PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6, kind: PeqBandType::Peaking },
+            PeqBand { fc: 300.0, gain_db: -6.0, q: 8.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 400.0, gain_db: -6.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
         ];
         let mut f = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
@@ -607,12 +718,12 @@ mod tests {
     fn crossing_band_fits_across_crossover() {
         // 宽 Q 段跨分频点：低频由 IIR 精确、高频由 FIR 补偿，总响应 = 目标。
         let bands = vec![
-            PeqBand { fc: 150.0, gain_db: -3.0, q: 0.8 },
-            PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6 },
-            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.5 },
-            PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0 },
-            PeqBand { fc: 8000.0, gain_db: 2.0, q: 1.0 },
-            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0 },
+            PeqBand { fc: 150.0, gain_db: -3.0, q: 0.8, kind: PeqBandType::Peaking },
+            PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6, kind: PeqBandType::Peaking },
+            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 8000.0, gain_db: 2.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0, kind: PeqBandType::Peaking },
         ];
         for sr in [48_000u32, 96_000] {
             let mut f = HybridPeqFilter::new(PeqParams {
@@ -639,12 +750,12 @@ mod tests {
     #[test]
     fn silence_stays_silent() {
         let bands = vec![
-            PeqBand { fc: 100.0, gain_db: 6.0, q: 1.0 },
-            PeqBand { fc: 1000.0, gain_db: -6.0, q: 1.0 },
-            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 8000.0, gain_db: -3.0, q: 1.0 },
-            PeqBand { fc: 12000.0, gain_db: 1.0, q: 1.0 },
-            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0 },
+            PeqBand { fc: 100.0, gain_db: 6.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 1000.0, gain_db: -6.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 8000.0, gain_db: -3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 12000.0, gain_db: 1.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0, kind: PeqBandType::Peaking },
         ];
         let mut f = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
@@ -664,12 +775,12 @@ mod tests {
     fn mute_recovery_fades_in_without_glitch() {
         // 静音 500 帧 → 恢复正弦：输出应从 0 线性淡入（前 8 ms），无阶跃。
         let bands = vec![
-            PeqBand { fc: 160.0, gain_db: -2.0, q: 2.0 },
-            PeqBand { fc: 600.0, gain_db: -6.0, q: 1.5 },
-            PeqBand { fc: 1000.0, gain_db: 6.0, q: 2.0 },
-            PeqBand { fc: 2000.0, gain_db: 2.0, q: 1.0 },
-            PeqBand { fc: 4000.0, gain_db: 1.0, q: 2.0 },
-            PeqBand { fc: 8000.0, gain_db: -2.0, q: 1.5 },
+            PeqBand { fc: 160.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 600.0, gain_db: -6.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 1000.0, gain_db: 6.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 2000.0, gain_db: 2.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: 1.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 8000.0, gain_db: -2.0, q: 1.5, kind: PeqBandType::Peaking },
         ];
         let mut f = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
@@ -704,6 +815,7 @@ mod tests {
                 fc: fc.min(20000.0),
                 gain_db: if i % 2 == 0 { 30.0 } else { -30.0 },
                 q: if i % 3 == 0 { 12.0 } else { 0.1 },
+                kind: PeqBandType::Peaking,
             });
         }
         for sr in [48_000u32, 96_000, 192_000] {
@@ -736,12 +848,12 @@ mod tests {
     #[test]
     fn latency_reports_fir_len_div_4() {
         let bands = vec![
-            PeqBand { fc: 100.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.0 },
-            PeqBand { fc: 16000.0, gain_db: 3.0, q: 1.0 },
+            PeqBand { fc: 100.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 16000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
         ];
         let mut f = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
@@ -753,12 +865,12 @@ mod tests {
         let mut f2 = HybridPeqFilter::new(PeqParams {
             crossover_hz: CROSSOVER_HZ,
             bands: vec![
-                PeqBand { fc: 100.0, gain_db: 0.0, q: 1.0 },
-                PeqBand { fc: 200.0, gain_db: 0.0, q: 1.0 },
-                PeqBand { fc: 300.0, gain_db: 0.0, q: 1.0 },
-                PeqBand { fc: 400.0, gain_db: 0.0, q: 1.0 },
-                PeqBand { fc: 500.0, gain_db: 0.0, q: 1.0 },
-                PeqBand { fc: 600.0, gain_db: 0.0, q: 1.0 },
+                PeqBand { fc: 100.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
+                PeqBand { fc: 200.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
+                PeqBand { fc: 300.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
+                PeqBand { fc: 400.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
+                PeqBand { fc: 500.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
+                PeqBand { fc: 600.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
             ],
         });
         f2.initialize(192_000, &["L".into()]);
