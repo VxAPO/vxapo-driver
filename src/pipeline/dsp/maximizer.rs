@@ -158,10 +158,10 @@ impl Filter for MaximizerFilter {
         self.gain_boost = 10.0f32.powf(self.params.gain_boost_db / 20.0);
         self.limit = 10.0f32.powf(self.params.max_output_db / 20.0);
         self.release_frames = (self.params.release_ms * 0.001 * sr).max(1.0);
-        // v9.20：release 前 hold 一小段，上限 20ms。短 release 保持原参数不变，
-        // 长 release 也不过度泵浦。hold 只推迟 release，attack 不受影响。
-        self.hold_frames = (self.release_frames as usize)
-            .min((sr * 0.020) as usize)
+        // release 前 hold 一小段（release 的一半，上限 10ms）：
+        // 既抑制低频周期峰值造成的“呼吸”，又不会让增益衰减感累积太久。
+        self.hold_frames = ((self.release_frames as usize) / 2)
+            .min((sr * 0.010) as usize)
             .max(1);
         self.hold_remaining = 0;
         self.level_alpha = (-1.0 / (LEVEL_EST_TAU_S * sr)).exp();
