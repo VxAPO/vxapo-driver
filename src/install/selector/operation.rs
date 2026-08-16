@@ -301,11 +301,13 @@ pub fn install_endpoint(
         }
     }
 
-    // 全流程收尾：重启音频服务使新槽位拓扑/注册生效（EAPO 安装对齐）。
-    // v9.17：注册表已 commit，重启为 best-effort——失败仅记录，不把“已安装”
-    // 报成失败（与 audiodg 文档“best-effort 仅日志”统一）。
-    if let Err(e) = crate::install::audiodg::restart_audio_service() {
-        log::warn!("install_endpoint: 音频服务重启失败（安装已生效，重启后生效）：{e}");
+    // 全流程收尾：让 Windows 重新载入当前端点（优先定向重启端点设备，避免
+    // 应用路由到其他设备；失败时回退整服重启）。best-effort——失败仅记录。
+    if let Err(e) = crate::install::audiodg::restart_endpoint_device(device_guid, is_capture) {
+        log::warn!("install_endpoint: 端点设备重启失败（回退音频服务重启）：{e}");
+        if let Err(e2) = crate::install::audiodg::restart_audio_service() {
+            log::warn!("install_endpoint: 音频服务重启失败（安装已生效，重启后生效）：{e2}");
+        }
     }
     Ok(())
 }
@@ -413,9 +415,14 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
 
     let _ = fx_key.delete_value("DisableEnhancements");
 
-    // 全流程收尾：重启音频服务恢复输出（槽位删除后引擎需重枚举）。
-    if let Err(e) = crate::install::audiodg::restart_audio_service() {
-        log::warn!("uninstall: 音频服务重启失败（卸载已生效，重启后恢复输出）：{e}");
+    // 全流程收尾：让 Windows 重新载入当前端点（优先定向重启端点设备，
+    // 失败时回退整服重启）。best-effort——失败仅记录。
+    let is_capture = endpoint_path.contains("Capture");
+    if let Err(e) = crate::install::audiodg::restart_endpoint_device(device_guid, is_capture) {
+        log::warn!("uninstall: 端点设备重启失败（回退音频服务重启）：{e}");
+        if let Err(e2) = crate::install::audiodg::restart_audio_service() {
+            log::warn!("uninstall: 音频服务重启失败（卸载已生效，重启后恢复输出）：{e2}");
+        }
     }
     Ok(())
 }

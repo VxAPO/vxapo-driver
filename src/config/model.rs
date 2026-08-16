@@ -145,20 +145,34 @@ impl FileModel {
         for (idx, fe) in self.effects.iter().enumerate() {
             effects.push(fe.into_effect_config(file, idx)?);
         }
-        // v9.16：全局 peq band 合计 ≤ 31（UI 卡片模型：预设块 + 无组裸 band 共享预算）。
-        let total_peq_bands = effects
-            .iter()
-            .filter_map(|e| match &e.params {
-                EffectParams::Peq(p) => Some(p.bands.len()),
-                _ => None,
-            })
-            .sum::<usize>();
-        if total_peq_bands > MAX_PEQ_BANDS {
+        // v9.19：peq 段数按声道分组统计。有 `channels` 的段计入对应声道，无
+        // `channels` 的段计入共享预算（各声道 / 共享分别 ≤ MAX_PEQ_BANDS）。
+        let mut shared_peq_bands = 0usize;
+        let mut channel_peq_bands: HashMap<String, usize> = HashMap::new();
+        for e in &effects {
+            let EffectParams::Peq(p) = &e.params else { continue };
+            let n = p.bands.len();
+            match &e.channels {
+                Some(names) if !names.is_empty() => {
+                    for name in names {
+                        *channel_peq_bands.entry(name.clone()).or_insert(0) += n;
+                    }
+                }
+                _ => shared_peq_bands += n,
+            }
+        }
+        if shared_peq_bands > MAX_PEQ_BANDS {
             return Err(model_err(
                 file,
                 format!(
-                    "total 'peq' bands count {total_peq_bands} exceeds max {MAX_PEQ_BANDS}"
+                    "unscoped 'peq' bands count {shared_peq_bands} exceeds max {MAX_PEQ_BANDS}"
                 ),
+            ));
+        }
+        if let Some((name, count)) = channel_peq_bands.iter().find(|(_, c)| **c > MAX_PEQ_BANDS) {
+            return Err(model_err(
+                file,
+                format!("channel '{name}' peq bands count {count} exceeds max {MAX_PEQ_BANDS}"),
             ));
         }
         Ok(ChainModel { effects })
@@ -704,7 +718,33 @@ q = 2.0
             }
         }
         let err = convert(&s).unwrap_err();
-        assert!(err.to_string().contains("total 'peq' bands count 32 exceeds max 31"));
+        assert!(err.to_string().contains("unscoped 'peq' bands count 32 exceeds max 31"));
+    }
+
+    #[test]
+    fn per_channel_peq_band_cap() {
+        let mut s = String::new();
+        for _ in 0..2 {
+            s.push_str("[[effects]]\ntype = \"peq\"\nchannels = [\"L\"]\n");
+            for fc in (0..10).map(|i| 100.0 + i as f32 * 100.0) {
+                s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+            }
+        }
+        for _ in 0..2 {
+            s.push_str("[[effects]]\ntype = \"peq\"\nchannels = [\"R\"]\n");
+            for fc in (0..10).map(|i| 100.0 + i as f32 * 100.0) {
+                s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+            }
+        }
+        // L 20 + R 20：每声道均 ≤31，应通过
+        assert!(convert(&s).is_ok());
+        // L 再补 12 段 → L = 32 超限，按声道报错
+        s.push_str("[[effects]]\ntype = \"peq\"\nchannels = [\"L\"]\n");
+        for fc in (0..12).map(|i| 100.0 + i as f32 * 100.0) {
+            s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+        }
+        let err = convert(&s).unwrap_err();
+        assert!(err.to_string().contains("channel 'L' peq bands count 32 exceeds max 31"));
     }
 
     #[test]

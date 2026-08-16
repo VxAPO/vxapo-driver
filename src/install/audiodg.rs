@@ -240,6 +240,33 @@ pub fn restart_audio_service() -> Result<()> {
     Ok(())
 }
 
+/// 定向重启指定音频端点设备，让 Windows 重新载入该端点。
+///
+/// 端点设备实例 ID 格式：
+/// - 播放端点：`SWD\MMDEVAPI\{0.0.0.00000000}.{endpoint-guid}`
+/// - 采集端点：`SWD\MMDEVAPI\{1.0.0.00000000}.{endpoint-guid}`
+///
+/// 与整服重启相比只影响目标端点，且 Windows 会保留其默认身份，
+/// 避免应用在重启后优先路由到其他设备。
+pub fn restart_endpoint_device(device_guid: &str, is_capture: bool) -> Result<()> {
+    let flow = if is_capture { "1.0.0.00000000" } else { "0.0.0.00000000" };
+    let guid = device_guid.trim_matches(|c| c == '{' || c == '}');
+    let instance_id = format!(r"SWD\MMDEVAPI\{{{flow}}}.{{{guid}}}");
+    let out = std::process::Command::new("pnputil")
+        .args(["/restart-device", &instance_id])
+        .output()
+        .map_err(|e| VxApoError::internal(&format!("pnputil 启动失败：{e}")))?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr);
+        return Err(VxApoError::internal(&format!(
+            "pnputil /restart-device 失败：{}",
+            msg.trim()
+        )));
+    }
+    log::info!("endpoint device restarted: {instance_id}");
+    Ok(())
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 内部辅助（测试用）
 // ══════════════════════════════════════════════════════════════════════════════
