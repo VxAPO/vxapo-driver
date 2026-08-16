@@ -35,7 +35,7 @@ const SILENCE_HOLD_FRAMES: usize = 64;
 /// 频响幅值下限，避免 log(0)。
 const MIN_MAG: f32 = 1e-5;
 
-/// 二阶 peaking biquad（RBJ，DF2T）。
+/// 二阶 biquad（RBJ，DF2T）。
 #[derive(Debug, Clone, Copy)]
 struct Biquad {
     b0: f32,
