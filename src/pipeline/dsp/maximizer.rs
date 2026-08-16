@@ -183,6 +183,9 @@ pub struct MaximizerFilter {
     w: usize,
     att: f32,
     delta: f32,
+    /// release 前增益保持帧数（v9.20：抑制低频周期峰值造成的包络“呼吸”失真）。
+    hold_frames: usize,
+    hold_remaining: usize,
     events: EventQueue,
     rng: DitherRng,
     shaped_prev: Vec<f32>,
@@ -203,6 +206,8 @@ impl MaximizerFilter {
             w: 0,
             att: 1.0,
             delta: 0.0,
+            hold_frames: 0,
+            hold_remaining: 0,
             events: EventQueue::new(),
             rng: DitherRng::new(),
             shaped_prev: Vec::new(),
@@ -297,6 +302,12 @@ impl Filter for MaximizerFilter {
         self.gain_boost = 10.0f32.powf(self.params.gain_boost_db / 20.0);
         self.limit = 10.0f32.powf(self.params.max_output_db / 20.0);
         self.release_frames = (self.params.release_ms * 0.001 * sr).max(1.0);
+        // v9.20：release 前 hold 一小段，上限 20ms。短 release 保持原参数不变，
+        // 长 release 也不过度泵浦。hold 只推迟 release，attack 不受影响。
+        self.hold_frames = (self.release_frames as usize)
+            .min((sr * 0.020) as usize)
+            .max(1);
+        self.hold_remaining = 0;
         self.level_alpha = (-1.0 / (LEVEL_EST_TAU_S * sr)).exp();
         self.level = 0.0;
         self.lookahead = ((sr * self.params.lookahead_ms * 0.001).round() as usize).max(1);
@@ -310,6 +321,7 @@ impl Filter for MaximizerFilter {
         self.w = 0;
         self.att = 1.0;
         self.delta = 0.0;
+        self.hold_remaining = 0;
         self.events.clear();
         self.rng = DitherRng::new();
         None
@@ -375,15 +387,25 @@ impl Filter for MaximizerFilter {
                 self.schedule(g, release_slope, lookahead);
             }
 
-            // 4) 包络推进。
-            self.att += self.delta;
-            if self.att >= 1.0 {
-                self.att = 1.0;
-                self.delta = 0.0;
-                self.events.clear();
-            } else if self.att <= 1.0e-9 {
-                self.att = 1.0e-9;
-                self.delta = (1.0 - self.att) / release_frames;
+            // 4) 包络推进（v9.20：attack 永不受 hold 影响；release 前先 hold）。
+            if self.delta < 0.0 {
+                self.att += self.delta;
+                if self.att <= 1.0e-9 {
+                    self.att = 1.0e-9;
+                    self.delta = (1.0 - self.att) / release_frames;
+                }
+            } else if self.hold_remaining > 0 {
+                self.hold_remaining -= 1;
+            } else {
+                self.att += self.delta;
+                if self.att >= 1.0 {
+                    self.att = 1.0;
+                    self.delta = 0.0;
+                    self.events.clear();
+                } else if self.att <= 1.0e-9 {
+                    self.att = 1.0e-9;
+                    self.delta = (1.0 - self.att) / release_frames;
+                }
             }
 
             // 5) 读取延迟线输出：包络 × 延迟样本 + 硬钳位 + 抖动/量化 + Wet/Dry。
@@ -410,6 +432,7 @@ impl Filter for MaximizerFilter {
                         let ev = self.events.pop_front().expect("front checked");
                         self.att = ev.gain;
                         self.delta = ev.slope;
+                        self.hold_remaining = self.hold_frames;
                     }
                     _ => break,
                 }
@@ -430,6 +453,7 @@ impl Filter for MaximizerFilter {
         self.w = 0;
         self.att = 1.0;
         self.delta = 0.0;
+        self.hold_remaining = 0;
         self.events.clear();
         self.rng = DitherRng::new();
         self.shaped_prev.fill(0.0);
@@ -558,11 +582,11 @@ mod tests {
         f.initialize(48000, &["L".into(), "R".into()]);
         let mut samples = vec![vec![0.0f32; 1600], vec![0.0f32; 1600]];
         samples[0][0] = 1.0; // 超限脉冲触发 attack
-        // release 10 ms = 480 帧；600 帧后包络应已回 1。
-        samples[0][600] = 0.1;
+        // v9.20：release 前先 hold 10 ms（= 480 帧），完整恢复 = hold + release ≈ 20 ms。
+        // 输入放在 1200 帧，输出在 1200 + N-1 处，此时包络已回 1。
+        samples[0][1200] = 0.1;
         f.process(&mut samples, 1600);
-        // 帧 600 的样本在延迟 N-1=47 帧后输出。
-        let out_at = 600 + 47;
+        let out_at = 1200 + 47;
         assert!(
             (samples[0][out_at] - 0.1).abs() < 1e-3,
             "expected 0.1 after release, got {}",
