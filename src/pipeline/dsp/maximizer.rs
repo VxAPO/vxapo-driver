@@ -4,9 +4,8 @@
 //! 已移除 AGPL 版权头）。算法结构：
 //! - 自动增益：全声道单极点电平估计（约 250 ms），`Target` 控制增益回退起点
 //!   （`GainBoost · rms > Target` 时有效增益降为 `max(Target/rms, 1.0)`）；
-//! - lookahead 峰值限幅：环形延迟线 + 线性 attack 包络 + 多峰事件队列
-//!   （参考 FFmpeg `alimiter` 的 attack/release 调度思想，独立实现），
-//!   输出硬钳位到 `MaxOutput`；
+//! - lookahead 峰值限幅：环形延迟线 + 窗口峰值前瞻增益衰减
+//!   （lookahead gain reduction），输出硬钳位到 `MaxOutput`；
 //! - 抖动：独立 xorshift64* PRNG，Uniform / Triangular / Shaped 均为 16-bit 量化；
 //! - 最终 Wet/Dry 混合。
 //!
@@ -82,95 +81,6 @@ impl DitherRng {
     }
 }
 
-/// 限幅事件：某个超限峰值样本到达输出位置时应达成的包络状态。
-#[derive(Debug, Clone, Copy, Default)]
-struct LimiterEvent {
-    /// 距触发还剩多少帧（0 = 本帧输出该峰值）。
-    remaining: usize,
-    /// 触发时包络应切换到的目标增益（limit/peak）。
-    gain: f32,
-    /// 触发后每帧的增益变化（到下一事件，或 release 回弹）。
-    slope: f32,
-}
-
-/// 定长限幅事件队列（RT 零分配结构保证，v9.19）。
-///
-/// 事件上限固定 128，存储为 Box<[LimiterEvent]>；`push_back` 仅在 `len < capacity`
-/// 时写入并递增，**不包含任何堆分配路径**（与 VecDeque 不同，容量不会增长）。
-#[derive(Debug)]
-struct EventQueue {
-    buf: Box<[LimiterEvent]>,
-    head: usize,
-    len: usize,
-}
-
-impl EventQueue {
-    const MAX_EVENTS: usize = 128;
-
-    fn new() -> Self {
-        Self {
-            buf: vec![LimiterEvent::default(); Self::MAX_EVENTS].into_boxed_slice(),
-            head: 0,
-            len: 0,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn capacity(&self) -> usize {
-        self.buf.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn clear(&mut self) {
-        self.head = 0;
-        self.len = 0;
-    }
-
-    fn front(&self) -> Option<&LimiterEvent> {
-        if self.len == 0 {
-            None
-        } else {
-            Some(&self.buf[self.head])
-        }
-    }
-
-    fn push_back(&mut self, ev: LimiterEvent) {
-        assert!(self.len < self.capacity(), "limiter event queue overflow");
-        let idx = (self.head + self.len) % self.capacity();
-        self.buf[idx] = ev;
-        self.len += 1;
-    }
-
-    fn pop_front(&mut self) -> Option<LimiterEvent> {
-        if self.len == 0 {
-            None
-        } else {
-            let ev = self.buf[self.head];
-            self.head = (self.head + 1) % self.capacity();
-            self.len -= 1;
-            Some(ev)
-        }
-    }
-
-    fn get(&self, idx: usize) -> &LimiterEvent {
-        assert!(idx < self.len, "limiter event index out of range");
-        &self.buf[(self.head + idx) % self.capacity()]
-    }
-
-    fn get_mut(&mut self, idx: usize) -> &mut LimiterEvent {
-        assert!(idx < self.len, "limiter event index out of range");
-        let cap = self.capacity();
-        let head = self.head;
-        &mut self.buf[(head + idx) % cap]
-    }
-}
-
 #[derive(Debug)]
 pub struct MaximizerFilter {
     params: MaximizerParams,
@@ -181,12 +91,15 @@ pub struct MaximizerFilter {
     level: f64,
     lookahead: usize,
     w: usize,
-    att: f32,
-    delta: f32,
-    /// release 前增益保持帧数（v9.20：抑制低频周期峰值造成的包络“呼吸”失真）。
+    /// 当前限幅增益（1.0 = 不衰减）。
+    gain: f32,
+    /// 前瞻增益衰减的 attack 一阶平滑系数。
+    attack_coeff: f32,
+    /// 前瞻增益衰减的 release 一阶平滑系数。
+    release_coeff: f32,
+    /// release 前增益保持帧数（抑制低频周期峰值造成的包络“呼吸”失真）。
     hold_frames: usize,
     hold_remaining: usize,
-    events: EventQueue,
     rng: DitherRng,
     shaped_prev: Vec<f32>,
     channel_indices: Vec<usize>,
@@ -204,72 +117,15 @@ impl MaximizerFilter {
             level: 0.0,
             lookahead: 1,
             w: 0,
-            att: 1.0,
-            delta: 0.0,
+            gain: 1.0,
+            attack_coeff: 0.0,
+            release_coeff: 0.0,
             hold_frames: 0,
             hold_remaining: 0,
-            events: EventQueue::new(),
             rng: DitherRng::new(),
             shaped_prev: Vec::new(),
             channel_indices: Vec::new(),
             delay_lines: Vec::new(),
-        }
-    }
-
-    /// 调度限幅包络：新峰值在 `lookahead - 1` 帧后到达输出。
-    ///
-    /// 队列按触发先后排序（新峰值一定最后触发）。若新峰值要求的全程斜率比
-    /// 当前包络更陡，整体替换为单一事件（保守：中间峰值只会过限、不会超限）；
-    /// 否则在队列中找第一个「按现有斜率会在新峰值触发时超限」的段，收紧该段
-    /// 斜率并把新事件追加到队尾。
-    fn schedule(&mut self, gain: f32, release_slope: f32, lookahead: usize) {
-        let remaining = lookahead - 1;
-        let d_now = (gain - self.att) / lookahead as f32;
-
-        if self.events.is_empty() {
-            if d_now < self.delta {
-                self.delta = d_now;
-                self.events.push_back(LimiterEvent {
-                    remaining,
-                    gain,
-                    slope: release_slope,
-                });
-            }
-            return;
-        }
-
-        if d_now < self.delta {
-            self.delta = d_now;
-            self.events.clear();
-            self.events.push_back(LimiterEvent {
-                remaining,
-                gain,
-                slope: release_slope,
-            });
-            return;
-        }
-
-        for i in 0..self.events.len() {
-            let ev = *self.events.get(i);
-            let dist = remaining.saturating_sub(ev.remaining);
-            if dist == 0 {
-                continue;
-            }
-            let pdelta = (gain - ev.gain) / dist as f32;
-            if pdelta < ev.slope {
-                self.events.get_mut(i).slope = pdelta;
-                if self.events.len() >= self.events.capacity() {
-                    // 容量兜底：改走保守替换，保证新峰值仍被覆盖。
-                    self.delta = self.delta.min(d_now);
-                    self.events.clear();
-                }
-                self.events.push_back(LimiterEvent {
-                    remaining,
-                    gain,
-                    slope: release_slope,
-                });
-                return;
-            }
         }
     }
 
@@ -311,6 +167,9 @@ impl Filter for MaximizerFilter {
         self.level_alpha = (-1.0 / (LEVEL_EST_TAU_S * sr)).exp();
         self.level = 0.0;
         self.lookahead = ((sr * self.params.lookahead_ms * 0.001).round() as usize).max(1);
+        let attack_tau = (self.lookahead as f32 / 3.0).max(1.0);
+        self.attack_coeff = 1.0 - (-1.0 / attack_tau).exp();
+        self.release_coeff = 1.0 - (-1.0 / self.release_frames).exp();
 
         self.delay_lines = self
             .channel_indices
@@ -319,10 +178,8 @@ impl Filter for MaximizerFilter {
             .collect();
         self.shaped_prev = vec![0.0; self.channel_indices.len()];
         self.w = 0;
-        self.att = 1.0;
-        self.delta = 0.0;
+        self.gain = 1.0;
         self.hold_remaining = 0;
-        self.events.clear();
         self.rng = DitherRng::new();
         None
     }
@@ -339,7 +196,6 @@ impl Filter for MaximizerFilter {
         let frame_count = frame_count.min(samples[first].len());
         let lookahead = self.lookahead;
         let limit = self.limit;
-        let release_frames = self.release_frames;
         let wet = self.params.wet;
         let dry = self.params.dry;
         let dither = self.params.dither;
@@ -365,50 +221,44 @@ impl Filter for MaximizerFilter {
                 gain_boost
             };
 
-            // 2) 写入延迟线并检测输入峰值。
-            let mut peak_in = 0.0f32;
+            // 2) 写入延迟线。
             for k in 0..n {
                 let slot = self.channel_indices[k];
                 if slot >= samples.len() {
                     continue;
                 }
-                let v = samples[slot][f] * boost;
-                self.delay_lines[k][self.w] = v;
-                let a = v.abs();
-                if a > peak_in {
-                    peak_in = a;
+                self.delay_lines[k][self.w] = samples[slot][f] * boost;
+            }
+
+            // 3) 前瞻窗口峰值：整个 lookahead 延迟线内的最大绝对值。
+            let mut window_peak = 0.0f32;
+            for delay in self.delay_lines.iter().take(n) {
+                for &v in delay.iter() {
+                    let a = v.abs();
+                    if a > window_peak {
+                        window_peak = a;
+                    }
                 }
             }
 
-            // 3) 超限则调度 attack 包络（该峰值 lookahead 帧后到达输出）。
-            if peak_in > limit {
-                let g = limit / peak_in;
-                let release_slope = (1.0 - g) / release_frames;
-                self.schedule(g, release_slope, lookahead);
-            }
-
-            // 4) 包络推进（v9.20：attack 永不受 hold 影响；release 前先 hold）。
-            if self.delta < 0.0 {
-                self.att += self.delta;
-                if self.att <= 1.0e-9 {
-                    self.att = 1.0e-9;
-                    self.delta = (1.0 - self.att) / release_frames;
-                }
+            // 4) 前瞻增益衰减：目标增益 = min(1, limit / window_peak)。
+            let target_gain = if window_peak > limit {
+                (limit / window_peak).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            if target_gain < self.gain {
+                // attack：朝目标增益快速平滑下降。
+                self.gain += (target_gain - self.gain) * self.attack_coeff;
+                self.hold_remaining = self.hold_frames;
             } else if self.hold_remaining > 0 {
                 self.hold_remaining -= 1;
             } else {
-                self.att += self.delta;
-                if self.att >= 1.0 {
-                    self.att = 1.0;
-                    self.delta = 0.0;
-                    self.events.clear();
-                } else if self.att <= 1.0e-9 {
-                    self.att = 1.0e-9;
-                    self.delta = (1.0 - self.att) / release_frames;
-                }
+                // release：朝 1.0 平滑恢复。
+                self.gain += (target_gain - self.gain) * self.release_coeff;
             }
 
-            // 5) 读取延迟线输出：包络 × 延迟样本 + 硬钳位 + 抖动/量化 + Wet/Dry。
+            // 5) 读取延迟线输出：前瞻增益 × 延迟样本 + 硬钳位 + 抖动/量化 + Wet/Dry。
             let rpos = (self.w + 1) % lookahead;
             for k in 0..n {
                 let slot = self.channel_indices[k];
@@ -417,7 +267,7 @@ impl Filter for MaximizerFilter {
                 }
                 let input = samples[slot][f];
                 let dly = self.delay_lines[k][rpos];
-                let mut out = (dly * self.att).clamp(-limit, limit);
+                let mut out = (dly * self.gain).clamp(-limit, limit);
                 if dither != DitherType::None {
                     out = self.quantize_dither(out, k, dither);
                 }
@@ -425,21 +275,6 @@ impl Filter for MaximizerFilter {
                 samples[slot][f] = if mixed.is_finite() { mixed } else { 0.0 };
             }
 
-            // 6) 触发到期事件、事件倒计时、推进写头。
-            loop {
-                match self.events.front() {
-                    Some(ev) if ev.remaining == 0 => {
-                        let ev = self.events.pop_front().expect("front checked");
-                        self.att = ev.gain;
-                        self.delta = ev.slope;
-                        self.hold_remaining = self.hold_frames;
-                    }
-                    _ => break,
-                }
-            }
-            for i in 0..self.events.len() {
-                self.events.get_mut(i).remaining -= 1;
-            }
             self.w = (self.w + 1) % lookahead;
         }
     }
@@ -451,10 +286,8 @@ impl Filter for MaximizerFilter {
     fn reset(&mut self) {
         self.level = 0.0;
         self.w = 0;
-        self.att = 1.0;
-        self.delta = 0.0;
+        self.gain = 1.0;
         self.hold_remaining = 0;
-        self.events.clear();
         self.rng = DitherRng::new();
         self.shaped_prev.fill(0.0);
         for d in self.delay_lines.iter_mut() {
@@ -580,13 +413,13 @@ mod tests {
             dry: 0.0,
         });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let mut samples = vec![vec![0.0f32; 1600], vec![0.0f32; 1600]];
+        let mut samples = vec![vec![0.0f32; 4000], vec![0.0f32; 4000]];
         samples[0][0] = 1.0; // 超限脉冲触发 attack
-        // v9.20：release 前先 hold 10 ms（= 480 帧），完整恢复 = hold + release ≈ 20 ms。
-        // 输入放在 1200 帧，输出在 1200 + N-1 处，此时包络已回 1。
-        samples[0][1200] = 0.1;
-        f.process(&mut samples, 1600);
-        let out_at = 1200 + 47;
+        // 一阶 release 约 5 个时间常数后回到 1；hold 10ms + release 5×10ms 后恢复。
+        // 输入放在 3500 帧，输出在 3500 + N-1 处，此时包络已基本回 1。
+        samples[0][3500] = 0.1;
+        f.process(&mut samples, 4000);
+        let out_at = 3500 + 47;
         assert!(
             (samples[0][out_at] - 0.1).abs() < 1e-3,
             "expected 0.1 after release, got {}",
