@@ -240,6 +240,52 @@ pub fn restart_audio_service() -> Result<()> {
     Ok(())
 }
 
+/// 确保 AudioSrv 处于运行状态（幂等：已运行直接返回）。
+///
+/// 与 `restart_audio_service` 的区别：不强制 stop→start，只保证服务在跑。
+/// 安装/卸载收尾在端点设备重启后调用，避免“pnputil 重启端点成功但服务仍停”
+/// 导致音频服务未被重新启用。
+pub fn ensure_audio_service_running() -> Result<()> {
+    use windows::Win32::System::Services::{
+        OpenSCManagerW, OpenServiceW, StartServiceW, QueryServiceStatus, CloseServiceHandle,
+        SC_HANDLE, SERVICE_STATUS, SC_MANAGER_ALL_ACCESS, SERVICE_ALL_ACCESS, SERVICE_RUNNING,
+    };
+    use windows::core::{PCWSTR, HSTRING};
+
+    // SAFETY: 非 RT 控制线程调用（install/CLI）。
+    let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+    struct ScmGuard(SC_HANDLE);
+    impl Drop for ScmGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _scm_guard = ScmGuard(scm);
+
+    let svc = unsafe { OpenServiceW(scm, &HSTRING::from("AudioSrv"), SERVICE_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+    struct SvcGuard(SC_HANDLE);
+    impl Drop for SvcGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _svc_guard = SvcGuard(svc);
+
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    unsafe { QueryServiceStatus(svc, &mut status) }
+        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+    if status.dwCurrentState == SERVICE_RUNNING {
+        return Ok(());
+    }
+
+    unsafe { StartServiceW(svc, None) }
+        .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
+    log::info!("AudioSrv started (ensure running)");
+    Ok(())
+}
+
 /// 定向重启指定音频端点设备，让 Windows 重新载入该端点。
 ///
 /// 端点设备实例 ID 格式：

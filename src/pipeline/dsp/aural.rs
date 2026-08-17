@@ -1,6 +1,5 @@
 //! Aural Enhancer（谐波激励器）
 //!
-//! 独立实现（原创 Rust 代码，不再移植自 FxSound `Auralp.c`，已移除 AGPL 版权头）。
 //! 算法（参考 Jatin Chowdhury / FAUST 类电平独立软饱和设计）：
 //! - 二阶 Butterworth 高通（`TuneHz`）提取待激励频段；
 //! - 峰值电平跟随器（瞬时 attack / ~120 ms release，各声道共享）→ 归一化驱动，

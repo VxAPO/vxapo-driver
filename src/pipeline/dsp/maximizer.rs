@@ -1,7 +1,6 @@
 //! Maximizer（自动增益 + lookahead 峰值限幅器）
 //!
-//! v9.8 起为独立实现（原创 Rust 代码，不再移植自 FxSound `Maxi16.c`，
-//! 已移除 AGPL 版权头）。算法结构：
+//! 算法结构：
 //! - 自动增益：全声道单极点电平估计（约 250 ms），`Target` 控制增益回退起点
 //!   （`GainBoost · rms > Target` 时有效增益降为 `max(Target/rms, 1.0)`）；
 //! - lookahead 峰值限幅：环形延迟线 + 窗口峰值前瞻增益衰减

@@ -302,13 +302,13 @@ pub fn install_endpoint(
         }
     }
 
-    // 全流程收尾：让 Windows 重新载入当前端点（优先定向重启端点设备，避免
-    // 应用路由到其他设备；失败时回退整服重启）。best-effort——失败仅记录。
+    // 全流程收尾：定向重启端点设备，随后**无条件确保 AudioSrv 运行**
+    // （否则“端点重启成功但服务仍停”会导致音频服务未启用）。best-effort。
     if let Err(e) = crate::install::audiodg::restart_endpoint_device(device_guid, is_capture) {
-        log::warn!("install_endpoint: 端点设备重启失败（回退音频服务重启）：{e}");
-        if let Err(e2) = crate::install::audiodg::restart_audio_service() {
-            log::warn!("install_endpoint: 音频服务重启失败（安装已生效，重启后生效）：{e2}");
-        }
+        log::warn!("install_endpoint: 端点设备重启失败：{e}");
+    }
+    if let Err(e) = crate::install::audiodg::ensure_audio_service_running() {
+        log::warn!("install_endpoint: 音频服务未能确保运行（安装已生效，重启后生效）：{e}");
     }
     Ok(())
 }
@@ -416,14 +416,14 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
 
     let _ = fx_key.delete_value("DisableEnhancements");
 
-    // 全流程收尾：让 Windows 重新载入当前端点（优先定向重启端点设备，
-    // 失败时回退整服重启）。best-effort——失败仅记录。
+    // 全流程收尾：定向重启端点设备，随后**无条件确保 AudioSrv 运行**
+    // （否则“端点重启成功但服务仍停”会导致音频服务未启用）。best-effort。
     let is_capture = endpoint_path.contains("Capture");
     if let Err(e) = crate::install::audiodg::restart_endpoint_device(device_guid, is_capture) {
-        log::warn!("uninstall: 端点设备重启失败（回退音频服务重启）：{e}");
-        if let Err(e2) = crate::install::audiodg::restart_audio_service() {
-            log::warn!("uninstall: 音频服务重启失败（卸载已生效，重启后恢复输出）：{e2}");
-        }
+        log::warn!("uninstall: 端点设备重启失败：{e}");
+    }
+    if let Err(e) = crate::install::audiodg::ensure_audio_service_running() {
+        log::warn!("uninstall: 音频服务未能确保运行（卸载已生效，重启后恢复输出）：{e}");
     }
     Ok(())
 }
