@@ -16,3 +16,9 @@
 # 系统生成
 .DS_Store
 Thumbs.db
+
+# Docs archived to ../vxapo-docs
+/README.md
+/DESIGN.md
+/docs/
+/.clinerules/
