@@ -23,13 +23,13 @@ use super::inner::{ApoObjectInner, build_dsp_context};
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
 pub(crate) const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.toml";
 
-/// per-device 配置根目录（方案 A，2026-08-04 用户确认）。
+/// per-device 配置根目录（方案 A， 确认）。
 pub(crate) const CONFIG_ROOT: &str = r"C:\ProgramData\VxAPO";
 
 /// 单实例共用子目录名（无设备 GUID 兜底，object 7.1.8）。
 pub(crate) const DEFAULT_DEVICE_DIR: &str = "_default";
 
-/// 从 APOInitSystemEffects 提取端点 GUID（object 7.1.8，v7.2）。
+/// 从 APOInitSystemEffects 提取端点 GUID（object 7.1.8）。
 ///
 /// EAPO 源码（EqualizerAPO.cpp:126）从 `pAPOEndpointProperties` 取端点属性存储；
 /// windows-rs 0.62.2 的 APOInitSystemEffects 同时有 pAPOEndpointProperties 和
@@ -111,7 +111,7 @@ pub(crate) fn resolve_config_path_from(
     path.display().to_string()
 }
 
-/// watcher 运行时状态（v7.10，P0-4 外部驱动模型）。
+/// watcher 运行时状态（， 外部驱动模型）。
 pub(crate) struct WatcherState {
     pub thread: Option<std::thread::JoinHandle<()>>,
     pub shutdown_event: Option<windows::Win32::Foundation::HANDLE>,
@@ -123,14 +123,14 @@ impl Default for WatcherState {
     }
 }
 
-/// 启动配置监控线程（object 7.1.9，v7.10 外部驱动模型）。
+/// 启动配置监控线程（object 7.1.9， 外部驱动模型）。
 ///
 /// 流程：CreateEventW(shutdown_event) → ConfigWatcher::new(watch_dir, shutdown_event)
 /// → spawn 线程循环 `wait_and_handle` → `hot_reload_impl`（DirectoryChanged → 重载）。
 /// 失败降级（watcher 未启动，仅日志）——不阻塞锁定（配置热重载失效但音频链路正常）。
 ///
 /// `#[implement]` 只暴露 `&self`（gen.rs：不向安全代码暴露所有权实例）——因此用
-/// `Arc<Mutex<WatcherState>>` 内部可变性（用户方案 A）；spawn 线程 clone `config_path`/
+/// `Arc<Mutex<WatcherState>>` 内部可变性（方案 A）；spawn 线程 clone `config_path`/
 /// `mutex` 的 Arc 移入（'static），线程内调 `hot_reload_impl`（无需持有 apo）。
 pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     use windows::Win32::Foundation::CloseHandle;
@@ -146,7 +146,7 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     // Safety: CreateEventW 无安全属性、无名字；返回句柄由 watcher_state 持有，stop_watcher 释放。
     let shutdown_event = unsafe { CreateEventW(None, true, false, None)? };
 
-    // 2. 目录级监控器（不自启线程，v7.10）。watch_dir = config_path 父目录。
+    // 2. 目录级监控器（不自启线程）。watch_dir = config_path 父目录。
     let config_path = apo
         .config_path
         .lock()
@@ -187,7 +187,7 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     Ok(())
 }
 
-/// 停止配置监控线程（object 7.1.10，v7.10 外部驱动模型）。
+/// 停止配置监控线程（object 7.1.10， 外部驱动模型）。
 ///
 /// 1. SetEvent(shutdown_event) → wait_and_handle 返回 false → 线程循环退出
 /// 2. join(watcher_thread) → 确保线程已退出（无泄漏）
@@ -222,14 +222,14 @@ pub(crate) fn stop_watcher(apo: &ApoObject_Impl) {
     }
 }
 
-/// 热重载实现（object 7.1.18，v7.9 六步）。
+/// 热重载实现（object 7.1.18， 六步）。
 pub(crate) fn hot_reload_impl(
     config_path: &Arc<Mutex<String>>,
     inner: &Arc<Mutex<ApoObjectInner>>,
     clsid: GUID,
     obj_ptr: usize,
 ) {
-    // 1. R2 阻塞式（短锁检查，不构建新链）。
+    // 1. 阻塞式（短锁检查，不构建新链）。
     {
         let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
         if guard.transition.is_some() || guard.reloading {
@@ -248,11 +248,11 @@ pub(crate) fn hot_reload_impl(
                     "RELOAD pending(transition) clsid={clsid:?} obj=0x{obj_ptr:x}"
                 );
                 drop(guard);
-                diag_append(&msg); // 锁外写盘（R5/v9.17：不持 inner 锁做磁盘 I/O）
+                diag_append(&msg); // 锁外写盘（不持 inner 锁做磁盘 I/O）
                 return;
             }
         }
-        // 决策继续解析 → 立即置位防覆盖（R2/v9.17：reloading 表示“正在解析中”），
+        // 决策继续解析 → 立即置位防覆盖（reloading 表示“正在解析中”），
         // 并发 watcher 事件在短锁检查看到 true 时只记 pending_reload。
         guard.reloading = true;
     }
@@ -325,7 +325,7 @@ pub(crate) fn hot_reload_impl(
     guard.outgoing_chain = Some(old);
     guard.pending_reload = false;
     guard.reloading = false;
-    // v9.12：热重载后同步复用键，下次 Relock 直接复用热重载后的链。
+    // 热重载后同步复用键，下次 Relock 直接复用热重载后的链。
     guard.last_lock_key = Some((
         new_spec.clone(),
         dsp_ctx.sample_rate,
@@ -338,13 +338,13 @@ pub(crate) fn hot_reload_impl(
     sm.begin();
     guard.transition = Some(sm);
     drop(guard);
-    // 锁外写盘（R5/v9.17）。
+    // 锁外写盘。
     diag_append(&format!(
         "RELOAD applied clsid={clsid:?} filters={filter_count} spec={spec_len}"
     ));
 }
 
-/// RAII 清位（R2/v9.17）：`reloading` 表示“正在解析中”，任意提前返回路径
+/// RAII 清位：`reloading` 表示“正在解析中”，任意提前返回路径
 /// （大小闸门/解析失败/spec 相同/add_filter 失败/二次过渡）都必须复位，
 /// 防止后续重载被自己拦截。
 struct ReloadingClear<'a> {
@@ -358,15 +358,15 @@ impl Drop for ReloadingClear<'_> {
     }
 }
 
-/// 运行期诊断日志（v9.4，仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
+/// 运行期诊断日志（，仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
 /// 记录 Lock/热重载的关键事件，供设备切换/热重载失效问题定位；失败静默。
 pub(crate) fn diag_append(line: &str) {
     use std::io::Write;
-    /// 诊断日志单文件上限（v9.17）：达到后轮转为 `diag.1.log`，防止无界增长。
+    /// 诊断日志单文件上限：达到后轮转为 `diag.1.log`，防止无界增长。
     const DIAG_MAX_BYTES: u64 = 1024 * 1024;
     const DIAG_PATH: &str = r"C:\ProgramData\VxAPO\diag.log";
     const DIAG_ROTATED_PATH: &str = r"C:\ProgramData\VxAPO\diag.1.log";
-    // v9.15: serialize log writes across all watcher/control threads to prevent
+    // serialize log writes across all watcher/control threads to prevent
     // interleaved/corrupted lines during reload storms.
     static DIAG_LOCK: Mutex<()> = Mutex::new(());
     let _diag_guard = DIAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());

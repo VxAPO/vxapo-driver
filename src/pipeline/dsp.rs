@@ -1,4 +1,4 @@
-﻿//! pipeline/dsp.rs — DSP 算法模块入口（v6.3 规范）
+﻿//! pipeline/dsp.rs — DSP 算法模块入口（规范）
 //!
 //! 职责：Filter trait、工厂注册表、过渡混合。
 //!

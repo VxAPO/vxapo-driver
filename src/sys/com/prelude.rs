@@ -1,4 +1,4 @@
-﻿//! sys/com/prelude.rs — COM 基础类型重导出 + HRESULT 常量（v6.3 规范 3.1）
+﻿//! sys/com/prelude.rs — COM 基础类型重导出 + HRESULT 常量（规范 3.1）
 //!
 //! 职责：重导出 `windows-rs` 的 COM 基础类型与 HRESULT 常量。
 //!
@@ -53,7 +53,7 @@ pub use windows::Win32::System::Com::{
 /// GUID → 字符串（标准 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` 格式，带花括号）。
 pub use windows::Win32::System::Com::StringFromGUID2;
 
-// ── HRESULT 常量（v6.3 规范 3.1） ──
+// ── HRESULT 常量（规范 3.1） ──
 
 /// 操作成功。
 pub const S_OK: HRESULT = HRESULT(0);
@@ -88,7 +88,7 @@ pub const CLASS_E_NOAGGREGATION: HRESULT = HRESULT(0x8004_0110u32 as i32);
 /// `DllRegisterServer` 自注册失败（windows crate 未导出，本地补充）。
 pub const SELFREG_E_CLASS: HRESULT = HRESULT(0x8004_0201u32 as i32);
 
-// ── APO 专用 HRESULT 错误码（v6.3 规范 3.3.7）──
+// ── APO 专用 HRESULT 错误码（规范 3.3.7）──
 pub const APOERR_ALREADY_INITIALIZED:          HRESULT = HRESULT(0x887D_0001u32 as i32);
 pub const APOERR_NOT_INITIALIZED:              HRESULT = HRESULT(0x887D_0002u32 as i32);
 pub const APOERR_FORMAT_NOT_SUPPORTED:         HRESULT = HRESULT(0x887D_0003u32 as i32);
@@ -108,7 +108,7 @@ pub const APOERR_INVALID_INPUTID:              HRESULT = HRESULT(0x887D_000Eu32 
 
 /// 将 GUID 格式化为标准字符串 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`。
 ///
-/// 底层使用 `StringFromGUID2`（windows-rs 0.62.2 签名：`(rguid, lpsz: &mut [u16]) -> i32`），
+/// 底层使用 `StringFromGUID2`（windows-rs 0.62.2 签名：`(rguid, lpsz: &mut [u16]） -> i32`)，
 /// 返回**带花括号**的格式；与 `GUID::Debug`（不带花括号）不同。
 /// `StringFromGUID2` 需要至少 39 个 WCHAR（38 字符 + null 终止符）。
 pub fn guid_to_string(g: &GUID) -> String {

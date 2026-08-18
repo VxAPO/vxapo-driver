@@ -1,4 +1,4 @@
-//! utils/align.rs — SIMD 宽度对齐内存分配（Note 37）
+//! utils/align.rs — SIMD 宽度对齐内存分配
 //!
 //! 提供对齐到指定字节边界（16 / 32 字节）的内存分配，用于 SIMD 操作。
 //! 缓冲区在初始化阶段分配，实时线程直接使用已分配内存，无堆分配开销。
@@ -22,7 +22,7 @@ pub const SIMD_ALIGN: usize = 32;
 ///
 /// ```text
 /// ┌──────────────┬──────────────────────────┐
-/// │   padding    │   usable (len × sizeof)  │
+/// │ padding │ usable(len × sizeof) │
 /// └──────────────┴──────────────────────────┘
 /// ^
 /// returned pointer

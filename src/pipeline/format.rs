@@ -1,4 +1,4 @@
-﻿//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（v6.3 规范 4.3）
+﻿//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（规范 4.3）
 
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE};

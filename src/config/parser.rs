@@ -1,4 +1,4 @@
-//! config/parser.rs — TOML 配置解析（v9.11）
+//! config/parser.rs — TOML 配置解析
 //!
 //! 流程：读取 `config.toml` → `toml::from_str::<FileModel>`（文件格式模型）→
 //! `FileModel::into_chain_model`（校验，丢弃 APP 元数据）→
@@ -38,14 +38,14 @@ impl ConfigParser {
         Ok(filters)
     }
 
-    /// 解析配置文件，同时产出配置指纹（v7.9 语义保留，指纹改模型 spec）。
+    /// 解析配置文件，同时产出配置指纹（语义保留，指纹改模型 spec）。
     pub fn parse_file_with_spec(
         &self,
         path: &str,
         ctx: &DspContext,
     ) -> Result<(Vec<Box<dyn Filter>>, SpecChain), ConfigError> {
         let path_ref = Path::new(path);
-        // v9.12 防御：配置文件缺失 = 无配置 passthrough（空链）。
+        // 防御：配置文件缺失 = 无配置 passthrough（空链）。
         // 若按解析失败处理，新流 LockForProcess 会失败 → APO 不生效 → 无声
         // （实证：config.toml 被删后热重载保留旧链、新流直接无声）。
         if !path_ref.exists() {

@@ -2,13 +2,13 @@
 //!
 //! 实现 `Preamp:` 命令。
 //!
-//! 平滑过渡（Note 15）：
+//! 平滑过渡：
 //! 增益变化时使用**比例平滑**（等效对数域）避免 click/pop；带到达步数与跳转阈值。
 //!
 //! 数值护栏（P0）：
 //! - dB 经 `math::clamp_gain_db`（[-120, +48]），线性因子保证有限；
 //! - 非有限目标直接忽略；
-//! - `process` 遵守 RT-safety 约束（Note 12），零分配。
+//! - `process` 遵守 RT-safety 约束，零分配。
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{

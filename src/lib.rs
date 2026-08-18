@@ -2,7 +2,7 @@
 //!
 //! VxAPO：Windows 音频处理对象（APO）驱动，提供系统级音频 DSP 处理能力。
 //!
-//! 模块结构（v6.3 规范）：
+//! 模块结构（规范）：
 //!
 //! - [`sys`]：FFI 层（COM/注册表/音频定义）
 //! - [`pipeline`]：音频处理管道（context/buffer/interleave/chain/process/dsp）
@@ -20,7 +20,7 @@
 // Windows COM 接口沿用 PascalCase / SCREAMING_SNAKE_CASE 命名
 #![allow(non_camel_case_types, non_snake_case)]
 
-// ======================== 模块声明（v6.3 规范） ========================
+// ======================== 模块声明（规范） ========================
 
 pub mod config;
 pub mod install;

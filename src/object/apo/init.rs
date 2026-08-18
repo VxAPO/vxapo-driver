@@ -30,7 +30,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         .transition(ApoState::Created, ApoState::Initialized)
         .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
-    // 3. 解析 APOInitSystemEffects → 端点 GUID + 子 APO（object 7.1.8 v8.4）。
+    // 3. 解析 APOInitSystemEffects → 端点 GUID + 子 APO（object 7.1.8）。
     //    Safety: pby_data 已验证非空 + 尺寸足够；APOInitSystemEffects 为 repr(C) 结构。
     let endpoint_guid = if valid_init_data {
         let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
@@ -39,7 +39,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         None
     };
 
-    // 4. 子 APO 创建（P0-6 v8.4：vendor 安装信息区读取，失败降级为无子 APO，Note 57）。
+    // 4. 子 APO 创建（vendor 安装信息区读取，失败降级为无子 APO）。
     //    - GUID 来源：端点 GUID + 安装信息区 PreMixChild/PostMixChild 值
     //    - 空/特殊 GUID、create 失败 → None（不阻塞 Initialize）
     let child = match endpoint_guid {
@@ -56,7 +56,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
     };
     *apo.child_apo.lock().unwrap_or_else(|e| e.into_inner()) = child;
 
-    // 5b. 运行期自愈（v9.4）：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX
+    // 5b. 运行期自愈：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX
     //     重新灌回 `MSFX\N`，与 VxAPO 同时加载导致断断续续/慢放。本 DLL 在
     //     每次加载（Initialize，控制线程）时按端点自愈接管——仅动微软 CAPX，
     //     仅限已装 VxAPO 的端点；失败仅降级日志，不阻塞初始化。

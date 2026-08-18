@@ -1,4 +1,4 @@
-//! pipeline/dsp/model.rs — DSP 层配置模型（ChainModel，v9.11）
+//! pipeline/dsp/model.rs — DSP 层配置模型（ChainModel）
 //!
 //! config 层把 TOML 反序列化的 FileModel 转换到这里（丢弃 `name` / `group` /
 //! `meta` 等 APP 元数据，校验范围/段数/声道名），`factory` 按此构造 Filter。
@@ -11,7 +11,7 @@ use crate::pipeline::dsp::wide::WideParams;
 
 /// 分频点（Hz）：`Fc < CROSSOVER_HZ` 归 IIR，`Fc >= CROSSOVER_HZ` 归 FIR。
 pub const CROSSOVER_HZ: f32 = 200.0;
-/// PEQ 单块最小段数（v9.16：UI 卡片模型允许 1 段卡 / 无组裸 band，见 UI 设计规范 01）。
+/// PEQ 单块最小段数（UI 卡片模型允许 1 段卡 / 无组裸 band，见 UI 设计规范 01）。
 pub const MIN_PEQ_BANDS: usize = 1;
 /// PEQ 单块最大段数（沿用 GraphicEQ 上限；跨块全局合计 ≤ MAX，config 层校验）。
 pub const MAX_PEQ_BANDS: usize = 31;
@@ -32,7 +32,7 @@ pub struct EffectConfig {
     pub params: EffectParams,
 }
 
-/// 效果器类型（v1 保留集）。
+/// 效果器类型（保留集）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectType {
     Peq,

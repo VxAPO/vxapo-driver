@@ -1,4 +1,4 @@
-//! config/model.rs — 文件格式模型（FileModel，v9.11）
+//! config/model.rs — 文件格式模型（FileModel）
 //!
 //! TOML 反序列化目标：`version` / `[meta]` / `[[effects]]`（含 APP 元数据
 //! `name` / `group`）。`into_chain_model()` 丢弃 APP 元数据并完成范围/段数/
@@ -24,7 +24,7 @@ use crate::pipeline::dsp::wide::WideParams;
 pub struct FileModel {
     #[serde(default = "default_version")]
     pub version: u32,
-    /// 总开关（v9.18）：`false` = 整链 passthrough，但文件内容保留、不参与校验。
+    /// 总开关：`false` = 整链 passthrough，但文件内容保留、不参与校验。
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -148,7 +148,7 @@ impl FileModel {
         for (idx, fe) in self.effects.iter().enumerate() {
             effects.push(fe.into_effect_config(file, idx)?);
         }
-        // v9.19：peq 段数按声道分组统计。有 `channels` 的段计入对应声道，无
+        // peq 段数按声道分组统计。有 `channels` 的段计入对应声道，无
         // `channels` 的段计入共享预算（各声道 / 共享分别 ≤ MAX_PEQ_BANDS）。
         let mut shared_peq_bands = 0usize;
         let mut channel_peq_bands: HashMap<String, usize> = HashMap::new();
@@ -774,7 +774,7 @@ q = 1.0
 
     #[test]
     fn single_band_peq_accepted() {
-        // v9.16：单块下限 1——允许 1 段卡 / 无组裸 band（UI 设计规范 01）。
+        // 单块下限 1——允许 1 段卡 / 无组裸 band（UI 设计规范 01）。
         let toml = r#"
 [[effects]]
 type = "peq"
@@ -794,7 +794,7 @@ q = 2.0
 
     #[test]
     fn total_peq_band_cap_enforced() {
-        // v9.16：跨块全局合计 ≤ 31（预设块 + 无组裸 band 共享预算）。
+        // 跨块全局合计 ≤ 31（预设块 + 无组裸 band 共享预算）。
         let mut s = String::new();
         for _ in 0..2 {
             s.push_str("[[effects]]\ntype = \"peq\"\n");

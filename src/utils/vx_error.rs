@@ -1,4 +1,4 @@
-﻿//! utils/vx_error.rs — VxApoError 业务错误（v6.3 规范）
+﻿//! utils/vx_error.rs — VxApoError 业务错误（规范）
 //!
 //! 边界：不依赖任何其他模块（仅 `windows-core` 的 `HRESULT`）。
 //!
@@ -7,7 +7,7 @@
 
 use core::result;
 
-/// 统一业务错误枚举（v6.3 规范，8 变体）。
+/// 统一业务错误枚举（规范，8 变体）。
 #[derive(Debug, thiserror::Error)]
 pub enum VxApoError {
     #[error("注册表错误: {0}")]
@@ -60,7 +60,7 @@ pub fn check_hresult(hr: windows_core::HRESULT) -> Result<()> {
     }
 }
 
-// ── APO 专用 HRESULT 错误码（v6.3 规范 3.3.7）──────────────────────────────
+// ── APO 专用 HRESULT 错误码（规范 3.3.7）──────────────────────────────
 // 注：这些常量在规范中定义于 sys/com/apo_types.rs，但 utils/ 层禁止依赖 sys/。
 // 因此此处内联常量值，保持 utils 独立性（值同规范，两处保持一致）。
 

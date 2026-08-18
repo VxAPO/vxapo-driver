@@ -1,4 +1,4 @@
-﻿//! sys/com/apo_types.rs — APO 类型（v6.3 规范 3.3，修正版）
+﻿//! sys/com/apo_types.rs — APO 类型（规范 3.3，修正版）
 //!
 //! 修正：windows-rs 0.62.2 已提供 APO_REG_PROPERTIES / APO_CONNECTION_DESCRIPTOR /
 //! APO_CONNECTION_PROPERTY / APO_FLAG / APO_BUFFER_FLAGS，此处全部 re-export。
@@ -22,7 +22,7 @@ pub use windows::Win32::Media::Audio::Apo::{
     APO_REG_PROPERTIES,
     APO_CONNECTION_DESCRIPTOR,
     APO_CONNECTION_PROPERTY,
-    // APOInitSystemEffects：Initialize 初始化数据（v7.2，P0-3 per-device 配置路径）。
+    // APOInitSystemEffects：Initialize 初始化数据（， per-device 配置路径）。
     // 实测字段：{ APOInit: APOInitBaseStruct, pAPOEndpointProperties,
     //   pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>,
     //   pReserved, pDeviceCollection }——端点 GUID 经 pAPOSystemEffectsProperties

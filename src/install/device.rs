@@ -1,4 +1,4 @@
-﻿//! install/device.rs — install/device 模块入口（v6.3 规范 5.1-5.4）
+﻿//! install/device.rs — install/device 模块入口（规范 5.1-5.4）
 //!
 //! 职责：设备 APO 查询子模块。
 //! - endpoint：端点状态/名称查询（只读）

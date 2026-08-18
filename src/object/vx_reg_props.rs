@@ -1,4 +1,4 @@
-﻿//! host/instance/reg_props.rs — APO 注册属性定义（Note 42）
+﻿//! host/instance/reg_props.rs — APO 注册属性定义
 //!
 //! VxAPO 自身的 CLSID 定义与 APO 注册属性。
 //! 系统级接口 IID 请见 `sys/iid.rs`。
@@ -20,9 +20,9 @@ use crate::sys::com::apo_types::{APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, AP
 // ══════════════════════════════════════════════════════════════════════════════
 // CLSID 常量
 // ══════════════════════════════════════════════════════════════════════════════
-// 2026-08-02 由 PowerShell `[guid]::NewGuid()` 生成，**定死不改动**。
+// 由 PowerShell `[guid]::NewGuid()` 生成，**定死不改动**。
 // 备份见 .clinerules/07-VxAPO_GUID.md。
-// PRE_MIX  = 41C34613-D391-459D-A039-72B2B15A1A1D
+// PRE_MIX = 41C34613-D391-459D-A039-72B2B15A1A1D
 // POST_MIX = B4A97313-ABC0-45ED-9C33-428B20D39428
 
 pub const CLSID_VXAPO_PRE_MIX: GUID = GUID::from_values(
@@ -269,12 +269,12 @@ mod tests {
     }
 }
 
-/// 单个 CLSID 的注册信息（v6.3 规范 7.5）。
+/// 单个 CLSID 的注册信息（规范 7.5）。
 #[derive(Debug)]
 pub struct ClsidEntry {
     pub clsid: GUID,
     pub clsid_str: String,
-    /// CLSID 父键 (Default) 友好名（EAPO 对齐：EAPO 注册树父键有
+    /// CLSID 父键(Default) 友好名（EAPO 对齐：EAPO 注册树父键有
     /// (Default)="EqualizerAPO Pre-Mix Class"，VxAPO 之前缺失——补上供引擎辨识）。
     pub friendly_name: String,
 }
@@ -293,7 +293,7 @@ impl ClsidEntry {
     }
     pub fn clsid_key_path(&self) -> String { format!("CLSID\\{}", self.clsid_str) }
     pub fn inproc_server_path(&self) -> String { format!("CLSID\\{}\\InprocServer32", self.clsid_str) }
-    /// AudioEngine APO 注册键（P0-7 根因修复）：引擎读槽位 CLSID 后查此键取 APO 属性，
+    /// AudioEngine APO 注册键（根因修复）：引擎读槽位 CLSID 后查此键取 APO 属性，
     /// 缺失则静默拒载（ProcMon 实证：VxAPO 曾 NAME NOT FOUND，EAPO SUCCESS）。
     pub fn audio_engine_path(&self) -> String {
         format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
@@ -306,12 +306,12 @@ impl ClsidEntry {
     }
 }
 
-/// 注册顺序：PostMix → PreMix（Note 29）。
+/// 注册顺序：PostMix → PreMix。
 pub fn registration_order() -> Vec<ClsidEntry> {
     vec![ClsidEntry::new(CLSID_VXAPO_POST_MIX), ClsidEntry::new(CLSID_VXAPO_PRE_MIX)]
 }
 
-/// 注销顺序：PreMix → PostMix（Note 30）。
+/// 注销顺序：PreMix → PostMix。
 pub fn unregistration_order() -> Vec<ClsidEntry> {
     vec![ClsidEntry::new(CLSID_VXAPO_PRE_MIX), ClsidEntry::new(CLSID_VXAPO_POST_MIX)]
 }

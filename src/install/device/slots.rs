@@ -1,16 +1,16 @@
-﻿//! install/device/slots.rs — APO 槽位管理（Note 25/26/46，v6.3 规范 5.3）
+﻿//! install/device/slots.rs — APO 槽位管理（， 规范 5.3）
 //!
 //! 管理 Windows 音频端点 FxProperties 注册表键下的 5 个 APO GUID 槽位，
 //! 提供安装模式选择与原始 APO GUID 回退查询。
 //!
-//! 5 个槽位（Note 25）：
+//! 5 个槽位：
 //! ```text
-//! 索引  名称  角色
-//! 0     LFX   Legacy PreMix（Win8.1+）
-//! 1     GFX   Legacy PostMix（Win8.1+）
-//! 2     SFX   Side-effect PreMix（Win10+）
-//! 3     MFX   Mixed-effect PostMix（Win11 蓝牙）
-//! 4     EFX   Endpoint-effect PostMix（默认）
+//! 索引 名称 角色
+//! 0 LFX Legacy PreMix（Win8.1+）
+//! 1 GFX Legacy PostMix（Win8.1+）
+//! 2 SFX Side-effect PreMix（Win10+）
+//! 3 MFX Mixed-effect PostMix（Win11 蓝牙）
+//! 4 EFX Endpoint-effect PostMix（默认）
 //! ```
 //!
 //! 每个槽位有三种特殊值状态：
@@ -18,19 +18,19 @@
 //! - `NoValue`：值为空或已被其他 APO 占据（该槽位无自定义 APO）
 //! - `Guid(GUID)`：具体的 APO CLSID
 //!
-//! 3 种安装模式（Note 26）：
-//! | 模式     | PreMix 槽位 | PostMix 槽位 | 适用场景       |
+//! 3 种安装模式：
+//! | 模式 | PreMix 槽位 | PostMix 槽位 | 适用场景 |
 //! |----------|-------------|--------------|----------------|
-//! | LfxGfx   | LFX(0)      | GFX(1)       | Win8.1+ Legacy |
-//! | SfxMfx   | SFX(2)      | MFX(3)       | Win11 蓝牙     |
-//! | SfxEfx   | SFX(2)      | EFX(4)       | 默认           |
+//! | LfxGfx | LFX(0) | GFX(1) | Win8.1+ Legacy |
+//! | SfxMfx | SFX(2) | MFX(3) | Win11 蓝牙 |
+//! | SfxEfx | SFX(2) | EFX(4) | 默认 |
 //!
-//! GUID 回退逻辑（Note 46）：
+//! GUID 回退逻辑：
 //! - `get_original_pre_mix()`：当前模式槽位为 `NoValue` 时回退到同组另一槽位
 //! - `get_original_post_mix()`：类似，涉及 GFX / MFX / EFX 三槽位
 //! - `NoKey` 或无回退目标时返回空字符串
 //!
-//! 此模块只做查询，不修改任何系统状态（Note 23）。实际操作委托 `install/install`。
+//! 此模块只做查询，不修改任何系统状态。实际操作委托 `install/install`。
 
 use crate::sys::com::prelude::{GUID, guid_to_string};
 use crate::sys::registry::RegKey;
@@ -43,7 +43,7 @@ use crate::utils::guid::{guid_from_bytes, is_zero_guid, parse_guid_string};
 /// FxProperties 子键名称。
 pub const FX_PROPERTIES_KEY: &str = "FxProperties";
 
-/// 安装版本号（Note 24）。
+/// 安装版本号。
 pub const INSTALL_VERSION: &str = "2";
 
 /// Legacy 安装版本号。
@@ -55,7 +55,7 @@ pub const INSTALL_VERSION_LEGACY: &str = "1";
 /// 各槽位通过属性索引区分。
 const APO_FX_PROPERTY_GUID: &str = "d04e05a6-594b-4fb6-a80d-01af5eed7d1d";
 
-// Windows 真实注册表槽位属性 ID（PID），2026-08-04 reg query 实证。
+// Windows 真实注册表槽位属性 ID（PID）， reg query 实证。
 const PID_LFX: u8 = 0;
 const PID_GFX: u8 = 3;
 const PID_SFX: u8 = 5;
@@ -63,7 +63,7 @@ const PID_MFX: u8 = 6;
 const PID_EFX: u8 = 7;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ApoSlot — 5 个 APO 槽位（Note 25）
+// ApoSlot — 5 个 APO 槽位
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// APO 槽位索引。
@@ -101,7 +101,7 @@ impl ApoSlot {
 
 /// Windows 真实注册表槽位属性 ID（PID）。
 ///
-/// **实证（2026-08-04 reg query）**：FxProperties 下 `{d04e05a6-...}` 各槽位
+/// **实证（reg query）**：FxProperties 下 `{d04e05a6-...}` 各槽位
 /// 的 PID 为 **0/3/5/6/7**（非连续 0-4）：
 /// - LFX=0 / GFX=3 / SFX=5 / MFX=6 / EFX=7
 /// - 值与旧 CLI `src/reg.rs` 常量一致（VAL_SFX=5 / VAL_MFX=6 / VAL_EFX=7）
@@ -134,7 +134,7 @@ pub fn value_name(self) -> String {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// InstallMode — 3 种安装模式（Note 26）
+// InstallMode — 3 种安装模式
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 安装模式。
@@ -175,7 +175,7 @@ impl InstallMode {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SlotValue — 槽位值状态（Note 25）
+// SlotValue — 槽位值状态
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// APO 槽位值。
@@ -185,11 +185,11 @@ impl InstallMode {
 pub enum SlotValue {
     /// FxProperties 键不存在（设备未配置任何 APO）。
     ///
-    /// 对应 Note 6 中的 `APOGUID_NOKEY`。
+    /// 对应 中的 `APOGUID_NOKEY`。
     NoKey,
     /// 值为空或已被其他 APO 占据（该槽位无自定义 APO）。
     ///
-    /// 对应 Note 6 中的 `APOGUID_NOVALUE`。
+    /// 对应 中的 `APOGUID_NOVALUE`。
     NoValue,
     /// 具体的 APO CLSID。
     Guid(GUID),
@@ -274,7 +274,7 @@ pub fn read_slot_value(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
 ///
 /// # 参数
 ///
-/// - `is_windows_8_1_or_newer`：OS 版本判定（registry::is_windows_version_at_least(6,3,9600)）。
+/// - `is_windows_8_1_or_newer`：OS 版本判定（registry::is_windows_version_at_least(6,3,9600）)。
 /// - `slots`：5 槽位值（LFX/GFX/SFX/MFX/EFX），来自端点 FxProperties。
 /// - `has_bluetooth_container`：端点 `Properties` 子键下
 ///   `{b3f8fa53-0004-438e-9003-51a46e139bfc},41`（PKEY_Device_ContainerId，PID 41）值存在。
@@ -332,12 +332,12 @@ pub fn read_all_slots(endpoint_key: &RegKey) -> [SlotValue; 5] {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 公开 API — 原始 APO GUID 回退（Note 46）
+// 公开 API — 原始 APO GUID 回退
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 获取原始 PreMix APO GUID（带回退）。
 ///
-/// # 回退规则（Note 46）
+/// # 回退规则
 ///
 /// 1. 按安装模式取对应 PreMix 槽位（LFX 或 SFX）
 /// 2. 若为 `NoValue` 且**同组另一槽位也是 `NoValue`**，回退到另一模式的 PreMix 槽位
@@ -377,7 +377,7 @@ pub fn get_original_pre_mix(slots: &[SlotValue; 5], mode: InstallMode) -> String
 
 /// 获取原始 PostMix APO GUID（带回退）。
 ///
-/// # 回退规则（Note 46）
+/// # 回退规则
 ///
 /// 1. 按安装模式取对应 PostMix 槽位（GFX / MFX / EFX）
 /// 2. 若为 `NoValue`，按优先级尝试其他 PostMix 槽位：
@@ -409,7 +409,7 @@ pub fn get_original_post_mix(slots: &[SlotValue; 5], mode: InstallMode) -> Strin
     }
 
     // 情况 3：主槽位是 NoValue → 按优先级回退到其他 PostMix 槽位。
-    // Note 46: PostMix 涉及 GFX/MFX/EFX 三槽位。
+    // PostMix 涉及 GFX/MFX/EFX 三槽位。
     for fallback in postmix_fallback_order(mode) {
         if let SlotValue::Guid(g) = slots[fallback.index() as usize] {
             return guid_to_string(&g);
@@ -420,12 +420,12 @@ pub fn get_original_post_mix(slots: &[SlotValue; 5], mode: InstallMode) -> Strin
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// VxAPO 独立安装信息区（v8.4/v8.5，P0-6 子 APO GUID 来源）
+// VxAPO 独立安装信息区（， 子 APO GUID 来源）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// VxAPO 独立安装信息区键路径（install 5.3 v8.5，全量判定依据）。
+/// VxAPO 独立安装信息区键路径（install 5.3，全量判定依据）。
 ///
-/// **路径隔离（v8.4，用户指示）**：禁止读写 EAPO 的
+/// **路径隔离（，指示）**：禁止读写 EAPO 的
 /// `HKLM\SOFTWARE\EqualizerAPO\Child APOs`（EAPO childApoPath，RegistryHelper.h 33）——
 /// VxAPO 用独立的 `HKLM\SOFTWARE\VxAPO` 根，避免污染 EAPO 安装信息区。
 pub const CHILD_APO_PATH_ROOT: &str = r"HKLM\SOFTWARE\VxAPO\Child APOs";
@@ -449,7 +449,7 @@ impl ChildApoKind {
     }
 }
 
-/// 判断某设备是否有 VxAPO 安装信息区（全量/非全量判定的唯一依据，intent 七节 v8.5）。
+/// 判断某设备是否有 VxAPO 安装信息区（全量/非全量判定的唯一依据，intent 七节）。
 ///
 /// - 不存在 → 初始安装 / 完全卸载后安装 → `install_endpoint` 走**全量备份路径**；
 /// - 存在 → 重装 / 失守重装 → 走**非全量路径**（槽位覆盖或保留旧 childapo）。
@@ -466,14 +466,14 @@ pub fn child_apo_key_exists(device_guid: &str) -> bool {
     RegKey::open(root, sub_key).is_ok()
 }
 
-/// 读取子 APO GUID（object 7.1.8 v8.4，P0-6 三处矛盾消解）。
+/// 读取子 APO GUID（object 7.1.8， 三处矛盾消解）。
 ///
 /// 运行期 `Initialize` 用端点 GUID 反查安装信息区：
 /// `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`。
-/// 返回 `None` = 键或值不存在 / 值为空 / 格式非法（降级为无子 APO，Note 57）。
+/// 返回 `None` = 键或值不存在 / 值为空 / 格式非法（降级为无子 APO）。
 ///
 /// *注意*：与 FxProperties 槽位无关——这是 VxAPO 独立安装信息区
-/// （install 5.3 v8.4），非 `{d04e05a6-...},{index}` 槽位值。
+/// （install 5.3），非 `{d04e05a6-...},{index}` 槽位值。
 pub fn read_child_apo_guid(device_guid: &str, kind: ChildApoKind) -> Option<GUID> {
     let key_path = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
     let (root, sub_key) = split_path(&key_path)?;
@@ -483,7 +483,7 @@ pub fn read_child_apo_guid(device_guid: &str, kind: ChildApoKind) -> Option<GUID
     parse_guid_string(&s)
 }
 
-/// 拆分 `HKLM\...` 完整路径为 (root HKEY, 子键路径)。
+/// 拆分 `HKLM\...` 完整路径为(root HKEY, 子键路径)。
 ///
 /// 支持 `HKLM\` 前缀（CHILD_APO_PATH_ROOT 带根）。其他根（HKCU/HKCR/HKU）
 /// 当前无使用点，返回 None（保守——不猜测不存在的调用场景）。
@@ -511,7 +511,7 @@ fn other_premix_slot(mode: InstallMode) -> ApoSlot {
 
 /// PostMix 回退顺序（不含主槽位，已排除）。
 ///
-/// Note 46: 涉及 GFX/MFX/EFX 三槽位。
+/// 涉及 GFX/MFX/EFX 三槽位。
 fn postmix_fallback_order(mode: InstallMode) -> &'static [ApoSlot] {
     match mode {
         // EFX 主 → 尝试 MFX → GFX
@@ -524,7 +524,7 @@ fn postmix_fallback_order(mode: InstallMode) -> &'static [ApoSlot] {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 测试（Note 41）
+// 测试
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn slot_registry_pids_match_windows() {
-        // Windows 真实 PID：0/3/5/6/7（2026-08-04 reg query 实证）。
+        // Windows 真实 PID：0/3/5/6/7（reg query 实证）。
         assert_eq!(ApoSlot::Lfx.registry_pid(), 0);
         assert_eq!(ApoSlot::Gfx.registry_pid(), 3);
         assert_eq!(ApoSlot::Sfx.registry_pid(), 5);
@@ -744,7 +744,7 @@ mod tests {
         assert!(guid_from_bytes(&[0u8; 15]).is_none());
     }
 
-    // ── 回退逻辑 — get_original_pre_mix（Note 46） ────────────────────────
+    // ── 回退逻辑 — get_original_pre_mix ────────────────────────
 
     #[test]
     fn premix_primary_has_guid() {
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxEfx), "");
     }
 
-    // ── 回退逻辑 — get_original_post_mix（Note 46） ───────────────────────
+    // ── 回退逻辑 — get_original_post_mix ───────────────────────
 
     #[test]
     fn postmix_primary_has_guid() {

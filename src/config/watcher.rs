@@ -1,9 +1,9 @@
-﻿//! config/watcher.rs — 配置文件变更监控（v6.3 规范 6.2，v7.8/v7.9 事件驱动）
+﻿//! config/watcher.rs — 配置文件变更监控（规范 6.2，/ 事件驱动）
 //!
 //! **职责**：监控配置目录变更（Win32 事件驱动，对齐 EAPO `notificationThread`）。
 //! 不再使用轮询模式（旧 2000ms 轮询延迟高、浪费 CPU）。
 //!
-//! **目录级语义（v7.9）**：`FindFirstChangeNotificationW` 是目录级通知——只告知
+//! **目录级语义**：`FindFirstChangeNotificationW` 是目录级通知——只告知
 //! "监控目录下有变更"，**不提供具体文件名**（文件名信息只有 `ReadDirectoryChangesW`
 //! 扩展才有）。因此统一 `DirectoryChanged(watch_dir)`，不做逐文件过滤；
 //! object 层 `hot_reload`（7.1.18）对任何目录变更：128KB 闸门 → 重新解析 →
@@ -12,7 +12,7 @@
 //! **线程模型**：本结构体**不自启线程**——`wait_and_handle` 由调用方
 //! （object/apo.rs `start_watcher`）在自建线程内循环调用；`shutdown_event`
 //! 由 APO 实例持有，`UnlockForProcess` 时 `SetEvent` 触发退出 + join。
-//! （new 注释的"启动 watcher 线程"为模板残留——v7.9 API 明确 2 参、
+//! （new 注释的"启动 watcher 线程"为模板残留—— API 明确 2 参、
 //!   线程由 object 层驱动，见 `object 7.1.9`。）
 
 use std::path::{Path, PathBuf};
@@ -24,7 +24,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Threading::{SetEvent, WaitForMultipleObjects};
 
-/// 去重窗口：编辑器「写临时文件 + rename」的多次通知在此窗口内合并（v7.8）。
+/// 去重窗口：编辑器「写临时文件 + rename」的多次通知在此窗口内合并。
 const DEDUP_WINDOW_MS: u32 = 10;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -35,7 +35,7 @@ const DEDUP_WINDOW_MS: u32 = 10;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchEvent {
     /// 监控目录内发生变更（**目录级通知**——`FindFirstChangeNotificationW`
-    ///   不提供具体文件名（v7.9 澄清），无法逐文件过滤）。
+    /// 不提供具体文件名（澄清），无法逐文件过滤）。
     /// 触发方（object/apo.rs hot_reload）重新解析 config.toml，经 spec 指纹
     /// 比对决定是否真正切换（内容未变 → 幂等跳过，无听感副作用）。
     DirectoryChanged(PathBuf), // watch_dir
@@ -47,7 +47,7 @@ pub enum WatchEvent {
 // ConfigWatcher
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 配置目录变更监控器（v7.8/v7.9 事件驱动）。
+/// 配置目录变更监控器（事件驱动）。
 ///
 /// 核心：监控 **目录**（非文件——文件被删除重建时句柄失效，目录天然健壮）。
 /// `wait_and_handle` 阻塞直到目录变更或 shutdown，由调用方线程循环驱动；
@@ -68,7 +68,7 @@ impl ConfigWatcher {
     ///
 /// - `watch_dir`：**监控目录**（如 `Documents\VxAPO\{GUID}`），非 config.toml 文件本身
     /// - `shutdown_event`：外部持有的退出事件（APO 实例持有；UnlockForProcess 时
-    ///   `SetEvent` 后 join 线程——v7.9 生命周期随锁定周期）
+    /// `SetEvent` 后 join 线程—— 生命周期随锁定周期）
     ///
     /// 若 `FindFirstChangeNotificationW` 失败（目录不存在等），`notify_handle`
     /// 为无效句柄，`wait_and_handle` 立即返回 `false`（等效不监控）。
@@ -115,7 +115,7 @@ impl ConfigWatcher {
     ///   1. `WaitForMultipleObjects([shutdown_event, notify_handle], false, 无限)` 异步阻塞
     ///   2. shutdown → 返回 false
     ///   3. 目录变更 → `WaitForMultipleObjects([notify_handle], false, 10ms)` 去重
-    ///      （合并编辑器「写临时文件 + rename」的多次通知，v7.8 对齐 EAPO）→
+    /// （合并编辑器「写临时文件 + rename」的多次通知， 对齐 EAPO）→
     ///      `FindNextChangeNotification` 重置通知句柄 → 返回 true
     pub fn wait_and_handle(&mut self) -> bool {
         if self.notify_handle.is_invalid() {
@@ -140,7 +140,7 @@ impl ConfigWatcher {
             // 重置通知，为下一次等待准备。
             // Safety: notify_handle 有效。
             let ok = unsafe { FindNextChangeNotification(self.notify_handle) };
-            // v9.4：重置失败 → 句柄保持 signaled → wait 会立即返回 → hot_reload
+            // 重置失败 → 句柄保持 signaled → wait 会立即返回 → hot_reload
             // 无限自旋（audiodg CPU 持续高位、声音设置页卡顿）。失败时先尝试
             // **重建**监控句柄；重建也失败才退出（等效不监控），绝不自旋。
             if ok.is_err() {
@@ -186,7 +186,7 @@ impl ConfigWatcher {
         // 避免 ConfigWatcher 与 ApoObject 生命周期竞态（双关闭）。
     }
 
-    /// 重建目录变更通知句柄（`FindNextChangeNotification` 失败后的自愈路径，v9.4）。
+    /// 重建目录变更通知句柄（`FindNextChangeNotification` 失败后的自愈路径）。
     fn recreate_notify(&mut self) -> bool {
         let _ = unsafe { FindCloseChangeNotification(self.notify_handle) };
         self.notify_handle = HANDLE(std::ptr::null_mut());

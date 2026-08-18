@@ -1,4 +1,4 @@
-//! pipeline/dsp/factory.rs — 模型 → Filter 静态分派（v9.11）
+//! pipeline/dsp/factory.rs — 模型 → Filter 静态分派
 //!
 //! 参数已由 config 层完成 TOML 反序列化与校验；本层按 `EffectType` 穷尽
 //! `match` 构造 Filter，不再有动态注册表 / 字符串参数解析

@@ -1,19 +1,19 @@
-﻿//! host/installation/exports.rs — 四个 COM DLL 导出函数 + DllMain（Note 28/29/30/59）
+﻿//! host/installation/exports.rs — 四个 COM DLL 导出函数 + DllMain
 //!
 //! 导出函数：
-//! - `DllRegisterServer`：注册 COM 类与 APO（Note 29）
-//! - `DllUnregisterServer`：注销 COM 类与 APO（Note 30）
-//! - `DllGetClassObject`：根据 CLSID 路由到对应 ClassFactory（Note 4）
-//! - `DllCanUnloadNow`：检查 `INST_COUNT == 0 && LOCK_COUNT == 0`，判定可否卸载（Note 2）
-//! - `DllMain`：DLL 入口，仅保存模块句柄到全局 `static`，始终返回 `TRUE`（Note 59）
+//! - `DllRegisterServer`：注册 COM 类与 APO
+//! - `DllUnregisterServer`：注销 COM 类与 APO
+//! - `DllGetClassObject`：根据 CLSID 路由到对应 ClassFactory
+//! - `DllCanUnloadNow`：检查 `INST_COUNT == 0 && LOCK_COUNT == 0`，判定可否卸载
+//! - `DllMain`：DLL 入口，仅保存模块句柄到全局 `static`，始终返回 `TRUE`
 //!
-//! 全部函数标记 `#[no_mangle] pub extern "system"`（Note 28）。
+//! 全部函数标记 `#[no_mangle] pub extern "system"`。
 //!
-//! DllMain 约束（Note 59）：
+//! DllMain 约束：
 //! 禁止在 `DLL_PROCESS_ATTACH` 中执行以下操作：
 //! - 初始化 COM（`CoInitializeEx`）
 //! - 创建线程（`std::thread::spawn`）
-//! - 触发全局 `static` 的复杂初始化（`once_cell::Lazy::force()` 等）
+//! - 触发全局 `static` 的复杂初始化（`once_cell::Lazy::force(）` 等)
 //! - 使用 `#[ctor]` 宏标注的初始化函数
 //! - 调用任何 `windows-rs` 的 COM 初始化宏
 //!
@@ -39,12 +39,12 @@ use crate::object::vx_reg_props;
 // 全局状态
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// DLL 模块句柄（DllMain 中保存，Note 59）。
+/// DLL 模块句柄（DllMain 中保存）。
 /// 用于 `GetModuleFileNameW` 获取 DLL 路径，供注册/注销使用。
 static MODULE_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 // ══════════════════════════════════════════════════════════════════════════════
-// DllMain（Note 59）
+// DllMain
 //
 // 极简实现——仅保存模块句柄，始终返回 TRUE。
 //
@@ -79,7 +79,7 @@ pub unsafe extern "system" fn DllMain(
 
     match ul_reason_for_call {
         DLL_PROCESS_ATTACH => {
-            // Note 59：仅保存模块句柄，不做任何其他操作。
+            // 仅保存模块句柄，不做任何其他操作。
             // MODULE_HANDLE 是 AtomicPtr，store 只执行原子写入，无复杂初始化。
             MODULE_HANDLE.store(h_module.0, std::sync::atomic::Ordering::SeqCst);
         }
@@ -97,7 +97,7 @@ pub unsafe extern "system" fn DllMain(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// DllGetClassObject（Note 4）
+// DllGetClassObject
 //
 // 只接受 PreMix / PostMix 两个 CLSID，其余返回 CLASS_E_CLASSNOTAVAILABLE。
 // 使用 `#[implement]` 自动管理 COM 生命周期，无需 `Box` 泄漏。
@@ -121,18 +121,18 @@ pub unsafe extern "system" fn DllGetClassObject(
         return E_POINTER;
     }
 
-    // 预置 null，调用方可以据此判断失败（Note 2）
+    // 预置 null，调用方可以据此判断失败
     unsafe { *ppv = std::ptr::null_mut(); }
 
     // 惰性安装 telemetry（首次 DllGetClassObject，Loader Lock 之外）。
-    // v9.19/P2：此前 log 宏与 panic hook 全项目未接线，实际为 no-op。
+    // P2：此前 log 宏与 panic hook 全项目未接线，实际为 no-op。
     let logger = crate::telemetry::logger::Logger::install();
     crate::telemetry::panic::install_panic_hook(logger);
 
     // SAFETY: 由调用方（COM 运行时）保证 rclsid 有效。
     let clsid = unsafe { *rclsid };
 
-    // ── CLSID 路由（Note 4） ────────────────────────────────
+    // ── CLSID 路由 ────────────────────────────────
 
     // 创建工厂（#[implement] COM 智能指针，ref_count 初始 = 1）
     let factory: IClassFactory = match factory::create_factory(&clsid) {
@@ -166,7 +166,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// DllCanUnloadNow（Note 2）
+// DllCanUnloadNow
 //
 // INST_COUNT（活跃实例）和 LOCK_COUNT（客户端锁定）均零才返回 S_OK。
 // ══════════════════════════════════════════════════════════════════════════════
@@ -184,7 +184,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
-// ── AudioEngine APO 注册键常量（对齐 EAPO 注册树，2026-08-04 reg query 实证）──
+// ── AudioEngine APO 注册键常量（对齐 EAPO 注册树， reg query 实证）──
 const AE_FLAGS: u32 = 0x0000_000D; // FRAMESPERSECOND_MUST_MATCH | BITSPERSAMPLE_MUST_MATCH | INPLACE
 const AE_MAX_INSTANCES: u32 = 0xFFFF_FFFF;
 const AE_NUM_INTERFACES: u32 = 1;
@@ -195,9 +195,9 @@ const AE_CONNECTION_MAX: u32 = 1;
 const AE_INTERFACE0: &str = "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"; // IAudioProcessingObject::IID
 
 // ══════════════════════════════════════════════════════════════════════════════
-// DllRegisterServer（Note 29）
+// DllRegisterServer
 //
-// 职责边界（v7.1 澄清）：regsvr32 无设备参数，只做全局 COM 类注册
+// 职责边界（澄清）：regsvr32 无设备参数，只做全局 COM 类注册
 // （不触碰 MMDevices / FxProperties——设备绑定属 install_endpoint）。
 // 注册顺序：PostMix → PreMix。任一步失败 → 逆序回滚已注册条目 → SELFREG_E_CLASS。
 // ══════════════════════════════════════════════════════════════════════════════
@@ -205,7 +205,7 @@ const AE_INTERFACE0: &str = "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"; // IAudioP
 /// 注册 COM 类（全局 COM 类注册，使 DLL 可被 CoCreateInstance 实例化）。
 ///
 /// 由 `regsvr32 vxapo.dll` 调用。幂等：键已存在时覆盖写入。
-/// 注册顺序：PostMix → PreMix（Note 29）；失败逆序回滚 → `SELFREG_E_CLASS`。
+/// 注册顺序：PostMix → PreMix；失败逆序回滚 → `SELFREG_E_CLASS`。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
@@ -225,7 +225,7 @@ pub extern "system" fn DllRegisterServer() -> HRESULT {
 /// 报 0x80040154。本函数接收显式路径（DLL 定位由调用方决定，exe 同级约定），
 /// 不依赖 `MODULE_HANDLE`（该静态仅 DLL 被加载进进程时有值；CLI 静态链接 rlib 无 DLL DllMain）。
 pub fn register_apo_with_path(dll_path: &str) -> HRESULT {
-    // 注册顺序（Note 29）：PostMix → PreMix
+    // 注册顺序：PostMix → PreMix
     let entries = vx_reg_props::registration_order();
 
     for (i, entry) in entries.iter().enumerate() {
@@ -242,7 +242,7 @@ pub fn register_apo_with_path(dll_path: &str) -> HRESULT {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// DllUnregisterServer（Note 30）
+// DllUnregisterServer
 //
 // 先删 InprocServer32 子键再删 CLSID 父键。
 // 注销顺序：PreMix → PostMix（与注册相反）。
@@ -251,7 +251,7 @@ pub fn register_apo_with_path(dll_path: &str) -> HRESULT {
 /// 注销 COM 类。
 ///
 /// 由 `regsvr32 /u vxapo.dll` 调用。
-/// 注销顺序：PreMix → PostMix（与注册相反，Note 30）。
+/// 注销顺序：PreMix → PostMix（与注册相反）。
 /// 尽力清理，即使某条目注销失败也继续。
 #[no_mangle]
 #[allow(non_snake_case)]
@@ -259,7 +259,7 @@ pub extern "system" fn DllUnregisterServer() -> HRESULT {
     // 注销顺序：PreMix → PostMix（与注册相反）
     let entries = vx_reg_props::unregistration_order();
     for entry in &entries {
-        // 尽力清理，即使某条目注销失败也继续（Note 30）
+        // 尽力清理，即使某条目注销失败也继续
         let _ = unregister_com_class(entry);
     }
     S_OK
@@ -292,18 +292,18 @@ fn get_dll_path() -> Option<String> {
 
 /// 注册单个 CLSID 的 COM 类。
 ///
-/// 写入 `HKCR\CLSID\{GUID}`（(Default)=友好名）与 `InprocServer32`
-/// （(Default)=DLL 路径 + ThreadingModel="Both"），经 `sys/registry`。
+/// 写入 `HKCR\CLSID\{GUID}`（(Default）=友好名)与 `InprocServer32`
+/// （(Default）=DLL 路径 + ThreadingModel="Both")，经 `sys/registry`。
 /// 失败返回具体 HRESULT，由 `DllRegisterServer` 统一回滚。
 ///
-/// **CLSID 父键 (Default) 友好名（2026-08-04 对齐 EAPO）**：EAPO 的 CLSID 注册树
-/// 在父键有 (Default)="EqualizerAPO Pre-Mix Class"；VxAPO 之前只写 InprocServer32
+/// **CLSID 父键(Default) 友好名（对齐 EAPO）**：EAPO 的 CLSID 注册树
+/// 在父键有(Default)="EqualizerAPO Pre-Mix Class"；VxAPO 之前只写 InprocServer32
 /// 缺父键默认值——音频引擎按 CLSID 父键辨识 APO，补写 `entry.friendly_name`。
 fn register_com_class(
     entry: &vx_reg_props::ClsidEntry,
     dll_path: &str,
 ) -> Result<(), HRESULT> {
-    // CLSID 父键 (Default) = 友好名（EAPO 对齐）。
+    // CLSID 父键(Default) = 友好名（EAPO 对齐）。
     let clsid_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &entry.clsid_key_path())
         .map_err(|e| e.code())?;
     clsid_key.write_sz("", &entry.friendly_name).map_err(|e| e.code())?;
@@ -314,13 +314,13 @@ fn register_com_class(
     let key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &inproc_path)
         .map_err(|e| e.code())?;
 
-    // 写 (Default) = DLL 路径
+    // 写(Default) = DLL 路径
     key.write_sz("", dll_path).map_err(|e| e.code())?;
 
-    // 写 ThreadingModel = "Both"（Note 5）
+    // 写 ThreadingModel = "Both"
     key.write_sz("ThreadingModel", "Both").map_err(|e| e.code())?;
 
-    // ---- AudioEngine APO 注册键（P0-7 根因修复）----
+    // ---- AudioEngine APO 注册键（根因修复）----
     // Windows 引擎读端点槽位 CLSID 后，从
     // `HKCR\AudioEngine\AudioProcessingObjects\{CLSID}` 取 APO 属性（Flags/接口数等）。
     // 缺失该键 → 引擎静默跳过（DLL 不加载、无事件日志）——ProcMon 实证：
@@ -336,7 +336,7 @@ fn register_com_class(
     ae_key.write_sz("APOInterface0", AE_INTERFACE0)
         .map_err(|e| e.code())?;
     ae_key.write_dword("MaxInstances", AE_MAX_INSTANCES).map_err(|e| e.code())?;
-    // 完整 11 字段对齐 EAPO（2026-08-04 22:35 手动补写才发现缺失；字段不全 → 引擎
+    // 完整 11 字段对齐 EAPO（22:35 手动补写才发现缺失；字段不全 → 引擎
     // 只 LoadLibrary 不实例化 APO → 无声）。Major/Minor + Min/Max In/Out 6 字段。
     ae_key.write_dword("MajorVersion", AE_VERSION_MAJOR).map_err(|e| e.code())?;
     ae_key.write_dword("MinorVersion", AE_VERSION_MINOR).map_err(|e| e.code())?;
@@ -356,7 +356,7 @@ fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT>
     // 删除 InprocServer32 子键（幂等）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())
         .map_err(|e| e.code())?;
-    // 删除 AudioEngine APO 注册键（P0-7 根因修复，与注册对称；键不存在视为成功）
+    // 删除 AudioEngine APO 注册键（根因修复，与注册对称；键不存在视为成功）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.audio_engine_path())
         .map_err(|e| e.code())?;
     // 删除 CLSID 父键（幂等）

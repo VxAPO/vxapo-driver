@@ -1,9 +1,9 @@
-//! install/selector/operation.rs — 设备 APO 安装/卸载执行 + 事务回滚（v6.4 规范 5.5.2）
+//! install/selector/operation.rs — 设备 APO 安装/卸载执行 + 事务回滚（规范 5.5.2）
 //!
 //! 原 `install.rs` + `rollback.rs` 合并至此。
 //!
 //! 职责：
-//! - `install_endpoint`：Note 47 完整 7 步安装，Transaction 保护，失败自动回滚
+//! - `install_endpoint`： 完整 7 步安装，Transaction 保护，失败自动回滚
 //! - `uninstall_endpoint`：卸载（恢复原始 GUID，清理配置）
 //! - `InstallConfig`：安装参数
 //!
@@ -38,7 +38,7 @@ const RENDER_PATH: &str =
 const CAPTURE_PATH: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
 
-/// .reg 备份默认目录（Note 32）。
+/// .reg 备份默认目录。
 const BACKUP_DIR: &str = r"C:\ProgramData\VxAPO\backups";
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -58,9 +58,9 @@ pub struct InstallConfig {
     pub use_original_apo_premix: bool,
     /// 是否保留原有 PostMix APO 作为子 APO。
     pub use_original_apo_postmix: bool,
-    /// 是否允许静音缓冲区快速路径（Note 11）。
+    /// 是否允许静音缓冲区快速路径。
     pub allow_silent_buffer: bool,
-    /// 是否启用 autoAdjust（E3.3/v6.8，独立于 allow_silent_buffer）。
+    /// 是否启用 autoAdjust（，独立于 allow_silent_buffer）。
     ///
     /// 默认 false（VxAPO 无自动校正实现，保守默认关）。
     pub auto_adjust: bool,
@@ -124,7 +124,7 @@ impl Drop for Transaction {
         for action in self.actions.iter().rev() {
             match action {
                 RollbackAction::DeleteKey { root, path } => {
-                    // v9.17（审查 #7）：delete_sub_key 是相对句柄语义，此处持完整
+                    // （审查 #7）：delete_sub_key 是相对句柄语义，此处持完整
                     // 路径必须走 delete_tree（幂等）；旧实现打开后传全路径 → 静默空操作。
                     let _ = crate::sys::registry::delete_tree(*root, path);
                 }
@@ -139,12 +139,12 @@ impl Drop for Transaction {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// install_endpoint — Note 47 完整 7 步（带事务回滚）
+// install_endpoint — 完整 7 步（带事务回滚）
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 安装 VxAPO 到指定音频端点。
 ///
-/// # Note 47 安装步骤
+/// # 安装步骤
 ///
 /// 1. 创建 Child APOs 键
 /// 2. FxProperties 不存在则创建
@@ -162,7 +162,7 @@ impl Drop for Transaction {
 /// - `device_name`：设备友好名称（用于 .reg 备份文件名）。
 /// - `connection_name`：连接名称（用于 .reg 备份文件名）。
 /// - `config`：安装配置。
-/// - `verify`：E3.4/v6.8——true 时 7 步全部 commit 后执行 CoCreateInstance 自检。
+/// - `verify`：/——true 时 7 步全部 commit 后执行 CoCreateInstance 自检。
 pub fn install_endpoint(
     device_guid: &str,
     device_name: &str,
@@ -216,7 +216,7 @@ pub fn install_endpoint(
     // 由 find_endpoint_path 返回路径含 Capture 判定，写子 APO 和槽位时共用。
     let is_capture = endpoint_path.contains("Capture");
 
-    // ── Step 1: 写入子 APO 配置（独立安装信息区，v8.4 路径隔离）──────────
+    // ── Step 1: 写入子 APO 配置（独立安装信息区， 路径隔离）──────────
     // `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`。
     // 与运行期 `object/child.rs` / `install/device/slots::read_child_apo_guid`
     // 读取路径一致（旧实现写 `FxProperties\childGuid` + 建 `ChildApoKeys`
@@ -262,11 +262,11 @@ pub fn install_endpoint(
     // 全部成功 → 提交事务（禁用回滚）。
     tx.commit();
 
-    // ── E3.4 安装自检（verify=true）：CoCreateInstance 验证 DLL 可实例化 ──
+    // ── 安装自检（verify=true）：CoCreateInstance 验证 DLL 可实例化 ──
     // 失败**不自动回滚**（注册表已写入且 DLL 可能瞬时不可用；报告并让调用方决策）。
     if verify {
         // CoCreateInstance 前需初始化 COM（0x800401F0 CO_E_NOTINITIALIZED 实证：
-        // 2026-08-04 管理员 CLI 直接调 install 未初始化 COM 即触发）。
+        // 管理员 CLI 直接调 install 未初始化 COM 即触发）。
         // SAFETY: CoInitializeEx 无 preconditions；进程级调用。
         // S_OK(0)=本次初始化成功；S_FALSE(1)=已由宿主初始化（合法）。
         // 其他值=COM 初始化失败，verify 不可靠 → 报错。
@@ -319,7 +319,7 @@ pub fn install_endpoint(
 
 /// 从指定音频端点卸载 VxAPO。
 ///
-/// # 卸载语义（2026-08-04 用户明确）
+/// # 卸载语义（明确）
 ///
 /// **只卸载「能确定属于 VxAPO 的部分」**，绝不碰其他 APO：
 ///
@@ -336,7 +336,7 @@ pub fn install_endpoint(
 ///
 /// # 为什么「槽位空才恢复」？
 ///
-/// 用户实测场景：VxAPO 把 EAPO 弄成子 APO 后，另一软件又覆盖了父 APO 槽位。
+/// 实测场景：VxAPO 把 EAPO 弄成子 APO 后，另一软件又覆盖了父 APO 槽位。
 /// 此时卸载：父槽位归接管软件（不删不覆盖），EAPO 作为旧子 APO 的恢复只发生在
 /// 「VxAPO 槽位被我们删空了」之后——绝不覆盖任何现存 APO 的所有权。
 pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
@@ -361,10 +361,10 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // ── 删除 VxAPO CLSID ──────────────────────────────────────────────────
     // 注意：**不能**用 read_all_slots(&fx_key)——它期望端点根键（内部再 open
     // FxProperties 子键）；此处 fx_key 已是 FxProperties 键，会拿不到槽位
-    // （2026-08-04 实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
+    // （实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
     // read_slot_value 直接在 fx_key 上读槽位值（REG_SZ/REG_BINARY 兼容）。
     //
-    // 【2026-08-04 实测】audiodg 持有点端时 MMDevices 槽位值删除可能被锁
+    // 【 实测】audiodg 持有点端时 MMDevices 槽位值删除可能被锁
     // （Windows 拒绝删除正在使用的 APO 槽位值）→ 不能静默吞掉失败：记录 +
     // 返回错误，提示调用方重启音频服务（uninstall 后 net stop audiosrv &&
     // net start audiosrv 使槽位变更生效）。信息区（HKLM\SOFTWARE\VxAPO）非
@@ -392,15 +392,15 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // 必须先于删除信息区执行：安装时保存的微软原始 APO 值在信息区里。
     restore_sysfx(device_guid, &endpoint_path)?;
 
-    // ── 删除 VxAPO 独立安装信息区（含所有备份，v8.4）────────────────────
-    // **卸载 ≠ 快照恢复**（2026-08-05 用户纠正）：卸载只删 VxAPO 自己的 CLSID，
+    // ── 删除 VxAPO 独立安装信息区（含所有备份）────────────────────
+    // **卸载 ≠ 快照恢复**（纠正）：卸载只删 VxAPO 自己的 CLSID，
     // **不**把 install 时备份的第三方 APO（EAPO）写回父槽位——那是快照 restore
     // （snapshot_restore）的职责。若卸载时恢复 EAPO，用户卸载 VxAPO 后 EAPO
     // 莫名回到父槽位（错误语义）。
 
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
     let (root, sub_key) = split_hklm_path(&info_key)?;
-    // v9.17（审查 #8 同族）：信息区删除失败必须返回 Err——残留会让下次安装
+    // （审查 #8 同族）：信息区删除失败必须返回 Err——残留会让下次安装
     // 误判为“非全量路径”；delete_tree 对“键不存在”幂等返回 Ok。
     crate::sys::registry::delete_tree(root, sub_key).map_err(|e| {
         VxApoError::internal(&format!("卸载失败：删除安装信息区 {info_key} 失败：{e}"))
@@ -538,7 +538,7 @@ fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()> {
 /// 从端点 GUID 定位注册表路径（先 Render 再 Capture）。
 ///
 /// `pub(crate)`：运行期自愈（object/apo/init.rs `Initialize`）需要按端点 GUID
-/// 定位路径以接管 MSFX 模板（v9.4）。
+/// 定位路径以接管 MSFX 模板。
 pub(crate) fn find_endpoint_path(device_guid: &str) -> Result<String> {
     // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径（审查 #9）。
     if parse_guid_string(device_guid).is_none() {
@@ -561,7 +561,7 @@ pub(crate) fn find_endpoint_path(device_guid: &str) -> Result<String> {
 ///
 /// 返回 `(key, is_new)`。
 ///
-/// **只读句柄 bug（2026-08-04 实证）**：旧实现已存在时用 `RegKey::open`（SAM_READ）
+/// **只读句柄 bug（实证）**：旧实现已存在时用 `RegKey::open`（SAM_READ）
 /// 返回——后续 `write_child_apo_config` / `write_apo_slot` / `delete_value` 对只读句柄
 /// 全部拒绝访问（0x80070005），即使进程是管理员。已存在时必须重新以 SAM_ALL 打开
 /// （`RegKey::create`），is_new 判定仍是读 `version` 值。
@@ -613,7 +613,7 @@ fn record_slot_backups(
 
 /// 读取原始 APO GUID（用于子 APO 保留）。
 ///
-/// **self-preserve 过滤（2026-08-04 实证）**：重装时槽位可能已是 VxAPO 自己的
+/// **self-preserve 过滤（实证）**：重装时槽位可能已是 VxAPO 自己的
 /// CLSID——必须视为「无原始 APO」，否则会把 VxAPO 自身保留为子 APO
 /// （快照 diff 实测 childPreMix=41C34613 自占）。
 fn read_original_apo_guids(
@@ -651,7 +651,7 @@ const BACKUP_POSTMIX_SLOT: &str = "PostMixSlot";
 const BACKUP_PREMIX_SLOT_VALUE: &str = "PreMixSlotValue";
 const BACKUP_POSTMIX_SLOT_VALUE: &str = "PostMixSlotValue";
 
-/// 写入子 APO 配置（Step 1，v8.4 独立安装信息区）。
+/// 写入子 APO 配置（Step 1， 独立安装信息区）。
 ///
 /// - 保留的原始 APO GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\
 ///   {PreMixChild|PostMixChild}`（与运行期 `object/child.rs` /
@@ -672,7 +672,7 @@ fn write_child_apo_config(
     let info_key = format!("{}\\{}", CHILD_APO_PATH_ROOT, device_guid);
     let (root, sub_key) = split_hklm_path(&info_key)?;
     let info = RegKey::create(root, sub_key)?;
-    // v9.17（审查 #8）：新建信息区必须登记回滚——安装中途失败时随事务一起删除，
+    // （审查 #8）：新建信息区必须登记回滚——安装中途失败时随事务一起删除，
     // 否则残留信息区会让下次安装误判为“非全量路径”。
     tx.record(RollbackAction::DeleteKey {
         root: HKEY_LOCAL_MACHINE,
@@ -710,7 +710,7 @@ fn write_child_apo_config(
     Ok(())
 }
 
-/// 拆分 `HKLM\...` 完整路径为 (root HKEY, 子键路径)。
+/// 拆分 `HKLM\...` 完整路径为(root HKEY, 子键路径)。
 fn split_hklm_path(path: &str) -> Result<(windows::Win32::System::Registry::HKEY, &str)> {
     let (root_str, rest) = path
         .split_once('\\')
@@ -776,7 +776,7 @@ fn delete_other_mode_slots(fx_key: &RegKey, mode: InstallMode) {
 ///
 /// **必须写 REG_SZ（GUID 字符串）**——EAPO 生态（RegistryHelper.h）与 Windows
 /// 音频枚举器读此槽位期望 REG_SZ；写 REG_BINARY 会报
-/// 「Registry value ... has wrong type」导致 EAPO 无法枚举设备（2026-08-04 实证）。
+/// 「Registry value ... has wrong type」导致 EAPO 无法枚举设备（实证）。
 /// 与 `slots::read_slot_value` 的 REG_SZ 解析分支一致。
 fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: GUID) -> Result<()> {
     fx_key.write_sz(&slot.value_name(), &guid_to_string(&guid))?;
@@ -788,7 +788,7 @@ fn write_apo_slot(fx_key: &RegKey, slot: ApoSlot, guid: GUID) -> Result<()> {
 /// EAPO 写槽位 GUID 的**同时**写 `{d3993a3f-99c2-4402-b5ec-a92a0367664b},{PID}`
 /// 的 REG_MULTI_SZ，值 = AUDIO_SIGNALPROCESSINGMODE_DEFAULT（{C18E2F7E-...}）。
 /// Windows 音频引擎按此判「该槽位 APO 参与默认处理模式」——缺了它父槽位 APO 不加载
-/// （2026-08-04 实证：EAPO 当父时 VxAPO 子 APO 能加载；VxAPO 独立父槽位不加载）。
+/// （实证：EAPO 当父时 VxAPO 子 APO 能加载；VxAPO 独立父槽位不加载）。
 fn write_default_processmode(
     fx_key: &RegKey,
     mode: InstallMode,
@@ -885,7 +885,7 @@ mod tests {
 
     /// 回归：EAPO REG_SZ 槽位（GUID 字符串）由 `slots::read_slot_value` 正确解析。
     ///
-    /// 2026-08-04 双 bug 实证：
+    /// 双 bug 实证：
     /// 1. 本文件旧 read_slot_safe data4 后半 12 字符误传 hex_to_bytes（要求 4 字符）→ None；
     /// 2. hex_to_u32 传 8 字符给 hex_to_bytes（要求 4 字符）→ data1 永远 None。
     /// 两个 bug 都导致 EAPO 槽位读成 NoValue → 子 APO 永不保留。
@@ -982,7 +982,7 @@ mod tests {
     fn transaction_rollback_deletes_recorded_key() {
         use windows::Win32::System::Registry::HKEY_CURRENT_USER;
 
-        // v9.17 回归（审查 #7/#8）：未 commit 的事务 Drop 必须真实删除记录的键。
+        // 回归（审查 #7/#8）：未 commit 的事务 Drop 必须真实删除记录的键。
         // 旧实现“打开后传完整路径给 delete_sub_key”是静默空操作，安装中途失败
         // 时 FxProperties/信息区永久残留。用 HKCU 测试键验证（无需管理员）。
         const TEST_ROOT: &str = r"SOFTWARE\VxAPO_Test_Tx_Rollback";

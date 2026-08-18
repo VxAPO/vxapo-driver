@@ -1,4 +1,4 @@
-﻿//! sys/registry.rs — 注册表模块（v6.3 规范 3.4，按 windows-rs 0.62.2 真实 API）
+﻿//! sys/registry.rs — 注册表模块（规范 3.4，按 windows-rs 0.62.2 真实 API）
 
 use windows::core::{HSTRING, PCWSTR, Result};
 use windows::Win32::Foundation::WIN32_ERROR;
@@ -387,7 +387,7 @@ impl RegKey {
 
     /// 写入 REG_QWORD。
     ///
-    /// v9.17 新增（配套 .reg 导出 QWORD 修复）：此前只读不写，QWORD 备份/
+    /// 新增（配套 .reg 导出 QWORD 修复）：此前只读不写，QWORD 备份/
     /// 导出无法 round-trip 验证。
     pub fn write_qword(&self, name: &str, value: u64) -> Result<()> {
         let name = HSTRING::from(name);
@@ -463,7 +463,7 @@ impl RegKey {
     ///
     /// `relative_child` 是**相对当前句柄的子键路径**（如 `"Child"`），不是完整
     /// 注册表路径——`RegDeleteTreeW` 的 name 相对句柄解析，传完整路径会静默
-    /// 空操作（v9.17 语义修正，审查 #7 根因）。删除整棵绝对路径子树请用
+    /// 空操作（语义修正，审查 #7 根因）。删除整棵绝对路径子树请用
     /// [`delete_tree`]。
     pub fn delete_sub_key(&self, relative_child: &str) -> Result<()> {
         let relative_child = HSTRING::from(relative_child);
@@ -635,7 +635,7 @@ fn dump_key_recursive(
                         display_name, d
                     )),
                     RegValue::Qword(q) => {
-                        // .reg 的 QWORD 类型为 hex(b)：8 字节完整小端序（v9.17 修复：
+                        // .reg 的 QWORD 类型为 hex(b)：8 字节完整小端序（修复：
                         // 旧实现只导出低 2 字节，恢复必然损坏）。
                         let bytes = q.to_le_bytes();
                         let hex: Vec<String> = bytes.iter().map(|x| format!("{:02x}", x)).collect();
@@ -655,7 +655,7 @@ fn dump_key_recursive(
                     }
                     RegValue::MultiSz(v) => {
                         // .reg 的 REG_MULTI_SZ 为 hex(7)：每项 UTF-16LE hex + 00,00
-                        // 终止，列表末尾再补 00,00 双终止（v9.17 修复：旧实现写
+                        // 终止，列表末尾再补 00,00 双终止（修复：旧实现写
                         // 转义文本 + 字面 \0，生成的 .reg 无效）。
                         let mut hex: Vec<String> = Vec::new();
                         for item in v {
@@ -693,7 +693,7 @@ fn dump_key_recursive(
     Ok(())
 }
 
-/// 根键 → `.reg` 文件头部名称（v9.17：不再固定写 HKEY_LOCAL_MACHINE）。
+/// 根键 → `.reg` 文件头部名称（不再固定写 HKEY_LOCAL_MACHINE）。
 fn root_display_name(root: HKEY) -> &'static str {
     if root.0 == HKEY_LOCAL_MACHINE.0 {
         "HKEY_LOCAL_MACHINE"
@@ -750,7 +750,7 @@ mod tests {
     fn delete_sub_key_uses_relative_child() {
         const REL_CHILD_KEY: &str = r"SOFTWARE\VxAPO_Test_Registry_RelChild";
 
-        // v9.17 回归：delete_sub_key 接受相对当前句柄的子键名；传完整路径会
+        // 回归：delete_sub_key 接受相对当前句柄的子键名；传完整路径会
         // 静默空操作（审查 #7 根因），因此调用方必须先 open 再传相对名。
         let _ = delete_tree(TEST_ROOT, REL_CHILD_KEY);
         let parent = RegKey::create(TEST_ROOT, REL_CHILD_KEY).unwrap();
@@ -771,7 +771,7 @@ mod tests {
     fn reg_export_qword_multi_sz_roundtrip() {
         const EXPORT_KEY: &str = r"SOFTWARE\VxAPO_Test_Registry_Export";
 
-        // v9.17 回归：.reg 导出中 QWORD 为 8 字节小端 hex(b)，MULTI_SZ 为
+        // 回归：.reg 导出中 QWORD 为 8 字节小端 hex(b)，MULTI_SZ 为
         // UTF-16LE hex(7) + 双终止；旧实现分别只导低 2 字节/写转义文本。
         let _ = delete_tree(TEST_ROOT, EXPORT_KEY);
         let key = RegKey::create(TEST_ROOT, EXPORT_KEY).unwrap();

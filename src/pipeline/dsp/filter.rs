@@ -1,4 +1,4 @@
-﻿//! pipeline/dsp/filter.rs — Filter trait + FilterCreateResult + FilterFactory + DspContext + ConfigLoader（v6.3 规范 4.9）
+﻿//! pipeline/dsp/filter.rs — Filter trait + FilterCreateResult + FilterFactory + DspContext + ConfigLoader（规范 4.9）
 //!
 //! 职责：纯 Rust 定义，不包含任何 Windows API 依赖。
 //!
@@ -13,7 +13,7 @@ use crate::pipeline::realtime::contract::RealtimeContext;
 // Filter trait
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 音频处理过滤器 trait（v6.3 规范）。
+/// 音频处理过滤器 trait（规范）。
 ///
 /// 所有 DSP 滤波器实现此 trait。
 /// `process` 方法运行在实时音频线程中，禁止堆分配、互斥锁、I/O、panic。
@@ -42,7 +42,7 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
     /// 并在 `process` 中只处理对应槽位；无通道语义的滤波器（Copy 等）保持默认忽略。
     fn set_channel_indices(&mut self, _indices: &[usize]) {}
 
-    /// 配置模型 per-effect `channels` 指定的固定通道槽位（v9.11）。
+    /// 配置模型 per-effect `channels` 指定的固定通道槽位。
     ///
     /// `Some` 时 Chain 跳过自动计算、直接使用固定槽位（仅 `ChannelScopedFilter`
     /// 返回）；`None` = 由 Chain 按当前通道名自动设置。
@@ -50,10 +50,10 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// 是否就地处理（in-place，E1/v6.7）。
+    /// 是否就地处理（in-place）。
     ///
     /// 默认 true：滤波器直接修改传入的 `samples` 缓冲，无需额外中间副本。
-    /// 若某滤波器 `false`，Chain 需在调用其 `process` 前保存输入副本（E2 未来落点；
+    /// 若某滤波器 `false`，Chain 需在调用其 `process` 前保存输入副本（未来落点；
     /// 当前内置滤波器均返回 true）。
     fn is_in_place(&self) -> bool {
         true
@@ -90,7 +90,7 @@ impl Filter for PassthroughFilter {
     }
 }
 
-/// 按配置模型 `channels` 固定作用通道的包装（v9.11）。
+/// 按配置模型 `channels` 固定作用通道的包装。
 ///
 /// config 层解析出平面槽位后包一层；`Chain::initialize` 通过
 /// `fixed_channel_indices` 识别并跳过自动通道计算。
@@ -171,7 +171,7 @@ pub struct DspContext {
     pub variables: HashMap<String, f64>,
     /// 响度补偿开关（默认开；`Loudness: off` 由 config 层关闭，APP 未来接口）。
     pub loudness_enabled: std::cell::Cell<bool>,
-    /// RT 编译期见证（O1/v6.6）：标记此配置服务于实时路径。
+    /// RT 编译期见证：标记此配置服务于实时路径。
     pub rt_marker: PhantomData<RealtimeContext>,
 }
 

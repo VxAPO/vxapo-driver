@@ -1,4 +1,4 @@
-﻿//! host/instance/apo_child.rs — 子 APO 管理（Note 6/7）
+﻿//! host/instance/apo_child.rs — 子 APO 管理
 //!
 //! 子 APO COM 生命周期管理：
 //! - `CoCreateInstance` 创建子 APO 实例
@@ -6,20 +6,20 @@
 //! - 延迟、重置、帧数计算、锁定/解锁委托给子 APO
 //! - `Drop` 自动释放所有 COM 接口引用
 //!
-//! 子 APO 由 `init.rs` 在 `Initialize` 时创建（Note 7，失败降级为无子 APO），
+//! 子 APO 由 `init.rs` 在 `Initialize` 时创建（，失败降级为无子 APO），
 //! 存储在 `ApoObject.child_apo` 中，供 apo_rt.rs（RT）和 apo_conf.rs（配置）委托调用。
 //!
-//! P0-6（v8.4/v8.5/v8.6）：
+//! ：
 //! - **类型化接口持有**（windows-rs `IAudioProcessingObject` 等）——替代早期裸 vtable 手动调用
 //!   （原实现用 `vtbl_method` + `transmute` 手动索引 vtable；windows-rs 0.62.2 提供
 //!   三个接口的 safe 调用方法，对齐类型化方案）
 //! - **子 APO GUID 来源** = 端点 GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`
-//!   （独立安装信息区，v8.4 路径隔离；`install/device/slots` 提供读取）
-//! - **格式协商参数（v8.6 执行端建议采纳）**：`is_input/output_format_supported` 输入参数
+//! （独立安装信息区， 路径隔离；`install/device/slots` 提供读取）
+//! - **格式协商参数（执行端建议采纳）**：`is_input/output_format_supported` 输入参数
 //!   `Option<&IAudioMediaType>`（p_opposite 可 None=无对端；p_requested 由父转发非空）——
 //!   可空借用语义用安全引用表达，与 windows-rs `#[interface]` 可空接口参数风格一致；
 //!   输出 `pp_supported: *mut *mut` 为 COM 输出必须保留裸指针（方法仍 unsafe）
-//! - **委托失败降级**：Initialize/LockForProcess/UnlockForProcess 失败不阻塞父（Note 57）
+//! - **委托失败降级**：Initialize/LockForProcess/UnlockForProcess 失败不阻塞父
 //! - **重置防御**：Unlock 失败后下次 Lock 前 child.reset()/重建
 
 
@@ -165,7 +165,7 @@ impl ChildApo {
             .unwrap_or_else(|e| e.into())
     }
 
-    /// 检查输入格式是否支持（`IsInputFormatSupported`，v8.6 参数采纳）。
+    /// 检查输入格式是否支持（`IsInputFormatSupported`， 参数采纳）。
     ///
     /// - `p_opposite`：对端格式，可能为 None（无对端）
     /// - `p_requested`：请求格式，由父接口转发（非空）
@@ -185,7 +185,7 @@ impl ChildApo {
         })
     }
 
-    /// 检查输出格式是否支持（`IsOutputFormatSupported`，v8.6 参数采纳）。
+    /// 检查输出格式是否支持（`IsOutputFormatSupported`， 参数采纳）。
     ///
     /// 同 `is_input_format_supported` 语义。
     ///
@@ -283,7 +283,7 @@ impl ChildApo {
 
     /// 锁定子 APO（`LockForProcess`）。
     ///
-    /// 失败**不阻塞父**锁定（Note 57 降级立场；结果仅 Trace 不 return）。
+    /// 失败**不阻塞父**锁定（降级立场；结果仅 Trace 不 return）。
     ///
     /// # Safety
     ///
@@ -332,5 +332,5 @@ impl ChildApo {
 // 故删除全部「null 接口防御性检查」测试（原 7 个），避免测试进程 abort。
 //
 // ChildApo::create / 委托链测试需真实 COM + 已注册 APO，无法单元测试——
-// 留 P0-7 CLI 端到端验证（与 P0-4 听感验证同理）。
+// 留 CLI 端到端验证（与 听感验证同理）。
 // 正确的纯逻辑测试见 install/device/slots.rs（childApo GUID 解析 + 全量判定）。

@@ -2,7 +2,7 @@
 //!
 //! 算法结构：
 //! - 自动增益：全声道单极点电平估计（约 250 ms），`Target` 控制增益回退起点
-//!   （`GainBoost · rms > Target` 时有效增益降为 `max(Target/rms, 1.0)`）；
+//! （`GainBoost · rms > Target` 时有效增益降为 `max(Target/rms, 1.0）`)；
 //! - lookahead 峰值限幅：环形延迟线 + 窗口峰值前瞻增益衰减
 //!   （lookahead gain reduction），输出硬钳位到 `MaxOutput`；
 //! - 抖动：独立 xorshift64* PRNG，Uniform / Triangular / Shaped 均为 16-bit 量化；

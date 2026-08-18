@@ -1,4 +1,4 @@
-//! dsp/filters/biquad.rs — 双二阶滤波器基础实现（Note 13/53/58）
+//! dsp/filters/biquad.rs — 双二阶滤波器基础实现
 //!
 //! 提供三种经典双二阶结构：
 //! - Direct Form I（直接形式 I）
@@ -387,7 +387,7 @@ mod simd_df2t {
         (out, new_s1, new_s2)
     }
 
-    /// 处理一个立体声采样对。返回 (L, R)。
+    /// 处理一个立体声采样对。返回(L, R)。
     ///
     /// # Safety
     ///

@@ -1,4 +1,4 @@
-﻿//! telemetry/panic.rs — panic hook 安装（v6.3 规范 9.2）
+﻿//! telemetry/panic.rs — panic hook 安装（规范 9.2）
 //!
 //! 职责：捕获 panic 信息写入 logger（RtViolation 级别），然后 `abort()`。
 //!

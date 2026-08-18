@@ -1,6 +1,6 @@
-//! install/device/sysfx.rs — Windows CAPX “设备默认效果”接管（v9.0）
+//! install/device/sysfx.rs — Windows CAPX “设备默认效果”接管
 //!
-//! 背景（2026-08-10 实证）：
+//! 背景（实证）：
 //! - 通用 USB 音频设备（wdma_usb.inf）会在设备接口注册表
 //!   `HKLM\SYSTEM\CurrentControlSet\Control\DeviceClasses\...\Device Parameters\MSFX\N`
 //!   下写入“Microsoft Audio Home Theater Effects”（CAPX 系统效果模板）。
@@ -126,7 +126,7 @@ pub fn find_msfx_entries(
         return Ok(result);
     }
 
-    // v9.6 快速路径：DeviceClasses 实例键名 = `##?#{归一化设备ID}#{KS类GUID}`
+    // 快速路径：DeviceClasses 实例键名 = `##?#{归一化设备ID}#{KS类GUID}`
     // （USB 等标准设备实证，大小写不敏感）。直接构造候选路径，把「首次切换到
     // 新端点时 Initialize 的数百次注册表打开」降为几次——修复切换设备后
     // 首秒音频断续慢速（自愈全树扫描阻塞音频服务控制线程）。
@@ -171,7 +171,7 @@ pub fn find_msfx_entries(
 }
 
 /// 枚举单个 DeviceClasses 实例下所有引用（如 `#GLOBAL`）的 `MSFX\N` 条目，
-/// 命中端点节点类型的条目写入 `result`（快速路径与全树回退共用，v9.6）。
+/// 命中端点节点类型的条目写入 `result`（快速路径与全树回退共用）。
 fn collect_msfx_from_instance(
     instance_path: &str,
     node_type: Option<&str>,
@@ -519,7 +519,7 @@ pub enum HealAction {
     DeleteModeOnly,
 }
 
-/// 判断单个 `MSFX\N` 条目是否需要运行期接管（v9.4）。
+/// 判断单个 `MSFX\N` 条目是否需要运行期接管。
 ///
 /// 铁律：**只动微软 CAPX**——stream 是微软 CAPX → 替换为 VxAPO PreMix；
 /// mode 是微软 CAPX → 删除；含 WMALFX 上下文但值缺失也视为微软条目。
@@ -543,7 +543,7 @@ pub fn msfx_heal_action(
 }
 
 /// 运行期自愈：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX 重新灌回
-/// `MSFX\N`（与 VxAPO 同时加载 → 断断续续/慢放，v9.0 仅安装时接管不够）。
+/// `MSFX\N`（与 VxAPO 同时加载 → 断断续续/慢放， 仅安装时接管不够）。
 ///
 /// 本函数在本 DLL 被加载（`Initialize`，控制线程）时调用：
 /// - 仅当端点 FxProperties 已装 VxAPO（本 DLL 管理该端点）才动作；
@@ -574,7 +574,7 @@ pub fn ensure_takeover_for_endpoint(endpoint_path: &str) -> Result<()> {
         let _ = fx_write.delete_value("{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5");
     }
 
-    // 1c. MSFX 模板扫描缓存（v9.5）：`find_msfx_entries` 要遍历 DeviceClasses
+    // 1c. MSFX 模板扫描缓存：`find_msfx_entries` 要遍历 DeviceClasses
     //     两个 KS 类下全部实例，成本不低；而设置页/多流启动可能高频实例化本 APO
     //     （每次 Initialize 都会走到这里）。自愈是“设备重新枚举后兜底”，30 秒
     //     粒度完全足够——命中缓存直接跳过扫描，避免拖慢音频服务/设置页。
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn fast_path_candidate_matches_known_instance_name() {
-        // v9.6：快速路径构造的实例键名应与安装时 SysFxBackups 实证路径一致。
+        // 快速路径构造的实例键名应与安装时 SysFxBackups 实证路径一致。
         let normalized =
             normalize_device_id("{1}.USB\\VID_2D99&PID_A037&MI_00\\6&20BE7186&2&0000");
         let candidate = format!(

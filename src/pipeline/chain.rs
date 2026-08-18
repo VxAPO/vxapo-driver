@@ -1,4 +1,4 @@
-﻿//! pipeline/chain.rs — Filter 链执行 + 延迟累计（v6.3 规范 4.5）
+﻿//! pipeline/chain.rs — Filter 链执行 + 延迟累计（规范 4.5）
 //!
 //! 工作在去交织空间。不拥有缓冲区，接受外部传入。
 
@@ -38,7 +38,7 @@ impl Chain {
         let base_names = channel_names.to_vec();
         let mut names = base_names.clone();
         for filter in self.filters.iter_mut() {
-            // v9.11：per-effect `channels` 固定槽位优先，否则按当前通道名自动计算。
+            // per-effect `channels` 固定槽位优先，否则按当前通道名自动计算。
             let indices: Vec<usize> = match filter.fixed_channel_indices() {
                 Some(fixed) => fixed,
                 None => names
@@ -66,14 +66,14 @@ impl Chain {
         self.filters.len()
     }
 
-    /// 是否为空链（R3/v6.9）。
+    /// 是否为空链。
     ///
     /// `process_audio` 据此走零拷贝快路径——空链时去交织缓冲原样即输出。
     pub fn is_empty(&self) -> bool {
         self.filters.is_empty()
     }
 
-    /// 全链是否全部就地处理（E1/v6.7）。
+    /// 全链是否全部就地处理。
     ///
     /// `filters.iter().all(|f| f.is_in_place())`。调用方（process_audio）据此
     /// 决定是否可走零拷贝快路径：全链 `true` 时去交织缓冲即最终输出。

@@ -1,4 +1,4 @@
-﻿//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（v6.3 规范 4.6）
+﻿//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（规范 4.6）
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -86,7 +86,7 @@ pub fn process_chain_interleaved(
     frame_count: usize,
     temp: &mut [Vec<f32>],
 ) -> Result<()> {
-    // 防御（2026-08-10）：过渡路径可能收到超过平面缓冲容量的帧数，
+    // 防御：过渡路径可能收到超过平面缓冲容量的帧数，
     // 直接旁通而不是 panic，避免 audiodg 崩溃/连锁静音。
     let io_ok = frame_count
         .checked_mul(channels)
@@ -110,7 +110,7 @@ pub fn process_chain_interleaved(
     Ok(())
 }
 
-/// APOProcess 正常模式的完整处理流程（v6.3 规范 4.6）。
+/// APOProcess 正常模式的完整处理流程（规范 4.6）。
 pub fn process_audio(
     input_props: &[APO_CONNECTION_PROPERTY],
     output_props: &mut [APO_CONNECTION_PROPERTY],
@@ -121,7 +121,7 @@ pub fn process_audio(
 ) -> Result<()> {
     let in_ch = params.input_channels as usize;
     let out_ch = params.output_channels as usize;
-    // v9.17（审查 #12）：切片长度由 valid_frame_count 生成时，防御检查恒真——
+    // （审查 #12）：切片长度由 valid_frame_count 生成时，防御检查恒真——
     // 必须先 clamp 到 max_frame_count 再构造切片，引擎违约时以截断代替越界。
     let frames = params.valid_frame_count.min(params.max_frame_count);
 
@@ -142,7 +142,7 @@ pub fn process_audio(
             BufferAction::Process => {}
         }
 
-        // v9.15：BUFFER_SILENT 标志是权威的——“内容无效，勿读”。
+        // BUFFER_SILENT 标志是权威的——“内容无效，勿读”。
         // 引擎（如浏览器音效菜单切换）会复用上一帧缓冲，SILENT 标志下里面
         // 残留的可能是我们自己上一帧的输出；若按有效数据处理会形成
         // “输出→下一帧输入”的自我反馈爆音（日志实证 in_peak≈30 @ in_flags=2）。
@@ -150,7 +150,7 @@ pub fn process_audio(
         let input_slice = unsafe { input_info.as_slice() };
         let output_slice = unsafe { output_info.as_slice_mut() };
 
-        // 防御（2026-08-10 多流崩溃根因）：引擎传入的帧数偶尔会超过按
+        // 防御（多流崩溃根因）：引擎传入的帧数偶尔会超过按
         // max_frame_count 分配的临时缓冲。此时直通而非 panic，避免 audiodg 崩溃。
         let input_ok = frames
             .checked_mul(in_ch)
@@ -204,12 +204,12 @@ pub fn process_audio(
         // Step 4: DSP 处理（先取长度避免借用冲突）
         let active_ch = out_ch.min(temp_buffers.len());
 
-        // R3（v6.9）：空链快路径——去交织缓冲原样即输出，跳过链遍历。
+        // 空链快路径——去交织缓冲原样即输出，跳过链遍历。
         let result = if chain.is_empty() {
             // 空链：temp_buffers 已是输入（deinterleave 写入），无操作即通过。
             Ok(())
         } else {
-            // 用 RT 编译期见证（O1）标记此路径为实时处理。
+            // 用 RT 编译期见证标记此路径为实时处理。
             let _rt = crate::pipeline::realtime::contract::RealtimeContext::new();
             chain.process(&mut temp_buffers[..active_ch], frames)
         };
@@ -240,7 +240,7 @@ pub fn process_audio(
             output_prop.u32BufferFlags = BUFFER_VALID;
         }
         // EAPO:482 对齐：显式设置输出帧数（APO 契约要求 APO 写回）——
-        // 缺失 → 引擎判输出无效 → 完全无声（2026-08-04 实测 audiodg 加载但无声根因）。
+        // 缺失 → 引擎判输出无效 → 完全无声（实测 audiodg 加载但无声根因）。
         output_prop.u32ValidFrameCount = frames as u32;
     }
     Ok(())
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(input, output);
     }
 
-    /// v9.15 回归：引擎标记 BUFFER_SILENT 但缓冲内残留大数值（脏静音缓冲）时，
+    /// 回归：引擎标记 BUFFER_SILENT 但缓冲内残留大数值（脏静音缓冲）时，
     /// 必须输出静音且不得把残留内容当有效音频处理（自我反馈爆音根因）。
     #[test]
     fn silent_buffer_with_garbage_outputs_silence() {
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(output_prop.u32ValidFrameCount, 4);
     }
 
-    /// v9.17 回归（审查 #12）：引擎违约给出超过 max_frame_count 的帧数时，
+    /// 回归（审查 #12）：引擎违约给出超过 max_frame_count 的帧数时，
     /// 必须先 clamp 再处理——不得在切片构造处越界，输出帧数按实际写入上报。
     #[test]
     fn process_audio_clamps_frames_to_max_frame_count() {

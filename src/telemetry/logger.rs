@@ -1,4 +1,4 @@
-﻿//! telemetry/logger.rs — 无锁环形日志，实时路径零堆分配（v6.3 规范 9.1）
+﻿//! telemetry/logger.rs — 无锁环形日志，实时路径零堆分配（规范 9.1）
 
 use std::sync::OnceLock;
 

@@ -1,4 +1,4 @@
-//! object/apo/state.rs — APO 状态机（O2/v6.6）
+//! object/apo/state.rs — APO 状态机
 //!
 //! 纯状态逻辑：Created → Initialized → Locked，以及 LockForProcess 失败时的 RAII 回退守卫。
 //! 不依赖 pipeline / config，只依赖 COM HRESULT 常量。
@@ -17,7 +17,7 @@ pub enum ApoState {
     Locked = 2,
 }
 
-/// 状态转换错误（O2/v6.6）：携带期望/尝试/实际三态，替代纯字符串描述。
+/// 状态转换错误：携带期望/尝试/实际三态，替代纯字符串描述。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TransitionError {
     /// 期望的起始状态。
@@ -44,7 +44,7 @@ impl std::fmt::Display for TransitionError {
     }
 }
 
-/// TransitionError → HRESULT（O2）：统一映射为 APOERR_ALREADY_INITIALIZED。
+/// TransitionError → HRESULT：统一映射为 APOERR_ALREADY_INITIALIZED。
 impl From<TransitionError> for HRESULT {
     fn from(_: TransitionError) -> Self {
         APOERR_ALREADY_INITIALIZED
@@ -82,7 +82,7 @@ impl StateCell {
         state_from_u8(self.state.load(Ordering::Acquire))
     }
 
-    /// release（O2）：任意状态 → Created，返回旧状态。DLL 卸载终态复位用。
+    /// release：任意状态 → Created，返回旧状态。DLL 卸载终态复位用。
     pub fn release(&self) -> ApoState {
         let old = self.state.swap(ApoState::Created as u8, Ordering::AcqRel);
         state_from_u8(old)

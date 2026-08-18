@@ -1,4 +1,4 @@
-//! object/apo.rs — ApoObject 核心（v6.3 规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
+//! object/apo.rs — ApoObject 核心（规范 7.1，按 windows-rs 0.62.2 _Impl trait 实现）
 //! 模块入口：COM 接口薄转发，纯逻辑子模块见 `object/apo/`。
 
 pub mod aggregate;
@@ -50,13 +50,13 @@ pub struct ApoObject {
     /// 配置文件路径（Initialize 确定，per-device `Documents\VxAPO\{GUID}\config.toml`）。
     /// Arc<Mutex>：spawn 线程可 clone（hot_reload 独立访问）。
     pub(crate) config_path: Arc<Mutex<String>>,
-    /// watcher 运行时状态（v7.10，P0-4 外部驱动模型）：Lock 末尾启动 / Unlock 停止。
+    /// watcher 运行时状态（， 外部驱动模型）：Lock 末尾启动 / Unlock 停止。
     /// Arc<Mutex>：&self 可写（#[implement] 无 &mut Foo）；spawn 可 clone 移入线程。
     watcher_state: Arc<Mutex<WatcherState>>,
-    /// 子 APO（P0-6，object 7.1.3）：Initialize 创建，失败降级 None。
+    /// 子 APO（，object 7.1.3）：Initialize 创建，失败降级 None。
     /// Arc<Mutex>：&self 可写 + 控制线程（Initialize/Lock/Unlock）持有；
     /// RT 路径 APOProcess 锁 inner 前短锁读取（引擎保证不重叠，无实际阻塞）。
-    /// 语义等价规范 7.1.3 的字段（P0-4 Arc Mutex WatcherState 先例）。
+    /// 语义等价规范 7.1.3 的字段（Arc Mutex WatcherState 先例）。
     pub(crate) child_apo: Arc<Mutex<Option<ChildApo>>>,
 }
 
@@ -97,7 +97,7 @@ impl Drop for ApoObject {
 // ═══ IAudioProcessingObject 实现（windows-rs _Impl trait 签名 → 子模块转发） ═══
 impl IAudioProcessingObject_Impl for ApoObject_Impl {
     fn Reset(&self) -> Result<()> {
-        // R4（v9.17）：控制型 COM 入口统一 catch_unwind——内部 mutex 中毒/format!
+        // 控制型 COM 入口统一 catch_unwind——内部 mutex 中毒/format!
         // 等 panic 不得跨 extern "system" 边界 unwind（release panic=abort 时为空操作）。
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process::reset(self)))
             .unwrap_or_else(|_| Err(windows::core::Error::from(E_FAIL)))
@@ -113,7 +113,7 @@ impl IAudioProcessingObject_Impl for ApoObject_Impl {
     }
 
     fn Initialize(&self, cb_data_size: u32, pby_data: *const u8) -> Result<()> {
-        // R4（P2）：Initialize 内部含 mutex 锁与自愈 I/O，同样必须 catch_unwind。
+        // （P2）：Initialize 内部含 mutex 锁与自愈 I/O，同样必须 catch_unwind。
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             init::initialize(self, cb_data_size, pby_data)
         }))

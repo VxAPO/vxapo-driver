@@ -1,4 +1,4 @@
-﻿//! install/device/endpoint.rs — 音频端点状态查询（v6.3 规范 5.1）
+﻿//! install/device/endpoint.rs — 音频端点状态查询（规范 5.1）
 //!
 //! 查询 Windows 音频端点的设备 ID、友好名称与连接状态。只读。
 
@@ -96,7 +96,7 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
     // ── 友好名称 ──────────────────────────────────────────────────────────
     // 与旧 CLI 一致的组合显示：接口友好名（PKEY_DeviceInterface_FriendlyName={a45c254e...},2，
     // 实际是「扬声器/耳机」类型名）+ 设备产品名（PKEY_Device_ProductName={b3f8fa53...},6，
-    // 实际是「EDIFIER M16+」具体型号）。两者相同只取其一；不同组合「接口名 (产品名)」，
+    // 实际是「EDIFIER M16+」具体型号）。两者相同只取其一；不同组合「接口名(产品名)」，
     // 让用户能看到具体设备而非只有类型。
     let interface_name = properties
         .as_ref()
@@ -183,7 +183,7 @@ fn extract_endpoint_guid(endpoint_key: &RegKey) -> String {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 测试（Note 41）
+// 测试
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]

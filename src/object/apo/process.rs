@@ -30,14 +30,14 @@ use crate::sys::com::apo_types::{
 };
 use crate::sys::com::prelude::{E_FAIL, HRESULT};
 
-/// 卷积型 GraphicEQ 的内部隐藏延迟相关预留（v9.5 起为分块 FFT 块大小 128）；
+/// 卷积型 GraphicEQ 的内部隐藏延迟相关预留（分块 FFT 块大小 128）；
 /// 临时缓冲按此预留余量，避免引擎按 `CalcInputFrames` 多给帧数时越界
-/// （2026-08-10 实证：引擎实际会多给到 2×latency+1，2048 为安全余量）。
+/// （实证：引擎实际会多给到 2×latency+1，2048 为安全余量）。
 /// 缓冲余量：覆盖 PEQ 直接 FIR（≤2048 抽头 → 延迟 2047）+ Wide（1023）
 /// 等最坏链延迟组合（引擎按 `CalcInputFrames` 可能多给帧的安全余量）。
 const MAX_APO_LATENCY_SAMPLES: usize = 8192;
 
-/// `Reset`：正常重置——重置滤波器状态与过渡，保留配置链（v9.6）。
+/// `Reset`：正常重置——重置滤波器状态与过渡，保留配置链。
 ///
 /// 旧实现把 `current_chain` 换成空链——引擎在设备切换/流停止时可能先 `Reset`
 /// 再继续排空最后一段音频：最后一段突然失去 EQ（负增益配置下原始信号变响），
@@ -49,13 +49,13 @@ pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
     let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
     inner.current_chain.reset();
     inner.outgoing_chain = None;
-    inner.retired_chain = None; // R1：控制线程锁内统一析构
+    inner.retired_chain = None; // 控制线程锁内统一析构
     inner.transition = None;
     inner.pending_reload = false;
     inner.reloading = false;
-    // v7.9：清空配置指纹基线（重新 Lock 重新建立）。
+    // 清空配置指纹基线（重新 Lock 重新建立）。
     inner.active_spec.clear();
-    // v9.6：保留 pipeline_context / current_chain / temp_buffers 结构与容量；
+    // 保留 pipeline_context / current_chain / temp_buffers 结构与容量；
     // 临时缓冲清零（内容作废），结构保留（Reset 后引擎可能继续 APOProcess）。
     for b in inner.temp_buffers.iter_mut() {
         b.fill(0.0);
@@ -73,7 +73,7 @@ pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
 /// `GetLatency`：有 child → 委托 child；无 child → 返回 0。
 ///
 /// 分区块已缩至 32 采样（≈0.67ms），隐藏延迟不会造成可闻慢放；
-/// 向引擎上报延迟会导致帧协商错位/无声（2026-08-10 实证），因此不上报。
+/// 向引擎上报延迟会导致帧协商错位/无声（实证），因此不上报。
 pub(crate) fn get_latency(apo: &ApoObject_Impl) -> Result<i64> {
     if let Some(child) = apo
         .child_apo
@@ -116,9 +116,9 @@ pub(crate) fn apo_process(
         return;
     }
 
-    // P0-5（v8.2/v8.3）：catch_unwind 入口包裹——debug（panic="unwind"）测试态
+    // ：catch_unwind 入口包裹——debug（panic="unwind"）测试态
     // 防御路径，验证「即便 panic 也不跨 FFI 传播」；release（panic="abort"）下
-    // catch_unwind 为编译移除的空操作（O3 主规范十五），panic 即确定性 abort。
+    // catch_unwind 为编译移除的空操作（主规范十五），panic 即确定性 abort。
     // AssertUnwindSafe：闭包持有裸指针（FFI 参数），跨包装需显式断言
     // （catch_unwind 仅需闭包内不产生未定义行为——panic 后兜底不再触碰输入指针）。
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -226,9 +226,9 @@ pub(crate) fn lock_for_process(
 
     // Step 3: 构建 FilterRegistry + ConfigParser，解析配置文件
     //         （路径来自 Initialize 确定的 per-device config_path）。
-    // v7.9：parse_file_with_spec → (滤波器列表, spec chain) 双返回。
+    // parse_file_with_spec → (滤波器列表, spec chain) 双返回。
     // active_spec 即本次解析产出的配置指纹（LockForProcess 建立基线）。
-    // v9.4：PostMix 实例默认直通——Windows 对渲染设备同时挂 SFX(PreMix) + EFX(PostMix)
+    // PostMix 实例默认直通——Windows 对渲染设备同时挂 SFX(PreMix) + EFX(PostMix)
     // 两个 VxAPO 实例，若都加载同一 config 会把用户配置（如 GraphicEQ 卷积）应用两次：
     // 音量异常偏低 + 双倍隐藏延迟/CPU（设备切换后帧协商更易错位）。
     // PostMix 保留 child APO 委托（前任 EFX APO 仍生效），自身不再处理用户配置。
@@ -246,7 +246,7 @@ pub(crate) fn lock_for_process(
         match parser.parse_file_with_spec(&config_path, &dsp_ctx) {
             Ok(r) => r,
             Err(e) => {
-                // v9.12：Lock 解析失败降级为 passthrough（有声无 EQ）——
+                // Lock 解析失败降级为 passthrough（有声无 EQ）——
                 // 配置缺失/损坏/保存中间态时新流 Lock 若返回错误会直接无声
                 // （实证：config.toml 坏状态期间关闭网页后新网页无声音）。
                 crate::object::apo::config::diag_append(&format!(
@@ -257,7 +257,7 @@ pub(crate) fn lock_for_process(
             }
         }
     };
-    // Step 3.5: 复用键与复用判定（v9.12，供日志与 Step 4 使用）。
+    // Step 3.5: 复用键与复用判定（，供日志与 Step 4 使用）。
     let lock_key = if is_postmix {
         None
     } else {
@@ -292,7 +292,7 @@ pub(crate) fn lock_for_process(
     ));
 
     // Step 4: 组装 Chain。
-    // v9.12 修订：同 config/格式的 Unlock→Relock（如关闭网页触发的端点重协商）
+    // 修订：同 config/格式的 Unlock→Relock（如关闭网页触发的端点重协商）
     // 直接复用现有链、保留滤波器状态，避免重建瞬态（哔声 + 断流一瞬间）。
     let chain = if reuse_cached {
         Chain::new() // 占位：复用路径在 Step 6 保留现有 current_chain。
@@ -308,9 +308,9 @@ pub(crate) fn lock_for_process(
         chain
     };
 
-    // Step 5: 预分配过渡缓冲区（v7.8 修订，杜绝 RT 线程过渡首次 resize 扩容——
+    // Step 5: 预分配过渡缓冲区（修订，杜绝 RT 线程过渡首次 resize 扩容——
     //          EAPO 对齐：按 max_frame_count × max_ch 预分配充足容量）。
-    // 2026-08-10：缓冲区额外预留 MAX_APO_LATENCY_SAMPLES，因为引擎按
+    // 缓冲区额外预留 MAX_APO_LATENCY_SAMPLES，因为引擎按
     // CalcInputFrames(output+latency) 提供的帧数可能超过 max_frame_count。
     let max_ch = pipeline_context
         .input_channels
@@ -323,13 +323,13 @@ pub(crate) fn lock_for_process(
     // deinterleave 空间（channels 个 Vec）。
     // **必须用 vec![0.0; len]（带长度），不能用 Vec::with_capacity（len=0）**——
     // deinterleave_into 按 `output[ch][f]` 写会越界 panic → catch_unwind 捕获 →
-    // panic 兜底输出清零 + BUFFER_SILENT → 完全无声（2026-08-04 实测根因）。
+    // panic 兜底输出清零 + BUFFER_SILENT → 完全无声（实测根因）。
     let mut temp_buffers: Vec<Vec<f32>> = Vec::with_capacity(max_ch);
     for _ in 0..max_ch {
         temp_buffers.push(vec![0.0f32; frame_capacity]);
     }
 
-    // Step 6: 更新内部状态。（R1：退役链由控制线程锁内统一析构）
+    // Step 6: 更新内部状态。（退役链由控制线程锁内统一析构）
     {
         let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
         if !reuse_cached {
@@ -345,20 +345,20 @@ pub(crate) fn lock_for_process(
         inner.temp_buffer_new = temp_buffer_new;
         inner.pending_reload = false;
         inner.reloading = false;
-        // v7.9：active_spec 建立基线（当前生效链的配置指纹）。
+        // active_spec 建立基线（当前生效链的配置指纹）。
         // 此后 hot_reload 与此基线比较决定是否真正切换。
         inner.active_spec = spec_chain;
-        // v9.7：启动静音停用（用户实测：切回开头轻微断续是 Windows 自带行为，
+        // 启动静音停用（实测：切回开头轻微断续是 Windows 自带行为，
         // 不需要静音）。保留字段与机制，置 0 即直通。
         inner.startup_fade_total = 0;
         inner.startup_fade_remaining = 0;
     }
     // 延迟不上报引擎：向引擎上报/补偿会导致帧协商错位、播放卡住
-    // （2026-08-10 实证；v9.11 尝试激活后热重载/切歌均卡住，已回退）。
+    // （实证：尝试激活后热重载/切歌均卡住，已回退）。
     apo.latency_samples.store(0, Ordering::SeqCst);
     apo.latency_frames_atomic.store(0, Ordering::SeqCst);
 
-    // Step 6b（P0-6，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父，Note 57）。
+    // Step 6b（，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父）。
     // 对齐 EAPO 341-347：childCfg->LockForProcess 结果仅 Trace 不 return。
     if let Some(child) = apo
         .child_apo
@@ -381,8 +381,8 @@ pub(crate) fn lock_for_process(
     // Step 7: 确保第三方 APO 可加载（DisableProtectedAudioDG）。
     ensure_can_load().map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
-    // Step 8 (v7.10)：Lock 末尾启动 watcher（config_path 已确定 + active_spec 基线就绪）。
-    // v9.4：PostMix 直通实例不启动 watcher（无配置可热重载，也避免双实例重复解析）。
+    // Step 8()：Lock 末尾启动 watcher（config_path 已确定 + active_spec 基线就绪）。
+    // PostMix 直通实例不启动 watcher（无配置可热重载，也避免双实例重复解析）。
     // 启动失败降级（仅日志），不阻塞锁定。
     if !is_postmix {
         if let Err(e) = start_watcher(apo) {
@@ -405,7 +405,7 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
         .transition(ApoState::Locked, ApoState::Initialized)
         .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
-    // P0-6（object 7.1.10）：子 APO UnlockForProcess 委托——失败不阻塞父解锁。
+    // （object 7.1.10）：子 APO UnlockForProcess 委托——失败不阻塞父解锁。
     if let Some(child) = apo
         .child_apo
         .lock()
@@ -418,18 +418,18 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
         }
     }
 
-    // Stop watcher：SetEvent → join → close（v7.10 stop_watcher）。先释放锁（join 可能等待）。
+    // Stop watcher：SetEvent → join → close（stop_watcher）。先释放锁（join 可能等待）。
     drop(apo.mutex.lock().unwrap_or_else(|e| e.into_inner()));
     stop_watcher(apo);
 
-    // R1：退役链 + 过渡状态由控制线程锁内统一析构。
+    // 退役链 + 过渡状态由控制线程锁内统一析构。
     let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
     inner.retired_chain = None;
     inner.outgoing_chain = None;
     inner.transition = None;
     inner.pending_reload = false;
     inner.reloading = false;
-    // v7.9 指纹基线保留；v9.12：Unlock 不再清除 last_lock_key——
+    // 指纹基线保留；：Unlock 不再清除 last_lock_key——
     // 同 config 的 Relock 复用现有链（保留状态），避免重协商瞬态。
     inner.startup_fade_total = 0;
     inner.startup_fade_remaining = 0;
@@ -460,10 +460,10 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// RT 处理主体（P0-5，v8.2）
+// RT 处理主体
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 记录一次 RT 调用的诊断快照（v9.15）：输入/输出峰值与缓冲标志写入环形数组，
+/// 记录一次 RT 调用的诊断快照：输入/输出峰值与缓冲标志写入环形数组，
 /// 同时维护锁定周期内的输出峰值高水位（Unlock 时随日志输出）。
 fn record_rt_call(
     inner: &mut crate::object::apo::inner::ApoObjectInner,
@@ -482,7 +482,7 @@ fn record_rt_call(
         inner.hot_in_peak = in_peak;
         inner.hot_secs = secs;
     }
-    // v9.15: dirty silent buffers (BUFFER_SILENT flag with non-zero content)
+    // dirty silent buffers(BUFFER_SILENT flag with non-zero content)
     // are the root cause of the self-feedback buzz; count them for verification.
     if in_flags == BUFFER_SILENT.0 as u32 && in_peak > SILENT_DIRTY_THRESHOLD {
         inner.silent_dirty_calls = inner.silent_dirty_calls.saturating_add(1);
@@ -490,11 +490,11 @@ fn record_rt_call(
     }
 }
 
-/// 脏静音缓冲判定阈值（v9.15）：输入峰值超过该值视为内容非零。
+/// 脏静音缓冲判定阈值：输入峰值超过该值视为内容非零。
 const SILENT_DIRTY_THRESHOLD: f32 = 1.0e-3;
 
-// RT 诊断时间戳（v9.19）：debug 构建取 Unix 秒；release 固定 0，
-// 避免 RT 路径每帧 `SystemTime::now()` 系统调用（审查 #5 / R5 边界）。
+// RT 诊断时间戳：debug 构建取 Unix 秒；release 固定 0，
+// 避免 RT 路径每帧 `SystemTime::now()` 系统调用（审查 #5 / 边界）。
 #[cfg(debug_assertions)]
 fn rt_diag_secs() -> u64 {
     std::time::SystemTime::now()
@@ -508,7 +508,7 @@ fn rt_diag_secs() -> u64 {
     0
 }
 
-/// RT 路径统一交错切片构造（R3/v9.17）。
+/// RT 路径统一交错切片构造。
 ///
 /// 帧数先 clamp 到 `max_frames`，再做 `saturating_mul`，杜绝“切片先于校验构造”
 /// 导致的越界读写（引擎违约时以截断代替 OOB）；零长度返回空切片。
@@ -553,8 +553,8 @@ impl ApoObject {
     /// APOProcess 实际处理主体。
     ///
     /// 由 `apo_process` 用 `catch_unwind` 包裹调用——参数校验（状态 + 指针）留在壳外。
-    /// 本方法即 v8.2 前 `APOProcess` 的整体逻辑：双链过渡 + 升余弦混合 + R1 退役链
-    /// + R2 触发重载 + 正常模式 `process_audio`。
+    /// 本方法即 前 `APOProcess` 的整体逻辑：双链过渡 + 升余弦混合 + 退役链
+    /// + 触发重载 + 正常模式 `process_audio`。
     fn apo_process_inner(
         &self,
         num_input: u32,
@@ -562,7 +562,7 @@ impl ApoObject {
         num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
-        // P0-6（v8.1 D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
+        // （D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
         // 双链共享同一份 child 输出作输入；child 不在 current/outgoing 任一链内。
         // 锁 inner **前**调（避免持 inner 锁调 child——child 是独立 COM 对象，无循环依赖）。
         if let Some(child) = self
@@ -578,14 +578,14 @@ impl ApoObject {
         }
 
         // 锁被前序 panic 污染时继续使用数据（PoisonError::into_inner），
-        // 避免 RT 路径二次 panic 导致整个 audiodg 崩溃（2026-08-10 实证）。
+        // 避免 RT 路径二次 panic 导致整个 audiodg 崩溃（实证）。
         let mut inner = self.mutex.lock().unwrap_or_else(|e| e.into_inner());
         let pending = inner.pending_reload;
         let max_frames = inner.pipeline_context.max_frame_count;
 
         // 过渡模式存在 → 双链处理 + 混合。
         if pending || inner.transition.is_some() {
-            // 字段拆借用（R2/v9.17）：各字段独立 &mut，不再“取出占位链再放回”，
+            // 字段拆借用：各字段独立 &mut，不再“取出占位链再放回”，
             // 把 RT 零分配从“依赖编译器消除”升级为逻辑保证。
             // MutexGuard 的 Deref 不参与字段拆分，先取 `&mut *inner` 再拆字段。
             let inner_ref = &mut *inner;
@@ -598,8 +598,8 @@ impl ApoObject {
             let in_ch = inner_ref.pipeline_context.input_channels as usize;
             let out_ch = inner_ref.pipeline_context.output_channels as usize;
 
-            // v9.15: engine-declared silent buffers may still contain our previous
-            // output (in-place reuse); processing them re-enters the DSP and creates
+            // engine-declared silent buffers may still contain our previous
+            // output(in-place reuse); processing them re-enters the DSP and creates
             // the self-feedback buzz. For transition frames, output silence and keep
             // the in-flight transition state untouched.
             let input_silent = unsafe { (&**pp_inputs).u32BufferFlags == BUFFER_SILENT };
@@ -644,7 +644,7 @@ impl ApoObject {
                 return;
             }
 
-            // 防御（用户风险①）：pending 残留但过渡不在途（transition 已被清空/
+            // 防御（风险①）：pending 残留但过渡不在途（transition 已被清空/
             // 被其它路径消费）→ 无混合器。此时**必须写出**（APO 契约：每帧写输出）：
             // 直接复制输入到输出（bypass），恢复状态、旧链退役；若可重载则触发补重载。
             if transition.is_none() {
@@ -668,7 +668,7 @@ impl ApoObject {
                 }
                 output_prop.u32ValidFrameCount = frames as u32;
                 output_prop.u32BufferFlags = BUFFER_VALID;
-                // v9.15 诊断：过渡旁通帧也记录输入/输出峰值。
+                // 诊断：过渡旁通帧也记录输入/输出峰值。
                 {
                     let secs = rt_diag_secs();
                     let in_peak = src.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
@@ -683,12 +683,12 @@ impl ApoObject {
                         out_peak,
                     );
                 }
-                // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
+                // 流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
                 if inner_ref.startup_fade_remaining > 0 {
                     inner_ref.apply_startup_fade(dst, frames, out_ch);
                 }
 
-                inner_ref.retired_chain = outgoing; // R1：旧链退役（控制线程析构）
+                inner_ref.retired_chain = outgoing; // 旧链退役（控制线程析构）
                 inner_ref.outgoing_chain = None;
                 inner_ref.transition = None;
                 inner_ref.temp_buffers = tbufs;
@@ -714,7 +714,7 @@ impl ApoObject {
             // 旧链 → temp_buffer_old。
             let mut old_ready = true;
             if let Some(old_chain) = outgoing.as_mut() {
-                // R2/v9.17：过渡缓冲在 Lock 时已按 (max_frame_count + 余量) × ch 预分配，
+                // 过渡缓冲在 Lock 时已按(max_frame_count + 余量) × ch 预分配，
                 // 此处只允许容量内写入，禁止 resize（RT 零分配逻辑保证）。
                 let n = frames.saturating_mul(out_ch);
                 debug_assert!(
@@ -754,7 +754,7 @@ impl ApoObject {
 
             // 混合 → 输出。factor 从 0.0（旧）→ 1.0（新），**逐采样推进**：
             // 过渡长度按采样数计（10ms = 480 采样 @48k），不是按 APOProcess 调用次数。
-            // 用户风险②：advance() 返回 None（已达上限）时**也必须写输出**——
+            // 风险②：advance() 返回 None（已达上限）时**也必须写输出**——
             // 按 factor=1.0（纯新链）输出，APO 契约要求每帧写出。
             // SAFETY: 输出缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             let out_slice = unsafe {
@@ -772,13 +772,13 @@ impl ApoObject {
                     out_slice[idx] = old_v * inv_factor + tbuf_new[idx] * factor;
                 }
             }
-            // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
+            // 流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
             if inner_ref.startup_fade_remaining > 0 {
                 inner_ref.apply_startup_fade(out_slice, frames, out_ch);
             }
             output_prop.u32ValidFrameCount = frames as u32;
             output_prop.u32BufferFlags = BUFFER_VALID;
-            // v9.15 诊断：过渡混合帧也记录输入/输出峰值。
+            // 诊断：过渡混合帧也记录输入/输出峰值。
             {
                 let secs = rt_diag_secs();
                 let in_peak = input_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
@@ -800,14 +800,14 @@ impl ApoObject {
                 // 保留长度（容量即长度），仅清零内容——后续过渡帧直接写入，无需 resize。
                 tbuf_old.fill(0.0);
                 tbuf_new.fill(0.0);
-                // R1：旧链移入退役槽（零析构），控制线程锁内统一 drop。
+                // 旧链移入退役槽（零析构），控制线程锁内统一 drop。
                 inner_ref.retired_chain = outgoing;
                 inner_ref.outgoing_chain = None;
                 inner_ref.transition = None;
                 inner_ref.temp_buffers = tbufs;
                 inner_ref.temp_buffer_old = tbuf_old;
                 inner_ref.temp_buffer_new = tbuf_new;
-                // R2 修正（用户风险①）：过渡完成帧如需重载，**不**在此置 `reloading=true`——
+                // 修正（风险①）：过渡完成帧如需重载，**不**在此置 `reloading=true`——
                 // `reloading` 表示"正在解析中"（hot_reload 自己会置位），若先置 true 再调
                 // hot_reload，短锁检查 `reloading==true` 会直接返回 → 延迟重载被自己拦截。
                 // 若 hot_reload 正在运行（reloading=true，另一线程在解析），此处保留
@@ -854,7 +854,7 @@ impl ApoObject {
         let inner_ref = &mut *inner;
         let current_chain = &mut inner_ref.current_chain;
         let mut tbufs = std::mem::take(&mut inner_ref.temp_buffers);
-        // v9.15 诊断：处理前先取输入峰值（in-place 缓冲处理后会被输出覆盖）。
+        // 诊断：处理前先取输入峰值（in-place 缓冲处理后会被输出覆盖）。
         let in_peak = if frames > 0 && in_ch > 0 {
             // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             unsafe {
@@ -878,7 +878,7 @@ impl ApoObject {
             &self.process_stats,
             tbufs.as_mut_slice(),
         );
-        // v9.6：流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
+        // 流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
         // 引擎在设备切换后可能边加载目标链边开播，首段断续慢速；
         // 淡入把听感变为“加载完再播”。仅 PreMix 实例启用（PostMix 直通）。
         let output_one = unsafe { &mut **pp_outputs };
@@ -894,7 +894,7 @@ impl ApoObject {
         if inner_ref.startup_fade_remaining > 0 {
             inner_ref.apply_startup_fade(out_slice, frames, out_ch as usize);
         }
-        // v9.6/v9.15 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前
+        // 诊断：记录最近几次调用（Unlock 时输出），确认旧流停止前
         // 引擎是否送了最后一段真实音频（嗡声幅度随播放音量变化）。
         let secs = rt_diag_secs();
         let out_peak = out_slice.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
@@ -911,11 +911,11 @@ impl ApoObject {
         inner_ref.temp_buffers = tbufs;
     }
 
-    /// RT 入口 panic 兜底（P0-5，debug `panic="unwind"` 测试态防御路径）。
+    /// RT 入口 panic 兜底（，debug `panic="unwind"` 测试态防御路径）。
     ///
     /// 捕获到 panic 后：输出缓冲清零 + `BUFFER_SILENT` + `stats.error_count++` + 日志
     /// （RT 零分配）。release（`panic="abort"`）下 `catch_unwind` 为编译移除的空操作，
-    /// panic 即确定性 abort（O3），本函数不会被执行。
+    /// panic 即确定性 abort，本函数不会被执行。
     fn apo_process_panic_fallback(
         &self,
         num_output: u32,
@@ -953,7 +953,7 @@ impl ApoObject {
     /// 读取当前输出通道数与最大帧数（panic 兜底路径专用）。
     ///
     /// 使用 `PoisonError::into_inner()` 容忍被前序 panic 污染的 mutex——panic 发生时
-    /// 锁内数据本身仍有效（仅锁标记 poisoned），此路径保证**不二次 panic**（P0-5）。
+    /// 锁内数据本身仍有效（仅锁标记 poisoned），此路径保证**不二次 panic**。
     fn out_channel_count_safe(&self) -> (usize, usize) {
         let inner = self.mutex.lock().unwrap_or_else(|e| e.into_inner());
         (
@@ -971,7 +971,7 @@ mod tests {
     use super::*;
     use crate::object::vx_reg_props::CLSID_VXAPO_PRE_MIX;
 
-    /// P0-5 测试：`apo_process_panic_fallback` 在模拟 panic 后输出清零 + BUFFER_SILENT + error_count++。
+    /// 测试：`apo_process_panic_fallback` 在模拟 panic 后输出清零 + BUFFER_SILENT + error_count++。
     ///
     /// 直接用 `catch_unwind` + 注入 panic 的闭包验证防御路径——不依赖真实 FFI 调用。
     #[test]
@@ -1009,7 +1009,7 @@ mod tests {
         assert_eq!(apo.process_stats.error_count.load(Ordering::Relaxed), 1);
     }
 
-    /// P0-5 测试：CalcInputFrames / CalcOutputFrames panic 时返回保守值（不 panic、不越界）。
+    /// 测试：CalcInputFrames / CalcOutputFrames panic 时返回保守值（不 panic、不越界）。
     ///
     /// `_Impl` 由 `#[implement]` 宏生成（无法直接构造），此处验证等价逻辑：
     /// 保守值策略（CalcInputFrames → output_frames；CalcOutputFrames → 0）与真实实现一致。

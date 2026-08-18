@@ -1,4 +1,4 @@
-//! object/apo/aggregate.rs — COM 聚合委托外壳（P0-7 无声根因修复）
+//! object/apo/aggregate.rs — COM 聚合委托外壳（无声根因修复）
 //!
 //! Windows 音频引擎**强制用聚合模式（pUnkOuter 非空）创建 APO**（探针实证 punkouter_null=false）。
 //! windows-rs 0.62 `#[implement]` 生成的 IUnknown 自包含、**不委托**——引擎聚合创建后
@@ -22,9 +22,9 @@ use crate::sys::com::apo_interfaces::{
 };
 use crate::sys::com::prelude::{E_NOINTERFACE, E_POINTER, GUID, HRESULT, Interface, IUnknown, S_OK};
 
-/// 聚合实例生命周期计数（v9.6 诊断）：`create_aggregate` 成功 +1，
+/// 聚合实例生命周期计数（诊断）：`create_aggregate` 成功 +1，
 /// `na_release` 归零析构 -1。用于验证“audiodg 实例是否泄漏”
-/// （用户实测：设置页卡顿在重启后消失，怀疑实例未释放累积）。
+/// （实测：设置页卡顿在重启后消失，怀疑实例未释放累积）。
 pub(crate) static AGG_CREATED: AtomicU32 = AtomicU32::new(0);
 pub(crate) static AGG_DESTROYED: AtomicU32 = AtomicU32::new(0);
 
@@ -90,7 +90,7 @@ const OFF_ASE: usize = 24;
 /// CreateInstance 返回此视图——引擎 QI(IAPO) 走此视图的 NonDelegatingQI。
 const OFF_ND_UNKNOWN: usize = 32;
 
-// 编译期护栏（v9.17，审查 #11）：偏移常量按 x64（8 字节指针）硬编码，
+// 编译期护栏（，审查 #11）：偏移常量按 x64（8 字节指针）硬编码，
 // 32 位构建直接编译失败，不得带错误布局进入链接/运行。
 const _: () = assert!(core::mem::size_of::<*const ()>() == 8);
 
@@ -134,7 +134,7 @@ fn as_apo<'a>(base: *mut NApo) -> &'a NApo {
 unsafe fn base_from_this(this: *mut c_void) -> *mut NApo {
     // SAFETY: 调用方保证 this 指向 NApo 内某个视图字段地址。
     //
-    // 不变式（v9.17 文档化）：RT/CFG/ASE 三个接口视图的 stub 一律先经
+    // 不变式（文档化）：RT/CFG/ASE 三个接口视图的 stub 一律先经
     // `base_from_iface` 回退到基址，再进 `na_*`；IAPO 视图 offset 为 0，
     // `this == base`。因此运行时唯一可能走到本函数的“非基址视图”只有
     // `vtbl_nondeg_unknown`（offset 32）——用 vtable 静态地址唯一性区分。
@@ -159,7 +159,7 @@ unsafe fn delegate_qi_at(base: *mut NApo, riid: *const GUID, ppv: *mut *mut c_vo
     if apo.p_unk_outer.is_null() {
         return na_qi(base as *mut c_void, riid, ppv);
     }
-    // ★ 委托 outer——引擎身份检查通过（IAPO->QI(IUnknown) = outer IUnknown）
+    // ★ 委托 outer——引擎身份检查通过（IAPO->QI(IUnknown） = outer IUnknown)
     // SAFETY: COM 聚合契约保证 p_unk_outer 是有效 IUnknown 实现（引擎外壳，
     // 生命周期由引擎管理）；vtable 槽 0 为该对象的 QI。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
@@ -253,7 +253,7 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
 
     // QI(IUnknown) → 返回非委托 IUnknown 视图（EAPO:521-522，NonDelegatingUnknown 身份）。
     // ★ 返回 `&vtbl_nondeg_unknown`（base+32），不是对象基址（base）——后者是 IAPO 委托视图，
-    //   引擎对它的 QI 走委托 outer → 外壳不认 → 弃用零方法（2026-08-05 实测根因）。
+    // 引擎对它的 QI 走委托 outer → 外壳不认 → 弃用零方法（实测根因）。
     if iid == IUnknown::IID {
         let nd_view = &raw const apo.vtbl_nondeg_unknown as *const IUnknownVtbl as *mut c_void;
         unsafe { *ppv = nd_view };

@@ -12,7 +12,7 @@ use crate::sys::com::apo_types::{
 };
 use windows::core::Result;
 
-/// 格式协商独立属性检查（object 7.1.16，v7.7 修订）。
+/// 格式协商独立属性检查（object 7.1.16， 修订）。
 ///
 /// `IsInputFormatSupported`/`IsOutputFormatSupported` 由 Windows 引擎在**格式协商阶段**
 /// 调用，**早于 LockForProcess**——此时 `pipeline_context` 为全零 `PipelineContext::new()`，

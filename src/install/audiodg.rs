@@ -1,4 +1,4 @@
-﻿//! install/audiodg.rs — DisableProtectedAudioDG 检查与修复（v6.3 规范 5.6）
+﻿//! install/audiodg.rs — DisableProtectedAudioDG 检查与修复（规范 5.6）
 //!
 //! 保护模式阻止第三方 APO 加载。通过注册表
 //! `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio` 下的
@@ -73,7 +73,7 @@ pub fn restore() -> Result<()> {
 ///
 /// 由 object/apo.rs LockForProcess 调用。
 pub fn ensure_can_load() -> Result<()> {
-    // v9.6 进程内缓存：设置页/多流会瞬间调用大量 LockForProcess；该值安装后
+    // 进程内缓存：设置页/多流会瞬间调用大量 LockForProcess；该值安装后
     // 已是 1（uninstall 会重启音频服务/进程），首查成功后无需反复读注册表。
     use std::sync::atomic::{AtomicBool, Ordering};
     static DISABLED: AtomicBool = AtomicBool::new(false);
@@ -150,10 +150,10 @@ pub fn stop_audio_service() -> Result<()> {
 
 /// 重启 Windows 音频服务（AudioSrv）——EAPO 安装收尾对齐（Setup.nsi / DeviceSelector /i）。
 ///
-/// **为什么必须**（2026-08-05 实证根因）：EAPO 安装器装完调用
+/// **为什么必须**（实证根因）：EAPO 安装器装完调用
 /// `DeviceSelector.exe /i` → `ServiceHelper::restartService(L"AudioSrv")`
 /// （DeviceTestThread.cpp:74/254）——**重启音频服务触发引擎重枚举端点建图**，
-/// 装完 DLL 立即进 audiodg（用户实测 47 模块含 EqualizerAPO.dll）。
+/// 装完 DLL 立即进 audiodg（实测 47 模块含 EqualizerAPO.dll）。
 /// VxAPO 之前安装只写注册表不重启服务 → audiodg 保持旧图 → 新装 DLL 不被加载。
 ///
 /// 实现（对齐 EAPO ServiceHelper.cpp restartService）：

@@ -1,4 +1,4 @@
-﻿//! install/device/info.rs — 设备组合查询层（v6.3 规范 5.4）
+﻿//! install/device/info.rs — 设备组合查询层（规范 5.4）
 //!
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口。
 //! 只读，不修改系统状态。
@@ -96,7 +96,7 @@ impl DeviceInfo {
         self.installed_version == INSTALL_VERSION_LEGACY
     }
 
-    /// 设备是否已禁用（E3.2/v6.8，EAPO isDisabled 借鉴）。
+    /// 设备是否已禁用（，EAPO isDisabled 借鉴）。
     ///
     /// 由 `EndpointInfo::state == EndpointState::Disabled` 推导，零新增 I/O。
     pub fn is_disabled(&self) -> bool {
@@ -106,7 +106,7 @@ impl DeviceInfo {
         )
     }
 
-    /// 设备是否已拔除（E3.2/v6.8，EAPO isUnplugged 借鉴）。
+    /// 设备是否已拔除（，EAPO isUnplugged 借鉴）。
     ///
     /// 由 `EndpointInfo::state == EndpointState::NotPresent` 推导，零新增 I/O。
     pub fn is_unplugged(&self) -> bool {
@@ -262,7 +262,7 @@ fn is_vxapo_slot(slots: &[SlotValue; 5], slot: ApoSlot) -> bool {
 /// 检测当前安装模式。
 ///
 /// 只认 **VxAPO 的 CLSID**：PreMix=CLSID_VXAPO_PRE_MIX 且 PostMix=CLSID_VXAPO_POST_MIX
-/// 才算该模式已安装。EAPO/系统 APO 占槽不算 VxAPO 安装（2026-08-04 实证：EDIFIER 的
+/// 才算该模式已安装。EAPO/系统 APO 占槽不算 VxAPO 安装（实证：EDIFIER 的
 /// SFX 被 EAPO PreMix 占、EFX 被 EAPO PostMix 占、MFX 被系统占——旧实现按「任意 GUID 占槽」
 /// 误判 SfxMfx；改为 VxAPO CLSID 判定后落默认 SfxEfx，正确表示「未安装 VxAPO」）。
 fn detect_install_mode(slots: &[SlotValue; 5]) -> InstallMode {
@@ -329,7 +329,7 @@ fn read_install_version(endpoint_key: &RegKey) -> String {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 测试（Note 41）
+// 测试
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn detect_mode_lfxgfx_when_lfx_gfx_pair() {
-        // 需 LFX=VXAPO_PRE **且** GFX=VXAPO_POST 才判定 LfxGfx（v8.8：EAPO 等非 VxAPO 占槽不算）。
+        // 需 LFX=VXAPO_PRE **且** GFX=VXAPO_POST 才判定 LfxGfx（EAPO 等非 VxAPO 占槽不算）。
         let mut slots = empty_slots();
         slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(vxapo_pre_guid());
         slots[ApoSlot::Gfx.index() as usize] = SlotValue::Guid(vxapo_post_guid());

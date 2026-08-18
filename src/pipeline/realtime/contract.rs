@@ -1,4 +1,4 @@
-﻿//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（Note 12/58，v6.3 规范 4.5）
+﻿//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（， 规范 4.5）
 
 #[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// # Safety
 ///
 /// 实现者必须保证类型的所有 `&self` / `&mut self` 方法：
-/// - 不进行堆分配（包括隐式分配，如 `Vec::clone()`）
+/// - 不进行堆分配（包括隐式分配，如 `Vec::clone(）`)
 /// - 不获取任何锁（`Mutex`、`RwLock`、`std::sync::Once`）
 /// - 不执行 I/O（文件、网络、注册表）
-/// - 不 panic（无 `unwrap()`、`expect()`、越界索引）
+/// - 不 panic（无 `unwrap()`、`expect(）`、越界索引)
 /// - 不调用任何非 `RtSafe` 标记的方法
 ///
 /// `initialize` / `new` 等构造方法不受此约束——它们在非实时路径中调用。
@@ -43,10 +43,10 @@ unsafe impl RtCopy for isize {}
 unsafe impl RtCopy for bool {}
 
 // ══════════════════════════════════════════════════════════════════════════════
-// RealtimeContext — RT 编译期见证（O1，v6.6）
+// RealtimeContext — RT 编译期见证
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// RT 编译期见证标记（零尺寸，O1/v6.6）。
+/// RT 编译期见证标记（零尺寸）。
 ///
 /// 无字段、无用户可达构造函数。RT harness（pipeline/process.rs 的 RT 内部函数）
 /// 在实时路径创建后按引用传递。其出现在调用栈中即为设计原则：

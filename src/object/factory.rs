@@ -1,10 +1,10 @@
-﻿//! host/instance/factory.rs — COM ClassFactory 实现（Note 2/3/4/5）
+﻿//! host/instance/factory.rs — COM ClassFactory 实现
 //!
 //! 职责：
-//! 1. 管理 `LOCK_COUNT` 原子计数，跟踪客户端显式锁定（Note 2）
-//! 2. 接收 `DllGetClassObject` 传入的 CLSID，路由到正确的 APO 对象创建（Note 4）
-//! 3. 支持聚合模式，`pUnkOuter` 非空时仅暴露 `IUnknown`（Note 3）
-//! 4. 注册表 `ThreadingModel = "Both"`，本模块不写注册表（Note 5）
+//! 1. 管理 `LOCK_COUNT` 原子计数，跟踪客户端显式锁定
+//! 2. 接收 `DllGetClassObject` 传入的 CLSID，路由到正确的 APO 对象创建
+//! 3. 支持聚合模式，`pUnkOuter` 非空时仅暴露 `IUnknown`
+//! 4. 注册表 `ThreadingModel = "Both"`，本模块不写注册表
 //!
 //! `DllCanUnloadNow` 判定条件：`INST_COUNT == 0 && LOCK_COUNT == 0` 时返回 `S_OK`。
 //!
@@ -30,7 +30,7 @@ pub fn lock_increment() -> u32 {
 }
 
 pub fn lock_decrement() -> u32 {
-    // 零值保护（v9.17，对齐 ref_count.rs CAS 模式）：LockServer(false) 的多余调用
+    // 零值保护（，对齐 ref_count.rs CAS 模式）：LockServer(false) 的多余调用
     // 不得把计数下溢成 u32::MAX——否则 DllCanUnloadNow 永久返回 S_FALSE。
     let mut prev = LOCK_COUNT.load(Ordering::SeqCst);
     loop {
@@ -73,7 +73,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         riid: *const GUID,
         ppvobject: *mut *mut c_void,
     ) -> windows_core::Result<()> {
-        // ── Step 1: 参数校验（先校验后写入，v9.17：空指针不得先解引用）──
+        // ── Step 1: 参数校验（先校验后写入，：空指针不得先解引用）──
         if riid.is_null() || ppvobject.is_null() {
             return Err(Error::from(E_INVALIDARG));
         }
@@ -81,7 +81,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // ── Step 2: 输出指针初始化 ─────────────────────────
         unsafe { *ppvobject = std::ptr::null_mut() };
 
-        // ── Step 3: 聚合支持（P0-7 无声根因修复）────────────
+        // ── Step 3: 聚合支持（无声根因修复）────────────
         // EAPO `EqualizerAPO(IUnknown* pUnkOuter)` 明确支持聚合（引擎以 pUnkOuter 非空
         // 创建 APO）——之前拒绝聚合 → 引擎静默放弃 → 无声（探针实证 punkouter_null=false）。
         //
@@ -92,7 +92,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // 不代表引擎经外壳链能拿到）。
         //
         // 聚合语义（delegating QI→outer / NonDelegating QI→inner）由
-        // object/apo/aggregate.rs 的 NApo 完整实现（P0-7 已落地）。
+        // object/apo/aggregate.rs 的 NApo 完整实现（已落地）。
         if !punkouter.is_null() {
             let iid_unknown = IUnknown::IID;
             if unsafe { *riid } != iid_unknown {
@@ -100,11 +100,11 @@ impl IClassFactory_Impl for ClassFactory_Impl {
             }
         }
 
-        // ── Step 4: 创建聚合外壳（NApo，P0-7 手写 vtable）──
+        // ── Step 4: 创建聚合外壳（NApo， 手写 vtable）──
         // 聚合与非聚合统一走 create_aggregate——NApo 动态转发到内部 ApoObject，
-        // 且实现 EAPO 聚合语义（QI(IUnknown)→outer、QI(接口)→inner、AddRef/Release→outer）。
+        // 且实现 EAPO 聚合语义（QI(IUnknown)→outer、QI(接口）→inner、AddRef/Release→outer)。
         // windows-rs #[implement] 无 NonDelegating 分离，引擎聚合 QI(IAPO) 走不到 inner
-        // → 弃用对象 → 无声；NApo 手写 vtable 补上该委托（08-P0-7-audiodg-analysis §6）。
+        // → 弃用对象 → 无声；NApo 手写 vtable 补上该委托（08--audiodg-analysis §6）。
         // SAFETY: pUnkOuter 从 COM Ref 转裸指针（非空时引擎外壳有效）。
         // Ref<IUnknown> Deref 到接口，.as_ref() 得 Option<&IUnknown>，接口 .abi() 取裸指针。
         let outer_raw: *mut c_void = punkouter
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn lock_decrement_zero_is_noop() {
-        // v9.17 回归：LockServer(false) 在计数已为 0 时不得下溢为 u32::MAX
+        // 回归：LockServer(false) 在计数已为 0 时不得下溢为 u32::MAX
         // （否则 DllCanUnloadNow 永久 S_FALSE）。
         lock_reset_for_test();
         assert_eq!(lock_decrement(), 0);

@@ -1,4 +1,4 @@
-﻿//! pipeline/interleave.rs — 通道数据搬运（v6.3 规范 4.4）
+﻿//! pipeline/interleave.rs — 通道数据搬运（规范 4.4）
 
 /// 交织格式 → 去交织平面缓冲区（分配新 Vec<Vec<f32>>）。非实时路径用。
 pub fn deinterleave(input: &[f32], channels: usize, frames: usize) -> Vec<Vec<f32>> {

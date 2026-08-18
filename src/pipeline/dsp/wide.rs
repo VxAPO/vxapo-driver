@@ -1,13 +1,13 @@
 //! Wide（立体声加宽器）
 //!
-//! v2.4 设计（基于听感反馈重做）：
+//! 设计（基于听感反馈重做）：
 //! - **200 Hz 线性相位 FIR 分频**（1024 点 Hamming 窗低通 + 互补高通）：
 //!   低频支路 = LP FIR 输出，高频支路 = 延迟对齐原信号 − LP 输出，
 //!   两路**完美重建**（无 IIR 相位旋转 / 群延迟差），低频原样不散；
 //!   延迟 = 511 采样（与 GraphicEQ 1024 点 FIR 同级）；
 //! - 高频支路做 **M/S 宽度处理**：`side = (HL-HR)/2` 按
 //!   `1 + 2.3·Intensity^0.6` 放大（甜点 0.5 → ≈2.52×，满档 → ≈3.3×），
-//!   中央按 `1 - 0.10·Intensity^0.6` 补偿（斜率较 v2.2 降低，缓解中频能量不足）；
+//! 中央按 `1 - 0.10·Intensity^0.6` 补偿（斜率较 降低，缓解中频能量不足）；
 //! - 高频支路 **tanh 软限幅**：`headroom_db = 0.2 + 0.8·(1-Intensity)`，
 //!   `out = tanh(out·10^(-headroom_db/20))`；低频支路不经过 tanh；
 //!   `Intensity=0` 仍走直通分支，位精确。
@@ -34,7 +34,7 @@ impl Default for WideParams {
 
 /// FIR 分频点（Hz），以下低频不处理。
 const CROSSOVER_HZ: f32 = 200.0;
-/// FIR 长度（与 GraphicEQ 对齐；延迟 = (N-1)/2）。
+/// FIR 长度（与 GraphicEQ 对齐；延迟 = (N-1)/2 )。
 const FIR_LEN: usize = 1024;
 /// 高频段侧信号增益斜率（1 + 2.3·Intensity^0.6）。
 const SIDE_GAIN_HIGH_SLOPE: f32 = 2.3;
@@ -57,7 +57,7 @@ struct FirSplit {
     write_positions: Vec<usize>,
     /// FIR 长度。
     ir_len: usize,
-    /// 环形缓冲长度（next_power_of_two(ir_len)）。
+    /// 环形缓冲长度（next_power_of_two(ir_len）)。
     delay_len: usize,
     mask: usize,
     /// 线性相位中心（群延迟采样数）。
@@ -81,7 +81,7 @@ impl FirSplit {
         }
     }
 
-    /// 单声道分频：返回 (低频支路, 高频支路)，两路之和 = 延迟 center 帧的原信号。
+    /// 单声道分频：返回(低频支路, 高频支路)，两路之和 = 延迟 center 帧的原信号。
     fn split_channel(&mut self, k: usize, x: f32) -> (f32, f32) {
         let delay = &mut self.delay_lines[k];
         let pos = &mut self.write_positions[k];
@@ -93,7 +93,7 @@ impl FirSplit {
         delay[*pos] = x;
         *pos = (*pos + 1) & mask;
 
-        // 与 convolution.rs DirectConv 相同的分段点积（v9.7，SIMD 友好）。
+        // 与 convolution.rs DirectConv 相同的分段点积（，SIMD 友好）。
         let start = (*pos).wrapping_sub(1) & mask;
         let oldest = (*pos + delay_len - ir_len) & mask;
         let ir_rev = &self.ir_rev;
@@ -348,7 +348,7 @@ mod tests {
         assert!((c_mid - (1.0 - 0.10 * eff(0.5))).abs() < 1e-4);
         assert!((g_max - 3.3).abs() < 1e-4);
         assert!((c_max - 0.90).abs() < 1e-4);
-        // 甜点（0.5）≈ v2.1 满档 2.5×，满档明显超过甜点。
+        // 甜点（0.5）≈ 满档 2.5×，满档明显超过甜点。
         assert!((g_mid - 2.5).abs() < 0.05, "sweet spot should be ~2.5, got {g_mid}");
         assert!(g_max > g_mid && g_mid > g_def);
     }

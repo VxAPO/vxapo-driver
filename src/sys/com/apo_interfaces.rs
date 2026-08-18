@@ -1,4 +1,4 @@
-﻿//! sys/com/apo_interfaces.rs — APO 接口 re-export + IID 常量（v6.3 规范 3.2，修正版）
+﻿//! sys/com/apo_interfaces.rs — APO 接口 re-export + IID 常量（规范 3.2，修正版）
 //!
 //! 职责：re-export windows-rs 0.62.2 已提供的 4 个 APO 接口结构体
 //! （IAudioMediaType、IAudioProcessingObject、IAudioProcessingObjectRT、
@@ -79,7 +79,7 @@ pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: GUID =
     IAudioProcessingObjectNotifications::IID;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// AEC 接口预留（O4/v6.6，feature-gated）
+// AEC 接口预留（，feature-gated）
 // ══════════════════════════════════════════════════════════════════════════════
 //
 // Windows 11 AEC（声学回声消除）APO 未来若支持，在此预留接口 re-export 与 IID 常量。

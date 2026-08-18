@@ -1,4 +1,4 @@
-//! pipeline/dsp/peq_hybrid.rs — 混合式 PEQ（v9.11）
+//! pipeline/dsp/peq_hybrid.rs — 混合式 PEQ
 //!
 //! peaking 段：200 Hz 分频，`Fc < CROSSOVER_HZ` 走 IIR biquad 级联；
 //! `Fc >= CROSSOVER_HZ` 由采样率自适应最小相位 FIR 承担。
@@ -171,7 +171,7 @@ pub struct HybridPeqFilter {
     fir: PeqFir,
     channel_indices: Vec<usize>,
     channels: Vec<PeqChannel>,
-    /// 静音检测与恢复淡入状态（v9.12 修订）。
+    /// 静音检测与恢复淡入状态（修订）。
     input_active: bool,
     fade_total: usize,
     fade_remaining: usize,
@@ -362,7 +362,7 @@ impl Filter for HybridPeqFilter {
 
     fn latency(&self) -> u32 {
         match &self.fir {
-            // 最小相位 FIR 能量集中在前端，实际群延迟远小于线性相位 (N-1)/2；
+            // 最小相位 FIR 能量集中在前端，实际群延迟远小于线性相位(N-1)/2；
             // 保守取 fir_len/4（1024 → 256 ≈ 5.3 ms @48k），不上报引擎，
             // 仅链记账/诊断/缓冲预留使用。
             PeqFir::Direct { fir_len, .. } => (*fir_len / 4).max(1) as u32,

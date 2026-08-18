@@ -1,4 +1,4 @@
-﻿//! sys/audio_defs.rs — Windows 音频基础定义（v6.3 规范 3.5）
+﻿//! sys/audio_defs.rs — Windows 音频基础定义（规范 3.5）
 //!
 //! 职责：提供通道掩码位标志常量、标准布局常量，以及通道掩码兜底/通道名映射函数。
 //!
@@ -16,7 +16,7 @@
 // 1. 通道掩码位标志
 //
 // windows-rs 0.62.2 的 Win32_Media_KernelStreaming 特性未导出 SPEAKER_* 常量，
-// 此处按 Windows SDK (ksmedia.h) 定义自定义补齐（值完全一致）。
+// 此处按 Windows SDK(ksmedia.h) 定义自定义补齐（值完全一致）。
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 前左扬声器（0x1）
@@ -185,7 +185,7 @@ mod tests {
         );
         assert_eq!(
             KSAUDIO_SPEAKER_7POINT1,
-            0x63F // 5.1 + SIDE_LEFT|SIDE_RIGHT (0x200|0x400)
+            0x63F // 5.1 + SIDE_LEFT|SIDE_RIGHT(0x200|0x400)
         );
     }
 

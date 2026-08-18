@@ -1,4 +1,4 @@
-﻿//! config 模块入口（v6.3 规范）。
+﻿//! config 模块入口（规范）。
 //!
 //! 边界：不知道 install/、object/。只负责解析配置文件，构建 Filter 链。
 //! 不直接操作 Chain。

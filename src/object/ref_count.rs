@@ -1,4 +1,4 @@
-﻿//! object/ref_count.rs — INST_COUNT 原子计数（v6.3 规范 7.4）
+﻿//! object/ref_count.rs — INST_COUNT 原子计数（规范 7.4）
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

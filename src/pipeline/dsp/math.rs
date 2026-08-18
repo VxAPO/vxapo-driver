@@ -1,4 +1,4 @@
-//! pipeline/dsp/math.rs — DSP 共享数值策略（整合方案 v2）
+//! pipeline/dsp/math.rs — DSP 共享数值策略（整合方案）
 //!
 //! 职责：
 //! - dB ↔ 线性转换（f64 中间计算 + clamp，保证有限）

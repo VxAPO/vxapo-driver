@@ -13,7 +13,7 @@ use crate::sys::audio_defs::get_channel_names;
 pub struct ApoObjectInner {
     pub current_chain: Box<Chain>,
     pub outgoing_chain: Option<Box<Chain>>,
-    /// 退役链（R1/v6.9）：过渡完成后由 RT 线程移入，控制线程锁内统一析构。
+    /// 退役链：过渡完成后由 RT 线程移入，控制线程锁内统一析构。
     pub retired_chain: Option<Box<Chain>>,
     pub pipeline_context: PipelineContext,
     pub transition: Option<SmoothingProvider>,
@@ -21,37 +21,37 @@ pub struct ApoObjectInner {
     pub temp_buffer_old: Vec<f32>,
     pub temp_buffer_new: Vec<f32>,
     pub pending_reload: bool,
-    /// 阻塞式重载标志（R2/v6.9）：同一过渡周期内至多触发一次重载。
+    /// 阻塞式重载标志：同一过渡周期内至多触发一次重载。
     pub reloading: bool,
-    /// 生效配置指纹（v7.9，P0-4 配置变更检测）——当前生效链的 filter_spec 有序序列。
+    /// 生效配置指纹（， 配置变更检测）——当前生效链的 filter_spec 有序序列。
     pub active_spec: Vec<String>,
-    /// 上次成功 Lock 的 (spec, 采样率, 通道) 键（v9.12 修订：同键 Relock 直接
+    /// 上次成功 Lock 的(spec, 采样率, 通道) 键（修订：同键 Relock 直接
     /// 复用现有链、保留滤波器状态，避免端点重协商时的重建瞬态/哔声）。
     pub last_lock_key: Option<(Vec<String>, u32, Vec<String>)>,
-    /// 启动淡入总长度（采样，v9.6）：流建立初期引擎可能仍在加载目标 APO 链，
+    /// 启动淡入总长度（采样）：流建立初期引擎可能仍在加载目标 APO 链，
     /// 直接播会产生“首秒断续慢速”。先静音保持再线性淡入，听感为“加载完再播”。
     pub startup_fade_total: usize,
     /// 启动淡入剩余采样数。
     pub startup_fade_remaining: usize,
-    /// 最近几次 APOProcess 调用记录（v9.6 诊断，RT 固定数组零分配）：
+    /// 最近几次 APOProcess 调用记录（诊断，RT 固定数组零分配）：
     /// `(秒, 输入帧数, 输入 flags, 输入峰值, 输出 flags, 输出峰值)`——Unlock 时随日志输出，
-    /// 用于区分“浏览器/引擎注入超大输入”与“DSP 自身数值爆炸”（v9.15 诊断增强）。
+    /// 用于区分“浏览器/引擎注入超大输入”与“DSP 自身数值爆炸”（诊断增强）。
     pub last_calls: [(u64, u32, u32, f32, u32, f32); 8],
     /// `last_calls` 环形写索引（自增，取模即可）。
     pub last_call_idx: u64,
-    /// 锁定周期内输出峰值高水位（RT 写、Unlock 读，v9.15 诊断）。
+    /// 锁定周期内输出峰值高水位（RT 写、Unlock 读， 诊断）。
     pub hot_out_peak: f32,
     /// 高水位对应帧的输入峰值。
     pub hot_in_peak: f32,
     /// 高水位对应帧的时间戳（秒）。
     pub hot_secs: u64,
-    /// 输入标志为 BUFFER_SILENT 但内容非零（引擎脏静音缓冲）的调用次数（v9.15 诊断）。
+    /// 输入标志为 BUFFER_SILENT 但内容非零（引擎脏静音缓冲）的调用次数（诊断）。
     pub silent_dirty_calls: u32,
     /// 脏静音缓冲中输入峰值的最大值。
     pub silent_dirty_max_in: f32,
 }
 
-/// 启动静音保持时长（ms，v9.6 用户决策：直接静音 100ms，不做淡入）。
+/// 启动静音保持时长（ms， 决策：直接静音 100ms，不做淡入）。
 pub(crate) const STARTUP_FADE_HOLD_MS: u32 = 100;
 /// 启动淡入时长（ms）：0 = 无淡入，静音结束后直接恢复正常音量。
 pub(crate) const STARTUP_FADE_RAMP_MS: u32 = 0;
@@ -83,7 +83,7 @@ impl ApoObjectInner {
         }
     }
 
-    /// 对输出交织缓冲应用启动静音保持（默认 500ms，无淡入，RT 零分配，v9.6）。
+    /// 对输出交织缓冲应用启动静音保持（默认 500ms，无淡入，RT 零分配）。
     pub(crate) fn apply_startup_fade(
         &mut self,
         out: &mut [f32],

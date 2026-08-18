@@ -1,4 +1,4 @@
-//! dsp/transition.rs — 过渡混合（Note 21）
+//! dsp/transition.rs — 过渡混合
 //!
 //! 配置热重载时，旧配置（`current_chain`）与新配置（`next_chain`）之间
 //! 需要平滑过渡，避免音频断裂（pop/click）。
@@ -6,17 +6,17 @@
 //! 使用升余弦（raised cosine）混合因子：
 //!
 //! ```text
-//! raised_cosine(counter, length) = 0.5 * (1.0 - cos(PI * counter / length))
+//! raised_cosine(counter, length) = 0.5 *(1.0 - cos(PI * counter / length))
 //! ```
 //!
 //! - `counter = 0` → factor = 0.0（100% 旧配置）
 //! - `counter = length` → factor = 1.0（100% 新配置）
 //! - 中间过程平滑过渡，无突变
 //!
-//! 混合函数使用裸指针签名，避免借用检查器在热路径中引入开销（Note 21）。
+//! 混合函数使用裸指针签名，避免借用检查器在热路径中引入开销。
 //! `counter >= length` 时直接返回 1.0，避免浮点精度问题。
 //!
-//! 此模块运行在实时音频线程中，纯数值计算，无堆分配（Note 12）。
+//! 此模块运行在实时音频线程中，纯数值计算，无堆分配。
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 升余弦混合因子
@@ -25,7 +25,7 @@
 /// 计算升余弦混合因子。
 ///
 /// ```text
-/// factor = 0.5 * (1.0 - cos(PI * counter / length))
+/// factor = 0.5 *(1.0 - cos(PI * counter / length))
 /// ```
 ///
 /// - `counter`：当前过渡帧计数（0..=length）
@@ -33,7 +33,7 @@
 ///
 /// 返回值：0.0（旧配置）→ 1.0（新配置）。
 ///
-/// `counter >= length` 时直接返回 1.0（避免浮点精度问题，Note 21）。
+/// `counter >= length` 时直接返回 1.0（避免浮点精度问题）。
 ///
 /// # 实时安全
 ///
@@ -51,13 +51,13 @@ pub fn raised_cosine(counter: u32, length: u32) -> f32 {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 混合函数（Note 21：裸指针签名）
+// 混合函数（裸指针签名）
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 对两个平面缓冲区进行线性混合（逐采样）。
 ///
 /// ```text
-/// output[f] = old[f] * (1.0 - factor) + new[f] * factor
+/// output[f] = old[f] *(1.0 - factor) + new[f] * factor
 /// ```
 ///
 /// # 参数
@@ -220,7 +220,7 @@ impl SmoothingProvider {
 // 常用过渡长度预设
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 根据采样率计算默认过渡帧数（约 10ms，R4/v6.9 EAPO 对齐）。
+/// 根据采样率计算默认过渡帧数（约 10ms，/ EAPO 对齐）。
 pub fn default_smoothing_length(sample_rate: u32) -> u32 {
     sample_rate / 100 // 10ms
 }
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn raised_cosine_quarter() {
         // cos(PI * 0.25) = cos(45°) = √2/2 ≈ 0.7071
-        // 0.5 * (1 - 0.7071) ≈ 0.1464
+        // 0.5 *(1 - 0.7071) ≈ 0.1464
         let f = raised_cosine(25, 100);
         assert!((f - 0.1464).abs() < 0.001, "expected ~0.1464, got {f}");
     }
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn raised_cosine_three_quarter() {
         // cos(PI * 0.75) = cos(135°) = -√2/2 ≈ -0.7071
-        // 0.5 * (1 - (-0.7071)) ≈ 0.8536
+        // 0.5 *(1 -(-0.7071)) ≈ 0.8536
         let f = raised_cosine(75, 100);
         assert!((f - 0.8536).abs() < 0.001, "expected ~0.8536, got {f}");
     }
@@ -576,12 +576,12 @@ mod tests {
 
     #[test]
     fn default_smoothing_length_48k() {
-        assert_eq!(default_smoothing_length(48000), 480); // 10ms（R4）
+        assert_eq!(default_smoothing_length(48000), 480); // 10ms
     }
 
     #[test]
     fn default_smoothing_length_441k() {
-        assert_eq!(default_smoothing_length(44100), 441); // 10ms（R4）
+        assert_eq!(default_smoothing_length(44100), 441); // 10ms
     }
 
     #[test]

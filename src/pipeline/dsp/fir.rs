@@ -1,8 +1,8 @@
-//! dsp/fir.rs — FIR 执行基础设施（v9.11）
+//! dsp/fir.rs — FIR 执行基础设施
 //!
 //! - SIMD 点积（AVX2+FMA 运行时探测，标量 mul_add 回退）——从 convolution.rs
 //!   迁出，供 Wide / 混合 PEQ 共用；
-//! - 直接 FIR 延迟线与分段点积（2 的幂环形缓冲，v9.7 语义）；
+//! - 直接 FIR 延迟线与分段点积（2 的幂环形缓冲， 语义）；
 //! - 分块 FFT 卷积（uniform partitioned overlap-add，块跨调用累积、输出驱动，
 //!   语义对齐 EAPO libHybridConv：不做 per-call flush，Reset 才清空）。
 
@@ -300,7 +300,7 @@ mod tests {
         for &x in &input {
             out.push(pf.process_channel(0, x));
         }
-        // 延迟 = block_len - 1 帧（输出下标 i 对应 naive[i - (block_len-1)]）。
+        // 延迟 = block_len - 1 帧（输出下标 i 对应 naive[i -(block_len-1）])。
         for i in (block_len - 1)..input.len() {
             let want = naive[i - (block_len - 1)];
             assert!(
