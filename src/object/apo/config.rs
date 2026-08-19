@@ -22,7 +22,12 @@ pub(crate) fn rt_dump_open(sample_rate: u32) -> Option<(std::fs::File, usize)> {
     if secs == 0 {
         return None;
     }
-    let path = r"C:\ProgramData\VxAPO\rt_dump.f32";
+    // 独立时间戳文件名：旧 dump 可能被锁（上次实例句柄未释放），避免覆盖失败。
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = format!(r"C:\ProgramData\VxAPO\rt_dump_{ts}.f32");
     std::fs::File::create(path)
         .ok()
         .map(|f| (f, secs * sample_rate.max(1) as usize))
