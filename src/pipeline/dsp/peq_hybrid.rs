@@ -274,6 +274,10 @@ impl Filter for HybridPeqFilter {
         if self.channels.is_empty() {
             return;
         }
+        // 静音检测+淡入淡出仅对 IIR 段必要（抑制静音恢复时 biquad 振铃）；
+        // 纯 FIR 配置（延迟线在静音输入下自然输出 0，恢复时 h[0] 主导立即出声）
+        // 走门控反而会在音乐空隙处反复静音/淡入，听感即“电流/沙沙”。
+        let enable_gate = !self.iir.is_empty();
         let n_ch = self.channel_indices.len().min(self.channels.len());
         let iir = &self.iir;
         let frames = (0..n_ch)
@@ -284,36 +288,40 @@ impl Filter for HybridPeqFilter {
 
         for f in 0..frames {
             // 静音检测（整帧输入峰值）与淡入系数。
-            let mut peak = 0.0f32;
-            for k in 0..n_ch {
-                let slot = self.channel_indices[k];
-                if slot < samples.len() {
-                    peak = peak.max(samples[slot][f].abs());
+            let fade = if enable_gate {
+                let mut peak = 0.0f32;
+                for k in 0..n_ch {
+                    let slot = self.channel_indices[k];
+                    if slot < samples.len() {
+                        peak = peak.max(samples[slot][f].abs());
+                    }
                 }
-            }
-            if peak > INPUT_ACTIVE_THRESHOLD {
+                if peak > INPUT_ACTIVE_THRESHOLD {
+                    if !self.input_active {
+                        self.fade_remaining = self.fade_total;
+                    }
+                    self.input_active = true;
+                    self.silence_count = 0;
+                } else if self.input_active {
+                    self.silence_count += 1;
+                    if self.silence_count >= SILENCE_HOLD_FRAMES {
+                        // 输入确认静音：输出强制 0（抑制 IIR 振铃的“哔”），
+                        // 状态照常更新（衰减到 0），恢复时从干净状态淡入。
+                        self.input_active = false;
+                        self.fade_remaining = 0;
+                    }
+                }
                 if !self.input_active {
-                    self.fade_remaining = self.fade_total;
+                    0.0
+                } else if self.fade_remaining > 0 {
+                    // 线性 0→1：恢复第 1 帧 ≈ 0，最后一帧 = 1。
+                    let g = (self.fade_total - self.fade_remaining + 1) as f32
+                        / self.fade_total.max(1) as f32;
+                    self.fade_remaining -= 1;
+                    g
+                } else {
+                    1.0
                 }
-                self.input_active = true;
-                self.silence_count = 0;
-            } else if self.input_active {
-                self.silence_count += 1;
-                if self.silence_count >= SILENCE_HOLD_FRAMES {
-                    // 输入确认静音：输出强制 0（抑制 IIR 振铃的“哔”），
-                    // 状态照常更新（衰减到 0），恢复时从干净状态淡入。
-                    self.input_active = false;
-                    self.fade_remaining = 0;
-                }
-            }
-            let fade = if !self.input_active {
-                0.0
-            } else if self.fade_remaining > 0 {
-                // 线性 0→1：恢复第 1 帧 ≈ 0，最后一帧 = 1。
-                let g = (self.fade_total - self.fade_remaining + 1) as f32
-                    / self.fade_total.max(1) as f32;
-                self.fade_remaining -= 1;
-                g
             } else {
                 1.0
             };
@@ -1102,5 +1110,49 @@ mod tests {
                 out_b[0][i]
             );
         }
+    }
+
+    /// 纯 FIR 配置遇真实静音空隙（>1.3ms 零输入）：不得触发静音门控淡入——
+    /// 恢复帧必须立即出声（h[0] 主导），否则音乐空隙处反复静音/淡入 = 电流感。
+    #[test]
+    fn fir_only_skips_silence_gate_on_gaps() {
+        let bands = vec![
+            PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: -6.0, q: 2.0, kind: PeqBandType::Peaking },
+        ];
+        let sr = 48_000u32;
+        let mut f = HybridPeqFilter::new(PeqParams {
+            crossover_hz: CROSSOVER_HZ,
+            bands,
+        });
+        f.initialize(sr, &["L".into(), "R".into()]);
+        assert!(f.iir.is_empty(), "本用例必须为纯 FIR 配置");
+
+        // 信号：1200 帧响 → 400 帧真实静音（>SILENCE_HOLD_FRAMES）→ 1200 帧响。
+        let n = 2800usize;
+        let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            if (1200..1600).contains(&i) {
+                continue;
+            }
+            let v = 0.25 * (std::f32::consts::TAU * 1000.0 * i as f32 / sr as f32).sin();
+            samples[0][i] = v;
+            samples[1][i] = v;
+        }
+        f.process(&mut samples, n);
+
+        // 静音段允许 FIR 自然衰减尾巴（物理正确的滤波器行为，任何 EQ 均有），
+        // 关键是不得出现「静音门控 → 恢复淡入」的阶梯：恢复首帧必须立即出声。
+        // 首帧输出 ≈ h[0]·x ≈ x（最小相位 FIR 前载），下限取 0.5×输入幅度。
+        let v0 = samples[0][1600].abs();
+        assert!(
+            v0 > 0.12,
+            "recovery first frame should be immediate (gate skipped), got {v0}"
+        );
+        // 稳态 RMS 仍符合目标（+6 dB @1k：0.25/√2 → 0.5/√2）。
+        let sum: f32 = samples[0][2000..2600].iter().map(|x| x * x).sum();
+        let rms = (sum / 600.0).sqrt();
+        let db = 20.0 * (rms / (0.25 / std::f32::consts::SQRT_2)).log10();
+        assert!((db - 6.0).abs() < 0.5, "steady rms {db:.2} dB vs +6");
     }
 }

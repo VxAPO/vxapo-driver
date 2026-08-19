@@ -282,6 +282,21 @@ pub(crate) fn lock_for_process(
         }
     };
 
+    // 诊断（控制线程，一行）：确认每个实例实际读取的配置路径与解析结果——
+    // 用于定位“设备与配置目录 GUID 不一致”类问题（APP 写 1bbf5fba、
+    // 驱动读 3b1c3cb8 等），以及复用/重解析行为。
+    crate::object::apo::config::diag_append(&format!(
+        "LOCK clsid={:?} path={} rate={} in={} out={} filters={} spec={} reuse={}",
+        apo.clsid,
+        config_path,
+        format.sample_rate,
+        format.channels,
+        output_format.channels,
+        filters.len(),
+        spec_chain.len(),
+        reuse_cached as u8,
+    ));
+
     // Step 4: 组装 Chain。
     // 修订：同 config/格式的 Unlock→Relock（如关闭网页触发的端点重协商）
     // 直接复用现有链、保留滤波器状态，避免重建瞬态（哔声 + 断流一瞬间）。
