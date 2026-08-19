@@ -16,6 +16,7 @@
 //! `Wide: Intensity 0.354331`
 
 use crate::pipeline::dsp::filter::Filter;
+use crate::pipeline::dsp::fir::PartitionedFir;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WideParams {
@@ -34,8 +35,12 @@ impl Default for WideParams {
 
 /// FIR 分频点（Hz），以下低频不处理。
 const CROSSOVER_HZ: f32 = 200.0;
-/// FIR 长度（与 GraphicEQ 对齐；延迟 = (N-1)/2 )。
-const FIR_LEN: usize = 1024;
+/// 直接 FIR 上限（超过走分块 FFT，与 PEQ 一致；避免高采样率长 IR 超实时预算）。
+const DIRECT_FIR_MAX_LEN: usize = 2048;
+/// FIR 长度下限（低采样率最小抽头数）。
+const FIR_MIN_LEN: usize = 1024;
+/// FIR 长度上限（384k 时 8192 抽头 ≈ 21.3ms，分块 FFT 承担）。
+const FIR_MAX_LEN: usize = 8192;
 /// 高频段侧信号增益斜率（1 + 2.3·Intensity^0.6）。
 const SIDE_GAIN_HIGH_SLOPE: f32 = 2.3;
 /// 中央信号补偿斜率（1 - 0.10·Intensity^0.6）。
@@ -46,15 +51,29 @@ const INTENSITY_EXP: f32 = 0.6;
 const HEADROOM_MIN_DB: f32 = 0.2;
 const HEADROOM_MAX_DB: f32 = 1.0;
 
+/// FIR 分频长度随采样率缩放（≈21.3ms 时间长度，与 PEQ 同公式）：
+/// 44.1/48k→1024，96k→2048，192k→4096，384k→8192。
+fn wide_fir_len(sr: u32) -> usize {
+    let n = ((sr as f32 * 0.0213).round() as usize).max(1);
+    n.next_power_of_two().clamp(FIR_MIN_LEN, FIR_MAX_LEN)
+}
+
 /// 线性相位 FIR 分频：低通 FIR + 互补高通（高频 = 延迟对齐原信号 − 低通）。
+/// 抽头 ≤2048 走直接环形缓冲；更长走分块 FFT（延迟 = block-1，同样补对齐）。
 #[derive(Debug)]
 struct FirSplit {
+    engine: LpEngine,
+    /// 每声道延迟对齐线（Direct：整条 FIR 延迟；Partitioned：分块延迟）。
+    delay_lines: Vec<Vec<f32>>,
+    write_positions: Vec<usize>,
+}
+
+#[derive(Debug)]
+enum LpEngine {
+    /// 直接卷积：逆序 IR + 环形缓冲。
+    Direct {
     /// 逆序低通 IR（与 convolution::dot 配合）。
     ir_rev: Vec<f32>,
-    /// 每声道环形延迟线（2 的幂）。
-    delay_lines: Vec<Vec<f32>>,
-    /// 延迟线写头。
-    write_positions: Vec<usize>,
     /// FIR 长度。
     ir_len: usize,
     /// 环形缓冲长度（next_power_of_two(ir_len）)。
@@ -62,6 +81,15 @@ struct FirSplit {
     mask: usize,
     /// 线性相位中心（群延迟采样数）。
     center: usize,
+    },
+    /// 分块 FFT 卷积（延迟 = block_len - 1）。
+    Partitioned {
+        pf: PartitionedFir,
+        /// 分块延迟对齐环（每声道；长度 = block_len）。
+        dlen: usize,
+        dmask: usize,
+        latency: usize,
+    },
 }
 
 impl FirSplit {
@@ -69,47 +97,88 @@ impl FirSplit {
         #[cfg(target_arch = "x86_64")]
         crate::pipeline::dsp::fir::init_fir_simd();
         let ir_len = ir.len().max(1);
-        let delay_len = ir_len.next_power_of_two();
+        let engine = if ir_len <= DIRECT_FIR_MAX_LEN {
+            let delay_len = ir_len.next_power_of_two();
+            LpEngine::Direct {
+                ir_rev: ir.iter().rev().copied().collect(),
+                ir_len,
+                delay_len,
+                mask: delay_len - 1,
+                center: (ir_len - 1) / 2,
+            }
+        } else {
+            let pf = PartitionedFir::new(&ir, channels);
+            let dlen = pf.block_len();
+            LpEngine::Partitioned {
+                pf,
+                dlen,
+                dmask: dlen - 1,
+                latency: dlen - 1,
+            }
+        };
+        let delay_len = match &engine {
+            LpEngine::Direct { delay_len, .. } => *delay_len,
+            LpEngine::Partitioned { dlen, .. } => *dlen,
+        };
         Self {
-            ir_rev: ir.iter().rev().copied().collect(),
+            engine,
             delay_lines: vec![vec![0.0; delay_len]; channels],
             write_positions: vec![0; channels],
-            ir_len,
-            delay_len,
-            mask: delay_len - 1,
-            center: (ir_len - 1) / 2,
         }
     }
 
     /// 单声道分频：返回(低频支路, 高频支路)，两路之和 = 延迟 center 帧的原信号。
     fn split_channel(&mut self, k: usize, x: f32) -> (f32, f32) {
-        let delay = &mut self.delay_lines[k];
-        let pos = &mut self.write_positions[k];
-        let mask = self.mask;
-        let delay_len = self.delay_len;
-        let ir_len = self.ir_len;
-        let center = self.center;
+        match &mut self.engine {
+            LpEngine::Direct {
+                ir_rev,
+                ir_len,
+                delay_len,
+                mask,
+                center,
+            } => {
+                let ir_len = *ir_len;
+                let delay_len = *delay_len;
+                let mask = *mask;
+                let center = *center;
+                let delay = &mut self.delay_lines[k];
+                let pos = &mut self.write_positions[k];
+                delay[*pos] = x;
+                *pos = (*pos + 1) & mask;
 
-        delay[*pos] = x;
-        *pos = (*pos + 1) & mask;
-
-        // 与 convolution.rs DirectConv 相同的分段点积（，SIMD 友好）。
-        let start = (*pos).wrapping_sub(1) & mask;
-        let oldest = (*pos + delay_len - ir_len) & mask;
-        let ir_rev = &self.ir_rev;
-        let lp = if oldest <= start {
-            crate::pipeline::dsp::fir::dot(ir_rev, &delay[oldest..=start])
-        } else {
-            let len_old = delay_len - oldest;
-            crate::pipeline::dsp::fir::dot(&ir_rev[..len_old], &delay[oldest..])
-                + crate::pipeline::dsp::fir::dot(
-                    &ir_rev[len_old..],
-                    &delay[0..=start],
-                )
-        };
-
-        let delayed_x = delay[(*pos + delay_len - 1 - center) & mask];
-        (lp, delayed_x - lp)
+                let start = (*pos).wrapping_sub(1) & mask;
+                let oldest = (*pos + delay_len - ir_len) & mask;
+                let lp = if oldest <= start {
+                    crate::pipeline::dsp::fir::dot(ir_rev, &delay[oldest..=start])
+                } else {
+                    let len_old = delay_len - oldest;
+                    crate::pipeline::dsp::fir::dot(&ir_rev[..len_old], &delay[oldest..])
+                        + crate::pipeline::dsp::fir::dot(
+                            &ir_rev[len_old..],
+                            &delay[0..=start],
+                        )
+                };
+                let delayed_x = delay[(*pos + delay_len - 1 - center) & mask];
+                (lp, delayed_x - lp)
+            }
+            LpEngine::Partitioned {
+                pf,
+                dmask,
+                ..
+            } => {
+                let lp = pf.process_channel(k, x);
+                let dmask = *dmask;
+                // 互补高通需与原信号延迟对齐：分块延迟 = latency = block-1。
+                let delay = &mut self.delay_lines[k];
+                let pos = &mut self.write_positions[k];
+                delay[*pos] = x;
+                *pos = (*pos + 1) & dmask;
+                // 写后 pos 指向最旧槽：该槽即 x[n-latency]（dlen=block_len，
+                // latency=dlen-1，写入间隔 dlen 覆盖 latency+1 步，取 pos）。
+                let delayed_x = delay[*pos];
+                (lp, delayed_x - lp)
+            }
+        }
     }
 
     fn reset(&mut self) {
@@ -117,16 +186,38 @@ impl FirSplit {
             line.fill(0.0);
         }
         self.write_positions.fill(0);
+        match &mut self.engine {
+            LpEngine::Direct { .. } => {}
+            LpEngine::Partitioned { pf, .. } => pf.reset(),
+        }
     }
 }
 
-/// 设计线性相位低通 FIR（理想低通 × Hamming 窗，DC 增益归一）。
+/// Kaiser 窗 β（≈-60dB 旁瓣，过渡带比 Hamming 更窄、停带更深）。
+const KAISER_BETA: f32 = 6.2;
+
+/// 零阶修正贝塞尔 I0（级数近似，x ≤ 32 收敛良好）。
+fn kaiser_i0(x: f32) -> f32 {
+    let mut sum = 1.0f32;
+    let mut term = 1.0f32;
+    let x2 = x * x;
+    for k in 1..=16 {
+        term *= x2 / (4.0 * k as f32 * k as f32);
+        sum += term;
+    }
+    sum
+}
+
+/// 设计线性相位低通 FIR（理想低通 × Kaiser 窗，DC 增益归一）。
+/// Kaiser（β=6.2）比原 Hamming 停带更深、过渡带更窄——高采样率下
+/// 同样抽头数的 200Hz 分频质量显著更好。
 fn design_lowpass_ir(fc_hz: f32, sample_rate: u32, n: usize) -> Vec<f32> {
     let sr = sample_rate.max(1) as f32;
     let fc = fc_hz.min(sr * 0.45).max(1.0);
     let center = (n - 1) as f32 * 0.5;
     let mut ir = vec![0.0f32; n];
     let mut sum = 0.0f32;
+    let i0_beta = kaiser_i0(KAISER_BETA);
     for i in 0..n {
         let m = i as f32 - center;
         let sinc = if m.abs() < 1.0e-6 {
@@ -134,7 +225,8 @@ fn design_lowpass_ir(fc_hz: f32, sample_rate: u32, n: usize) -> Vec<f32> {
         } else {
             (core::f32::consts::TAU * fc * m / sr).sin() / (core::f32::consts::PI * m)
         };
-        let w = 0.54 - 0.46 * (core::f32::consts::TAU * i as f32 / (n - 1) as f32).cos();
+        let arg = (1.0 - ((i as f32 - center) / center).powi(2)).max(0.0).sqrt() * KAISER_BETA;
+        let w = kaiser_i0(arg) / i0_beta;
         ir[i] = sinc * w;
         sum += ir[i];
     }
@@ -187,7 +279,7 @@ impl Filter for WideFilter {
         let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - i);
         self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
 
-        let ir = design_lowpass_ir(CROSSOVER_HZ, sample_rate, FIR_LEN);
+        let ir = design_lowpass_ir(CROSSOVER_HZ, sample_rate, wide_fir_len(sample_rate));
         self.fir = FirSplit::new(ir, 2);
         None
     }
@@ -228,7 +320,10 @@ impl Filter for WideFilter {
     }
 
     fn latency(&self) -> u32 {
-        self.fir.center as u32
+        match &self.fir.engine {
+            LpEngine::Direct { center, .. } => *center as u32,
+            LpEngine::Partitioned { latency, .. } => *latency as u32,
+        }
     }
 
     fn set_channel_indices(&mut self, indices: &[usize]) {
@@ -243,6 +338,32 @@ impl Filter for WideFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 临时诊断：Kaiser 分频在各采样率的停带表现（500Hz 衰减应 ≥-55dB）。
+    #[test]
+    fn kaiser_crossover_response() {
+        fn lp_gain_db(ir: &[f32], freq: f32, sr: u32) -> f32 {
+            let w = std::f32::consts::TAU * freq / sr as f32;
+            let mut re = 0.0f32;
+            let mut im = 0.0f32;
+            for (i, &h) in ir.iter().enumerate() {
+                re += h * (w * i as f32).cos();
+                im -= h * (w * i as f32).sin();
+            }
+            20.0 * (re * re + im * im).sqrt().max(1e-6).log10()
+        }
+        for sr in [44_100u32, 48_000, 96_000, 192_000, 384_000] {
+            let n = wide_fir_len(sr);
+            let ir = design_lowpass_ir(CROSSOVER_HZ, sr, n);
+            eprintln!(
+                "DIAG kaiser sr={} n={} lp200={:.1}dB lp500={:.1}dB",
+                sr,
+                n,
+                lp_gain_db(&ir, 200.0, sr),
+                lp_gain_db(&ir, 500.0, sr),
+            );
+        }
+    }
 
     #[test]
     fn intensity_zero_is_passthrough() {
@@ -429,7 +550,7 @@ mod tests {
         // （逐样本，含相位——这是 FIR 相对 IIR 分频的核心优势）。
         let mut f = WideFilter::new(WideParams { intensity: 1.0 });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let center = f.fir.center;
+        let center = f.latency() as usize;
         let n = 4800usize;
         let input: Vec<f32> = (0..n)
             .map(|i| {
@@ -453,11 +574,41 @@ mod tests {
     }
 
     #[test]
+    fn fir_split_reconstructs_partitioned_high_rate() {
+        // 192k：4096 抽头走分块 FFT——低通支路 + 互补高通必须仍等于
+        // 延迟 latency 帧的原信号（延迟对齐环正确性）。
+        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        f.initialize(192_000, &["L".into(), "R".into()]);
+        let latency = f.latency() as usize;
+        assert_eq!(latency, 127, "192k 应走分块 FFT（延迟 127）");
+        let n = 4000usize;
+        let input: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 192_000.0;
+                0.3 * (core::f32::consts::TAU * 60.0 * t).sin()
+                    + 0.4 * (core::f32::consts::TAU * 1000.0 * t).sin()
+                    + 0.2 * (core::f32::consts::TAU * 6000.0 * t).sin()
+            })
+            .collect();
+        let mut max_err = 0.0f32;
+        for i in 0..n {
+            let (lp, hp) = f.fir.split_channel(0, input[i]);
+            if i >= latency {
+                max_err = max_err.max((lp + hp - input[i - latency]).abs());
+            }
+        }
+        assert!(
+            max_err < 1.0e-4,
+            "partitioned split must reconstruct delayed input, max err {max_err}"
+        );
+    }
+
+    #[test]
     fn fir_delays_by_center_samples() {
         // 单脉冲经低通 FIR 的主峰应出现在 center 帧（对称 FIR 群延迟）。
         let mut f = WideFilter::new(WideParams { intensity: 1.0 });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let center = f.fir.center;
+        let center = f.latency() as usize;
         let n = center + 128;
         let mut best = 0usize;
         let mut best_v = 0.0f32;
@@ -476,7 +627,7 @@ mod tests {
     fn latency_is_fir_center() {
         let mut f = WideFilter::new(WideParams { intensity: 1.0 });
         f.initialize(48000, &["L".into(), "R".into()]);
-        assert_eq!(f.latency(), ((FIR_LEN - 1) / 2) as u32);
+        assert_eq!(f.latency(), ((wide_fir_len(48000) - 1) / 2) as u32);
     }
 
     #[test]

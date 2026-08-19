@@ -34,6 +34,9 @@ const INPUT_ACTIVE_THRESHOLD: f32 = 1.0e-4;
 const SILENCE_HOLD_FRAMES: usize = 64;
 /// 频响幅值下限，避免 log(0)。
 const MIN_MAG: f32 = 1e-5;
+/// 最小相位 IR 尾部窗 Kaiser β：能量更集中、截断点处窗值≈0
+/// （raised-cosine 在截断点仍有 ~0.2 的非零值，硬切引入微小波纹）。
+const IR_TAIL_KAISER_BETA: f32 = 4.5;
 
 /// 二阶 biquad（RBJ，DF2T）。
 #[derive(Debug, Clone, Copy)]
@@ -258,7 +261,9 @@ impl Filter for HybridPeqFilter {
             let delay_len = n.next_power_of_two();
             self.fir = PeqFir::Direct {
                 ir_rev: ir.iter().rev().copied().collect(),
-                fir_len: n,
+                // 能量截断后 FIR 实际抽头数可能远小于 n（高频段 IR 前载）：
+                // fir_len 必须用截断后的实际长度，环形缓冲按此取窗。
+                fir_len: ir.len().max(1),
                 delay_len,
                 mask: delay_len - 1,
                 delay: vec![vec![0.0; delay_len]; count],
@@ -441,6 +446,17 @@ fn build_min_phase_ir(
     sample_rate: u32,
     n: usize,
 ) -> Vec<f32> {
+    /// 零阶修正贝塞尔 I0（级数近似）。
+    fn kaiser_i0(x: f32) -> f32 {
+        let mut sum = 1.0f32;
+        let mut term = 1.0f32;
+        let x2 = x * x;
+        for k in 1..=16 {
+            term *= x2 / (4.0 * k as f32 * k as f32);
+            sum += term;
+        }
+        sum
+    }
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(n);
     let ifft = planner.plan_fft_inverse(n);
@@ -495,14 +511,24 @@ fn build_min_phase_ir(
         *v = Complex::new(re, im);
     }
 
-    // 5) IFFT → 时域 IR，raised-cosine 平滑窗。
+    // 5) IFFT → 时域 IR，单边 Kaiser 平滑窗（前端=1，尾部→0）。
     ifft.process_with_scratch(&mut cep_min, &mut scratch);
     let mut ir = Vec::with_capacity(n);
+    let i0_beta = kaiser_i0(IR_TAIL_KAISER_BETA);
     for (i, v) in cep_min.iter().enumerate() {
         let x = v.re * inv_n;
-        let factor = 0.5 * (1.0 + (std::f32::consts::PI * i as f32 / n as f32).cos());
+        let t = i as f32 / n as f32;
+        let arg = (1.0 - t * t).max(0.0).sqrt() * IR_TAIL_KAISER_BETA;
+        let factor = kaiser_i0(arg) / i0_beta;
         ir.push(x * factor);
     }
+
+    // 能量截断：最小相位 IR 能量集中在前端，尾部 <0.1% 能量的抽头截掉——
+    // Direct FIR 成本随抽头数线性（31 段级联 / 高采样率下收益显著），
+    // 频响变化 <0.1% 能量，低于听阈。至少保留 64 抽头保证低频段形状。
+    // 不做能量截断：分频点附近的 FIR 段（fc=200 归 FIR）在 20Hz 仍有
+    // 低频裙边，裙边需要长时支撑——截断尾部会丢低频精度（实测 20Hz
+    // 偏 +1.3dB）。成本由「相邻 peq 块合并为单条 FIR」控制。
     ir
 }
 

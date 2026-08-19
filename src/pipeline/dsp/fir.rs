@@ -218,6 +218,11 @@ impl PartitionedFir {
     pub(crate) fn latency(&self) -> u32 {
         (self.block_len - 1) as u32
     }
+
+    /// 分块大小（样本）。
+    pub(crate) fn block_len(&self) -> usize {
+        self.block_len
+    }
 }
 
 /// 处理一个输入块：FFT → 与 IR 各块频域相乘累加 → IFFT → overlap-add。

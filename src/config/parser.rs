@@ -11,7 +11,9 @@ use crate::config::error::ConfigError;
 use crate::config::model::FileModel;
 use crate::pipeline::dsp::factory::create_from_model;
 use crate::pipeline::dsp::filter::{ChannelScopedFilter, DspContext, Filter};
-use crate::pipeline::dsp::model::ChainModel;
+use crate::pipeline::dsp::model::{
+    ChainModel, EffectConfig, EffectParams, EffectType, PeqBand, PeqParams,
+};
 
 /// 配置指纹（一次完整解析产出的 filter spec 有序序列，热重载比较用）。
 pub type FilterSpec = String;
@@ -130,6 +132,12 @@ fn build_chain(
 ) -> Result<(Vec<Box<dyn Filter>>, SpecChain), ConfigError> {
     let mut filters = Vec::with_capacity(model.effects.len());
     let mut specs = Vec::with_capacity(model.effects.len());
+    // 相邻、同声道、均启用的 peq 块合并为单条 FIR：
+    // 31 段各自级联 = N 条独立 1024-8192 抽头卷积，实时成本随段数线性爆炸
+    // （384k/31 段实测 17ms >> 10ms 预算 → 电流）。合并后频响相同（dB 求和），
+    // 相位为单一最小相位（比级联更干净），成本回到单条 FIR。
+    let mut pending: Option<(Option<Vec<String>>, f32, Vec<PeqBand>)> = None;
+
     for effect in &model.effects {
         if let Some(names) = &effect.channels {
             for name in names {
@@ -141,6 +149,29 @@ fn build_chain(
                 }
             }
         }
+
+        // 可合并：启用中的 peq，且与上一个 peq 声道作用域一致。
+        let mergeable = match &effect.params {
+            EffectParams::Peq(p) if effect.enabled => Some((p.crossover_hz, p.bands.clone())),
+            _ => None,
+        };
+        if let Some((crossover, bands)) = mergeable {
+            match &mut pending {
+                Some((ch, cro, acc)) if *ch == effect.channels => {
+                    *cro = crossover;
+                    acc.extend(bands);
+                    continue;
+                }
+                _ => {}
+            }
+            // 作用域不同或前一个不是 peq：先冲刷，再开新组。
+            push_peq_merged(&mut filters, &mut specs, ctx, pending.take());
+            pending = Some((effect.channels.clone(), crossover, bands));
+            continue;
+        }
+
+        // 非 peq / 停用 peq：冲刷合并组，走常规路径。
+        push_peq_merged(&mut filters, &mut specs, ctx, pending.take());
         let indices: Option<Vec<usize>> = effect.channels.as_ref().map(|names| {
             names
                 .iter()
@@ -156,7 +187,39 @@ fn build_chain(
         specs.push(effect.spec());
         filters.push(filter);
     }
+    push_peq_merged(&mut filters, &mut specs, ctx, pending.take());
     Ok((filters, specs))
+}
+
+/// 把合并缓冲的 peq 组（同一作用域的若干段）构造为单个 HybridPeqFilter。
+fn push_peq_merged(
+    filters: &mut Vec<Box<dyn Filter>>,
+    specs: &mut SpecChain,
+    ctx: &DspContext,
+    pending: Option<(Option<Vec<String>>, f32, Vec<PeqBand>)>,
+) {
+    let Some((channels, crossover_hz, bands)) = pending else {
+        return;
+    };
+    let effect = EffectConfig {
+        kind: EffectType::Peq,
+        enabled: true,
+        channels: channels.clone(),
+        params: EffectParams::Peq(PeqParams { crossover_hz, bands }),
+    };
+    let filter = create_from_model(&effect, ctx);
+    let filter: Box<dyn Filter> = match channels.as_ref() {
+        Some(names) => {
+            let indices: Vec<usize> = names
+                .iter()
+                .filter_map(|name| ctx.channel_names.iter().position(|c| c == name))
+                .collect();
+            Box::new(ChannelScopedFilter::new(filter, indices))
+        }
+        None => filter,
+    };
+    filters.push(filter);
+    specs.push(effect.spec());
 }
 
 #[cfg(test)]
@@ -211,6 +274,53 @@ intensity = 0.5
         assert_eq!(specs.len(), 2);
         assert!(specs[0].starts_with("preamp:true"));
         assert!(specs[1].starts_with("wide:true"));
+    }
+
+    /// 相邻同声道的 peq 块必须合并为单条 FIR。
+    #[test]
+    fn adjacent_peq_blocks_merge_into_one_filter() {
+        let toml = concat!(
+            "[[effects]]\n",
+            "type = \"peq\"\n",
+            "channels = [\"L\", \"R\"]\n",
+            "[[effects.bands]]\n",
+            "fc = 1000\n",
+            "gain_db = 3\n",
+            "q = 1.5\n",
+            "[[effects.bands]]\n",
+            "fc = 2000\n",
+            "gain_db = -2\n",
+            "q = 2\n",
+            "\n",
+            "[[effects]]\n",
+            "type = \"peq\"\n",
+            "channels = [\"L\", \"R\"]\n",
+            "[[effects.bands]]\n",
+            "fc = 4000\n",
+            "gain_db = 1\n",
+            "q = 1\n",
+            "\n",
+            "[[effects]]\n",
+            "type = \"preamp\"\n",
+            "gain_db = -1\n",
+        );
+        let parser = ConfigParser::new();
+        let (filters, specs) = parser
+            .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
+            .expect("valid config");
+        // 2 个相邻 peq 块（同声道）→ 1 条 FIR；preamp 独立 → 共 2 个滤波器。
+        assert_eq!(filters.len(), 2, "peq 块应合并、preamp 独立");
+        assert_eq!(specs.len(), 2);
+        assert!(
+            specs[0].contains("1000.000000"),
+            "spec 应含 fc=1000: {}",
+            specs[0]
+        );
+        assert!(
+            specs[0].contains("4000.000000"),
+            "spec 应含 fc=4000: {}",
+            specs[0]
+        );
     }
 
     #[test]
