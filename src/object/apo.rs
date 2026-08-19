@@ -9,6 +9,7 @@ pub mod inner;
 pub mod negotiate;
 pub mod process;
 pub mod state;
+pub mod test_pipe;
 
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};

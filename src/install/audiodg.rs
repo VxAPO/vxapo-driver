@@ -7,6 +7,8 @@
 use crate::sys::registry::RegKey;
 use crate::utils::vx_error::{Result, VxApoError};
 use windows::Win32::System::Registry::{HKEY, HKEY_LOCAL_MACHINE};
+use windows::Win32::System::Services::SC_HANDLE;
+use windows::core::PWSTR;
 
 /// 注册表路径：HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio。
 const AUDIO_KEY_PATH: &str =
@@ -284,6 +286,236 @@ pub fn ensure_audio_service_running() -> Result<()> {
         .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
     log::info!("AudioSrv started (ensure running)");
     Ok(())
+}
+
+/// 停止 AudioSrv 及其活动依赖服务（EAPO ServiceHelper::restartService 对齐）。
+///
+/// 顺序：先枚举 AudioSrv 的活动依赖服务（如 AudioEndpointBuilder）逐个停止并
+/// 轮询到 STOPPED，再停止 AudioSrv 并轮询——SCM 不允许在依赖服务运行时停止
+/// 父服务（ERROR_DEPENDENT_SERVICES_RUNNING），必须先停依赖。
+pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> {
+    use windows::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_HANDLE, SC_MANAGER_ALL_ACCESS,
+        SERVICE_ENUMERATE_DEPENDENTS, SERVICE_QUERY_STATUS, SERVICE_STOP,
+    };
+    use windows::core::{HSTRING, PCWSTR};
+
+    // SAFETY: 非 RT 控制线程调用（install/CLI）。
+    let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+    struct ScmGuard(SC_HANDLE);
+    impl Drop for ScmGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _scm_guard = ScmGuard(scm);
+
+    let svc = unsafe {
+        OpenServiceW(
+            scm,
+            &HSTRING::from("AudioSrv"),
+            SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_ENUMERATE_DEPENDENTS,
+        )
+    }
+    .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+    struct SvcGuard(SC_HANDLE);
+    impl Drop for SvcGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _svc_guard = SvcGuard(svc);
+
+    for dep in active_dependents(svc)? {
+        if let Ok(dep_svc) = unsafe {
+            OpenServiceW(
+                scm,
+                &HSTRING::from(&dep),
+                SERVICE_STOP | SERVICE_QUERY_STATUS,
+            )
+        } {
+            let result = stop_service_and_wait(dep_svc, &dep, stop_timeout_secs);
+            let _ = unsafe { CloseServiceHandle(dep_svc) };
+            result?;
+        }
+    }
+    stop_service_and_wait(svc, "AudioSrv", stop_timeout_secs)
+}
+
+/// 启动 AudioSrv 及其活动依赖服务，并轮询到 RUNNING。
+///
+/// 顺序与 `stop_audio_service_with_dependents` 相反：先启动 AudioSrv 并轮询到
+/// RUNNING，再枚举依赖服务逐个启动（启动失败按 5s 间隔重试一次，EAPO 同款）。
+pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()> {
+    use windows::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_HANDLE, SC_MANAGER_ALL_ACCESS,
+        SERVICE_ENUMERATE_DEPENDENTS, SERVICE_QUERY_STATUS, SERVICE_START,
+    };
+    use windows::core::{HSTRING, PCWSTR};
+
+    // SAFETY: 非 RT 控制线程调用（install/CLI）。
+    let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
+        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+    struct ScmGuard(SC_HANDLE);
+    impl Drop for ScmGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _scm_guard = ScmGuard(scm);
+
+    let svc = unsafe {
+        OpenServiceW(
+            scm,
+            &HSTRING::from("AudioSrv"),
+            SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_ENUMERATE_DEPENDENTS,
+        )
+    }
+    .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+    struct SvcGuard(SC_HANDLE);
+    impl Drop for SvcGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+    let _svc_guard = SvcGuard(svc);
+
+    start_service_and_wait(svc, "AudioSrv", start_timeout_secs)?;
+    for dep in active_dependents(svc)? {
+        if let Ok(dep_svc) = unsafe {
+            OpenServiceW(scm, &HSTRING::from(&dep), SERVICE_START | SERVICE_QUERY_STATUS)
+        } {
+            let result = start_service_and_wait(dep_svc, &dep, start_timeout_secs);
+            let _ = unsafe { CloseServiceHandle(dep_svc) };
+            result?;
+        }
+    }
+    Ok(())
+}
+
+/// 依赖服务感知的整服重启（`--verify` 与 uninstall 收尾复用）。
+pub fn restart_audio_service_wait(stop_timeout_secs: u32, start_timeout_secs: u32) -> Result<()> {
+    stop_audio_service_with_dependents(stop_timeout_secs)?;
+    start_audio_service_with_dependents(start_timeout_secs)
+}
+
+/// 枚举指定服务的活动依赖服务（短名列表）。
+fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
+    use windows::Win32::System::Services::{
+        EnumDependentServicesW, ENUM_SERVICE_STATUSW, SERVICE_ACTIVE,
+    };
+
+    let mut needed = 0u32;
+    let mut returned = 0u32;
+    let _ = unsafe {
+        EnumDependentServicesW(svc, SERVICE_ACTIVE, None, 0, &mut needed, &mut returned)
+    };
+    if needed == 0 {
+        return Ok(Vec::new());
+    }
+    let mut buf = vec![0u8; needed as usize + 32];
+    unsafe {
+        EnumDependentServicesW(
+            svc,
+            SERVICE_ACTIVE,
+            Some(buf.as_mut_ptr() as *mut ENUM_SERVICE_STATUSW),
+            buf.len() as u32,
+            &mut needed,
+            &mut returned,
+        )
+    }
+    .map_err(|e| VxApoError::internal(&format!("EnumDependentServicesW failed: {e}")))?;
+
+    let mut names = Vec::with_capacity(returned as usize);
+    for i in 0..returned {
+        let entry = unsafe { &*(buf.as_ptr() as *const ENUM_SERVICE_STATUSW).add(i as usize) };
+        names.push(string_from_wide(entry.lpServiceName));
+    }
+    Ok(names)
+}
+
+/// 停止单个服务并轮询到 STOPPED（超时返回 Err）。
+fn stop_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Result<()> {
+    use windows::Win32::System::Services::{
+        ControlService, QueryServiceStatus, SERVICE_CONTROL_STOP, SERVICE_RUNNING,
+        SERVICE_STOPPED, SERVICE_STATUS,
+    };
+
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    unsafe { QueryServiceStatus(svc, &mut status) }
+        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+    if status.dwCurrentState != SERVICE_RUNNING {
+        return Ok(());
+    }
+    unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
+        .map_err(|e| VxApoError::internal(&format!("ControlService({name} STOP) failed: {e}")))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
+    while status.dwCurrentState != SERVICE_STOPPED {
+        if std::time::Instant::now() > deadline {
+            return Err(VxApoError::internal(&format!(
+                "{name} stop timed out ({timeout_secs}s)"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        unsafe { QueryServiceStatus(svc, &mut status) }
+            .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// 启动单个服务并轮询到 RUNNING（5s 无进展重试一次，EAPO 同款）。
+fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Result<()> {
+    use windows::Win32::System::Services::{
+        QueryServiceStatus, StartServiceW, SERVICE_RUNNING, SERVICE_STATUS,
+    };
+
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    unsafe { QueryServiceStatus(svc, &mut status) }
+        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+    if status.dwCurrentState == SERVICE_RUNNING {
+        return Ok(());
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
+    let mut next_retry = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        // StartServiceW 对“已启动/启动中”可能返回 ERROR_SERVICE_ALREADY_RUNNING——
+        // 忽略错误，继续轮询状态。
+        let _ = unsafe { StartServiceW(svc, None) };
+        unsafe { QueryServiceStatus(svc, &mut status) }
+            .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+        if status.dwCurrentState == SERVICE_RUNNING {
+            return Ok(());
+        }
+        let now = std::time::Instant::now();
+        if now > deadline {
+            return Err(VxApoError::internal(&format!(
+                "{name} start timed out ({timeout_secs}s)"
+            )));
+        }
+        if now > next_retry {
+            let _ = unsafe { StartServiceW(svc, None) };
+            next_retry = now + std::time::Duration::from_secs(5);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// 宽字符指针转 String（ENUM_SERVICE_STATUSW.lpServiceName 为 PWSTR）。
+fn string_from_wide(p: PWSTR) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    let mut len = 0usize;
+    unsafe {
+        while *p.0.add(len) != 0 {
+            len += 1;
+        }
+    }
+    let slice = unsafe { std::slice::from_raw_parts(p.0, len) };
+    String::from_utf16_lossy(slice)
 }
 
 /// 定向重启指定音频端点设备，让 Windows 重新载入该端点。

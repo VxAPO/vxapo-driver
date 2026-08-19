@@ -54,7 +54,23 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         }
         None => None,
     };
+    let child_created = child.is_some();
     *apo.child_apo.lock().unwrap_or_else(|e| e.into_inner()) = child;
+
+    // 安装验证管道上报（install --verify）：先报 initialize，子 APO 创建成功
+    // 再报 child_apo。无 DeviceTestPipeName 时 test_pipe 内部直接 no-op。
+    if let Some(eg) = endpoint_guid {
+        let stage = if apo.clsid == CLSID_VXAPO_PRE_MIX {
+            "premix"
+        } else {
+            "postmix"
+        };
+        let eg_str = guid_to_string(&eg);
+        crate::object::apo::test_pipe::notify(&eg_str, stage, "initialize");
+        if child_created {
+            crate::object::apo::test_pipe::notify(&eg_str, stage, "child_apo");
+        }
+    }
 
     // 5b. 运行期自愈：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX
     //     重新灌回 `MSFX\N`，与 VxAPO 同时加载导致断断续续/慢放。本 DLL 在

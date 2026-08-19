@@ -139,36 +139,22 @@ impl Drop for Transaction {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// install_endpoint — 完整 7 步（带事务回滚）
+// write_install_config / install_endpoint — 注册表写入（带事务回滚）+ 安装收尾
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 安装 VxAPO 到指定音频端点。
+/// 写入 VxAPO 到指定音频端点（纯注册表写入，含事务回滚）。
 ///
-/// # 安装步骤
-///
-/// 1. 创建 Child APOs 键
-/// 2. FxProperties 不存在则创建
-/// 3. 已存在则备份原始 GUID（.reg / 事务记录）
-/// 4. 写入子 APO 配置（childGuid / allowSilentBuffer / autoAdjust / version）
-/// 5. 按模式写入 APO GUID（PreMix + PostMix），并清理其他模式旧槽位
-/// 6. 写入默认处理模式 GUID
-/// 7. 删除 DisableEnhancements
-///
-/// 任何步骤失败时，Transaction 通过 Drop 自动逆序回滚。
-///
-/// # 参数
-///
-/// - `device_guid`：端点 GUID（`{xxxxxxxx-...}`）。
-/// - `device_name`：设备友好名称（用于 .reg 备份文件名）。
-/// - `connection_name`：连接名称（用于 .reg 备份文件名）。
-/// - `config`：安装配置。
-/// - `verify`：/——true 时 7 步全部 commit 后执行 CoCreateInstance 自检。
-pub fn install_endpoint(
+/// 与 `install_endpoint` 的分工：本函数只做 7 步注册表写入与清理
+/// （DisableProtectedAudioDG、刷新全局 APO 注册、FxProperties、备份、
+/// 子 APO 配置、槽位、默认 ProcessingModes、删 DisableEnhancements、
+/// sysfx 接管），**不含**尾部端点重启、AudioSrv 确保与 CoCreateInstance 自检。
+/// CLI `install --verify` 只调本函数，随后自行整服重启 + 管道验证
+/// （避免 pnputil 端点重启与整服停启重复执行）。
+pub fn write_install_config(
     device_guid: &str,
     device_name: &str,
     connection_name: &str,
     config: &InstallConfig,
-    verify: bool,
 ) -> Result<()> {
     let mut tx = Transaction::new();
 
@@ -262,6 +248,23 @@ pub fn install_endpoint(
     // 全部成功 → 提交事务（禁用回滚）。
     tx.commit();
 
+    Ok(())
+}
+
+/// 安装 VxAPO 到指定音频端点。
+///
+/// `install_endpoint = write_install_config + 尾部（pnputil 端点重启 +
+/// ensure AudioSrv 运行）+ 可选 CoCreateInstance 自检（verify=true）`。
+/// `--verify` 流程请直接调 `write_install_config`。
+pub fn install_endpoint(
+    device_guid: &str,
+    device_name: &str,
+    connection_name: &str,
+    config: &InstallConfig,
+    verify: bool,
+) -> Result<()> {
+    write_install_config(device_guid, device_name, connection_name, config)?;
+
     // ── 安装自检（verify=true）：CoCreateInstance 验证 DLL 可实例化 ──
     // 失败**不自动回滚**（注册表已写入且 DLL 可能瞬时不可用；报告并让调用方决策）。
     if verify {
@@ -304,6 +307,8 @@ pub fn install_endpoint(
 
     // 全流程收尾：定向重启端点设备，随后**无条件确保 AudioSrv 运行**
     // （否则“端点重启成功但服务仍停”会导致音频服务未启用）。best-effort。
+    let endpoint_path = find_endpoint_path(device_guid)?;
+    let is_capture = endpoint_path.contains("Capture");
     if let Err(e) = crate::install::audiodg::restart_endpoint_device(device_guid, is_capture) {
         log::warn!("install_endpoint: 端点设备重启失败：{e}");
     }
@@ -539,7 +544,7 @@ fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()> {
 ///
 /// `pub(crate)`：运行期自愈（object/apo/init.rs `Initialize`）需要按端点 GUID
 /// 定位路径以接管 MSFX 模板。
-pub(crate) fn find_endpoint_path(device_guid: &str) -> Result<String> {
+pub fn find_endpoint_path(device_guid: &str) -> Result<String> {
     // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径（审查 #9）。
     if parse_guid_string(device_guid).is_none() {
         return Err(VxApoError::internal(&format!("无效的端点 GUID：{device_guid}")));
