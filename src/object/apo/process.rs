@@ -281,6 +281,7 @@ pub(crate) fn lock_for_process(
             }
         }
     };
+    let has_filters = !filters.is_empty();
 
     // 诊断（控制线程，一行）：确认每个实例实际读取的配置路径与解析结果——
     // 用于定位“设备与配置目录 GUID 不一致”类问题（APP 写 1bbf5fba、
@@ -363,7 +364,7 @@ pub(crate) fn lock_for_process(
         inner.reloading = false;
         // 临时 RT 转储（诊断）：HKLM\SOFTWARE\VxAPO\RtDumpSecs > 0 时，
         // 把本次流的前 N 秒 [in_L,in_R,out_L,out_R] 逐帧写入 rt_dump.f32。
-        if !is_postmix && !filters.is_empty() {
+        if !is_postmix && has_filters {
             inner.rt_dump = crate::object::apo::config::rt_dump_open(format.sample_rate);
         } else {
             inner.rt_dump = None;
