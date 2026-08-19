@@ -35,17 +35,19 @@ pub(crate) fn notify(device_guid: &str, stage: &str, phase: &str) {
 
     // 服务重启后 audiodg 首次连接可能恰逢服务端 ConnectNamedPipe 尚未就绪，
     // 短重试 3 次（共约 600ms）。
-    let mut handle = open_pipe(&path);
+    let (mut handle, mut last_err) = open_pipe(&path);
     for _ in 0..3 {
         if handle != INVALID_HANDLE_VALUE {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
-        handle = open_pipe(&path);
+        let (h, e) = open_pipe(&path);
+        handle = h;
+        last_err = e;
     }
     if handle == INVALID_HANDLE_VALUE {
         crate::object::apo::config::diag_append(&format!(
-            "TESTPIPE connect-fail stage={stage} phase={phase}"
+            "TESTPIPE connect-fail stage={stage} phase={phase} err={last_err}"
         ));
         return;
     }
@@ -62,10 +64,10 @@ pub(crate) fn notify(device_guid: &str, stage: &str, phase: &str) {
     }
 }
 
-/// 打开管道写端（失败返回 INVALID_HANDLE_VALUE）。
-fn open_pipe(path: &str) -> HANDLE {
+/// 打开管道写端。返回 `(句柄, 最近一次错误码)`；失败时句柄为 INVALID_HANDLE_VALUE。
+fn open_pipe(path: &str) -> (HANDLE, i32) {
     // SAFETY: path 为有效管道路径字符串；其余参数为标准打开语义。
-    unsafe {
+    let r = unsafe {
         CreateFileW(
             &HSTRING::from(path),
             GENERIC_WRITE.0,
@@ -75,7 +77,13 @@ fn open_pipe(path: &str) -> HANDLE {
             FILE_FLAGS_AND_ATTRIBUTES(0),
             None,
         )
-        .unwrap_or(INVALID_HANDLE_VALUE)
+    };
+    match r {
+        Ok(h) => (h, 0),
+        Err(_) => (
+            INVALID_HANDLE_VALUE,
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        ),
     }
 }
 
