@@ -344,7 +344,7 @@ pub(crate) fn hot_reload_impl(
     drop(guard);
     // 锁外写盘。
     diag_append(&format!(
-        "RELOAD applied clsid={clsid:?} filters={filter_count} spec={spec_len}"
+        "RELOAD applied clsid={clsid:?} path={config_path} filters={filter_count} spec={spec_len}"
     ));
 }
 

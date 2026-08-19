@@ -286,12 +286,13 @@ pub(crate) fn lock_for_process(
     // 用于定位“设备与配置目录 GUID 不一致”类问题（APP 写 1bbf5fba、
     // 驱动读 3b1c3cb8 等），以及复用/重解析行为。
     crate::object::apo::config::diag_append(&format!(
-        "LOCK clsid={:?} path={} rate={} in={} out={} filters={} spec={} reuse={}",
+        "LOCK clsid={:?} path={} rate={} in={} out={} maxframes={} filters={} spec={} reuse={}",
         apo.clsid,
         config_path,
         format.sample_rate,
         format.channels,
         output_format.channels,
+        input_descriptor.u32MaxFrameCount,
         filters.len(),
         spec_chain.len(),
         reuse_cached as u8,
@@ -446,8 +447,12 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.startup_fade_total = 0;
     inner.startup_fade_remaining = 0;
     crate::object::apo::config::diag_append(&format!(
-        "UNLOCK clsid={:?} ms={} calls=[{}] hot=(out={:.4},in={:.4},secs={}) silent_dirty=(calls={},max_in={:.4})",
+        "UNLOCK clsid={:?} path={} ms={} calls=[{}] hot=(out={:.4},in={:.4},secs={}) silent_dirty=(calls={},max_in={:.4})",
         apo.clsid,
+        apo.config_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         unlock_start.elapsed().as_millis(),
         inner
             .last_calls
