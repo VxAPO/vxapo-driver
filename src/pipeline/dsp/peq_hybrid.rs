@@ -241,6 +241,11 @@ impl Filter for HybridPeqFilter {
             .collect();
 
         // 2) FIR 目标 = 总目标 − IIR 频响（dB 相减）→ 最小相位 IR。
+        //    先启用 SIMD 点积（AVX2+FMA 运行时探测）：此前只有 Wide 路径调用，
+        //    PEQ 直通链标量 1024 抽头点积实测 3.2ms/480帧，吃掉 1/3 实时预算，
+        //    叠加多段/引擎抖动即欠载（电流）。启用后约 8× 加速。
+        #[cfg(target_arch = "x86_64")]
+        crate::pipeline::dsp::fir::init_fir_simd();
         let n = Self::fir_len_for(sample_rate);
         let ir = build_min_phase_ir(&bands, &self.iir, sample_rate, n);
         let count = self.channel_indices.len();
