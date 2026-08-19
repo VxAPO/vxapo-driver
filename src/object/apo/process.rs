@@ -160,6 +160,7 @@ pub(crate) fn lock_for_process(
     num_output: u32,
     pp_outputs: *const *const APO_CONNECTION_DESCRIPTOR,
 ) -> Result<()> {
+    let lock_start = std::time::Instant::now();
     // Step 0: 状态机 Initialized → Locked，失败自动回退。
     apo.state_cell
         .transition(ApoState::Initialized, ApoState::Locked)
@@ -282,12 +283,13 @@ pub(crate) fn lock_for_process(
         }
     };
     let has_filters = !filters.is_empty();
+    let build_ms = lock_start.elapsed().as_millis();
 
     // 诊断（控制线程，一行）：确认每个实例实际读取的配置路径与解析结果——
     // 用于定位“设备与配置目录 GUID 不一致”类问题（APP 写 1bbf5fba、
     // 驱动读 3b1c3cb8 等），以及复用/重解析行为。
     crate::object::apo::config::diag_append(&format!(
-        "LOCK clsid={:?} path={} rate={} in={} out={} maxframes={} filters={} spec={} reuse={}",
+        "LOCK clsid={:?} path={} rate={} in={} out={} maxframes={} filters={} spec={} reuse={} build_ms={}",
         apo.clsid,
         config_path,
         format.sample_rate,
@@ -297,6 +299,7 @@ pub(crate) fn lock_for_process(
         filters.len(),
         spec_chain.len(),
         reuse_cached as u8,
+        build_ms,
     ));
 
     // Step 4: 组装 Chain。
@@ -455,13 +458,14 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.startup_fade_total = 0;
     inner.startup_fade_remaining = 0;
     crate::object::apo::config::diag_append(&format!(
-        "UNLOCK clsid={:?} path={} ms={} calls=[{}] hot=(out={:.4},in={:.4},secs={}) silent_dirty=(calls={},max_in={:.4})",
+        "UNLOCK clsid={:?} path={} ms={} rt_max_ms={} calls=[{}] hot=(out={:.4},in={:.4},secs={}) silent_dirty=(calls={},max_in={:.4})",
         apo.clsid,
         apo.config_path
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone(),
         unlock_start.elapsed().as_millis(),
+        inner.rt_max_call_ms,
         inner
             .last_calls
             .iter()
@@ -481,6 +485,7 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.hot_secs = 0;
     inner.silent_dirty_calls = 0;
     inner.silent_dirty_max_in = 0.0;
+    inner.rt_max_call_ms = 0;
     // 临时 RT 转储：控制线程落盘（实时路径零文件 I/O）。
     let rt_dump = inner.rt_dump.take();
     drop(inner);
@@ -899,6 +904,7 @@ impl ApoObject {
         } else {
             0.0
         };
+        let call_start = std::time::Instant::now();
         let _ = process_audio(
             inputs,
             outputs,
@@ -907,6 +913,9 @@ impl ApoObject {
             &self.process_stats,
             tbufs.as_mut_slice(),
         );
+        // 诊断：RT 单次调用耗时（欠载排查）。
+        let call_ms = call_start.elapsed().as_millis() as u64;
+        inner_ref.rt_max_call_ms = inner_ref.rt_max_call_ms.max(call_ms);
         // 流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
         // 引擎在设备切换后可能边加载目标链边开播，首段断续慢速；
         // 淡入把听感变为“加载完再播”。仅 PreMix 实例启用（PostMix 直通）。

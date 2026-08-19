@@ -416,12 +416,6 @@ impl Drop for ReloadingClear<'_> {
 /// 运行期诊断日志（，仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
 /// 记录 Lock/热重载的关键事件，供设备切换/热重载失效问题定位；失败静默。
 pub(crate) fn diag_append(line: &str) {
-    // 实验性关闭：每次写盘（stat+open+write+close）在锁流/重载风暴下会拖慢
-    // 引擎建流线程（叠加 Defender 扫描可达数十毫秒），疑似 PEQ 电流的诱因。
-    // 定位确认后再以注册表开关恢复。
-    let _ = line;
-    return;
-    #[allow(unreachable_code)]
     use std::io::Write;
     /// 诊断日志单文件上限：达到后轮转为 `diag.1.log`，防止无界增长。
     const DIAG_MAX_BYTES: u64 = 1024 * 1024;

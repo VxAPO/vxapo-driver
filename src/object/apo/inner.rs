@@ -32,6 +32,8 @@ pub struct ApoObjectInner {
     /// 临时 RT 转储（诊断）：内存缓冲 + 剩余帧数 + 落盘路径。
     /// 实时路径只写内存；Unlock（控制线程）统一落盘，避免磁盘 I/O 干扰实时流。
     pub rt_dump: Option<(std::path::PathBuf, Vec<f32>, usize)>,
+    /// 本次锁流内 RT 单次调用的最长耗时（ms，诊断：排查实时欠载）。
+    pub rt_max_call_ms: u64,
     /// 启动淡入总长度（采样）：流建立初期引擎可能仍在加载目标 APO 链，
     /// 直接播会产生“首秒断续慢速”。先静音保持再线性淡入，听感为“加载完再播”。
     pub startup_fade_total: usize,
@@ -76,6 +78,7 @@ impl ApoObjectInner {
             active_spec: Vec::new(),
             last_lock_key: None,
             rt_dump: None,
+            rt_max_call_ms: 0,
             startup_fade_total: 0,
             startup_fade_remaining: 0,
             last_calls: [(0, 0, 0, 0.0, 0, 0.0); 8],
