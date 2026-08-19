@@ -29,6 +29,8 @@ pub struct ApoObjectInner {
     /// （修订：同键 Relock 直接复用现有链、保留滤波器状态，避免端点重协商时的
     /// 重建瞬态/哔声；mtime+size 保证配置文件变更时键失效，强制重新解析）。
     pub last_lock_key: Option<(String, u64, u64, u32, Vec<String>)>,
+    /// 临时 RT 转储（诊断）：Some((文件, 剩余帧数))；Lock 时按注册表开关建立。
+    pub rt_dump: Option<(std::fs::File, usize)>,
     /// 启动淡入总长度（采样）：流建立初期引擎可能仍在加载目标 APO 链，
     /// 直接播会产生“首秒断续慢速”。先静音保持再线性淡入，听感为“加载完再播”。
     pub startup_fade_total: usize,
@@ -72,6 +74,7 @@ impl ApoObjectInner {
             reloading: false,
             active_spec: Vec::new(),
             last_lock_key: None,
+            rt_dump: None,
             startup_fade_total: 0,
             startup_fade_remaining: 0,
             last_calls: [(0, 0, 0, 0.0, 0, 0.0); 8],

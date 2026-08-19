@@ -8,6 +8,26 @@ use std::time::SystemTime;
 
 use windows::core::Result;
 
+/// 临时 RT 转储开关（诊断）：读 `HKLM\SOFTWARE\VxAPO\RtDumpSecs`（DWORD）。
+/// 返回 `Some((文件, 总帧数))` 表示本次 Lock 需要落盘该流前 N 秒的
+/// [in_L,in_R,out_L,out_R] 平面数据（f32 小端，4 值/帧）。
+pub(crate) fn rt_dump_open(sample_rate: u32) -> Option<(std::fs::File, usize)> {
+    use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+    let secs = crate::sys::registry::RegKey::open(
+        HKEY_LOCAL_MACHINE,
+        r"SOFTWARE\VxAPO",
+    )
+    .and_then(|k| k.read_dword_value("RtDumpSecs"))
+    .unwrap_or(0) as usize;
+    if secs == 0 {
+        return None;
+    }
+    let path = r"C:\ProgramData\VxAPO\rt_dump.f32";
+    std::fs::File::create(path)
+        .ok()
+        .map(|f| (f, secs * sample_rate.max(1) as usize))
+}
+
 use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
 use crate::pipeline::chain::Chain;

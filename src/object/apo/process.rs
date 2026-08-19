@@ -361,6 +361,13 @@ pub(crate) fn lock_for_process(
         inner.temp_buffer_new = temp_buffer_new;
         inner.pending_reload = false;
         inner.reloading = false;
+        // 临时 RT 转储（诊断）：HKLM\SOFTWARE\VxAPO\RtDumpSecs > 0 时，
+        // 把本次流的前 N 秒 [in_L,in_R,out_L,out_R] 逐帧写入 rt_dump.f32。
+        if !is_postmix {
+            inner.rt_dump = crate::object::apo::config::rt_dump_open(format.sample_rate);
+        } else {
+            inner.rt_dump = None;
+        }
         // 启动静音停用（实测：切回开头轻微断续是 Windows 自带行为，
         // 不需要静音）。保留字段与机制，置 0 即直通。
         inner.startup_fade_total = 0;
@@ -924,6 +931,39 @@ impl ApoObject {
             output_one.u32BufferFlags.0 as u32,
             out_peak,
         );
+
+        // 临时 RT 转储（诊断）：写 [in_L,in_R,out_L,out_R] 每帧 4 个 f32。
+        if let Some((file, remaining)) = inner_ref.rt_dump.as_mut() {
+            if *remaining > 0 {
+                use std::io::Write;
+                let n = frames.min(*remaining);
+                let mut buf = Vec::with_capacity(n * 4 * 4);
+                // SAFETY: 输入缓冲由引擎按 max_frame_count × in_ch 分配（同
+                // checked_interleaved_slice 的契约）；frames 已 clamp。
+                unsafe {
+                    let in_ptr = input_one.pBuffer as *const f32;
+                    for f in 0..n {
+                        let in_base = f * in_ch as usize;
+                        let out_base = f * out_ch as usize;
+                        let il = if in_ch >= 1 { *in_ptr.add(in_base) } else { 0.0 };
+                        let ir = if in_ch >= 2 { *in_ptr.add(in_base + 1) } else { 0.0 };
+                        let ol = if out_ch >= 1 { out_slice[out_base] } else { 0.0 };
+                        let or_ = if out_ch >= 2 { out_slice[out_base + 1] } else { 0.0 };
+                        buf.extend_from_slice(&[il, ir, ol, or_]);
+                    }
+                }
+                // SAFETY: buf 为 f32 向量，按小端原始字节写出（与 Python/NumPy
+                // frombuffer 兼容），无填充。
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4)
+                };
+                let _ = file.write_all(bytes);
+                *remaining -= n;
+                if *remaining == 0 {
+                    inner_ref.rt_dump = None;
+                }
+            }
+        }
 
         inner_ref.temp_buffers = tbufs;
     }

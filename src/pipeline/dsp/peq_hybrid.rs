@@ -1155,4 +1155,5 @@ mod tests {
         let db = 20.0 * (rms / (0.25 / std::f32::consts::SQRT_2)).log10();
         assert!((db - 6.0).abs() < 0.5, "steady rms {db:.2} dB vs +6");
     }
+
 }
