@@ -481,6 +481,10 @@ pub(crate) fn unlock_for_process(apo: &ApoObject_Impl) -> Result<()> {
     inner.hot_secs = 0;
     inner.silent_dirty_calls = 0;
     inner.silent_dirty_max_in = 0.0;
+    // 临时 RT 转储：控制线程落盘（实时路径零文件 I/O）。
+    let rt_dump = inner.rt_dump.take();
+    drop(inner);
+    crate::object::apo::config::rt_dump_flush(rt_dump);
     Ok(())
 }
 
@@ -933,12 +937,11 @@ impl ApoObject {
             out_peak,
         );
 
-        // 临时 RT 转储（诊断）：写 [in_L,in_R,out_L,out_R] 每帧 4 个 f32。
-        if let Some((file, remaining)) = inner_ref.rt_dump.as_mut() {
+        // 临时 RT 转储（诊断）：仅写内存缓冲 [in_L,in_R,out_L,out_R]，
+        // 落盘交给 Unlock 控制线程——实时路径不做任何文件 I/O。
+        if let Some((_path, buf, remaining)) = inner_ref.rt_dump.as_mut() {
             if *remaining > 0 {
-                use std::io::Write;
                 let n = frames.min(*remaining);
-                let mut buf = Vec::with_capacity(n * 4 * 4);
                 // SAFETY: 输入缓冲由引擎按 max_frame_count × in_ch 分配（同
                 // checked_interleaved_slice 的契约）；frames 已 clamp。
                 unsafe {
@@ -953,16 +956,7 @@ impl ApoObject {
                         buf.extend_from_slice(&[il, ir, ol, or_]);
                     }
                 }
-                // SAFETY: buf 为 f32 向量，按小端原始字节写出（与 Python/NumPy
-                // frombuffer 兼容），无填充。
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4)
-                };
-                let _ = file.write_all(bytes);
                 *remaining -= n;
-                if *remaining == 0 {
-                    inner_ref.rt_dump = None;
-                }
             }
         }
 

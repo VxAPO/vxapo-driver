@@ -9,9 +9,11 @@ use std::time::SystemTime;
 use windows::core::Result;
 
 /// 临时 RT 转储开关（诊断）：读 `HKLM\SOFTWARE\VxAPO\RtDumpSecs`（DWORD）。
-/// 返回 `Some((文件, 总帧数))` 表示本次 Lock 需要落盘该流前 N 秒的
+/// 返回 `Some((路径, 缓冲, 总帧数))` 表示本次 Lock 需要采集该流前 N 秒的
 /// [in_L,in_R,out_L,out_R] 平面数据（f32 小端，4 值/帧）。
-pub(crate) fn rt_dump_open(sample_rate: u32) -> Option<(std::fs::File, usize)> {
+pub(crate) fn rt_dump_open(
+    sample_rate: u32,
+) -> Option<(std::path::PathBuf, Vec<f32>, usize)> {
     use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
     let secs = crate::sys::registry::RegKey::open(
         HKEY_LOCAL_MACHINE,
@@ -28,9 +30,28 @@ pub(crate) fn rt_dump_open(sample_rate: u32) -> Option<(std::fs::File, usize)> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let path = format!(r"C:\ProgramData\VxAPO\rt_dump_{ts}.f32");
-    std::fs::File::create(path)
-        .ok()
-        .map(|f| (f, secs * sample_rate.max(1) as usize))
+    let frames = secs * sample_rate.max(1) as usize;
+    Some((
+        std::path::PathBuf::from(path),
+        Vec::with_capacity(frames * 4),
+        frames,
+    ))
+}
+
+/// 控制线程落盘（Unlock 时调用）：内存缓冲 → 文件，失败静默。
+pub(crate) fn rt_dump_flush(rt_dump: Option<(std::path::PathBuf, Vec<f32>, usize)>) {
+    use std::io::Write;
+    let Some((path, buf, _)) = rt_dump else { return };
+    if buf.is_empty() {
+        return;
+    }
+    // SAFETY: buf 为 f32 向量，按小端原始字节写出（与 Python/NumPy frombuffer 兼容）。
+    let bytes = unsafe {
+        std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4)
+    };
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        let _ = f.write_all(bytes);
+    }
 }
 
 use crate::config::parser::ConfigParser;
