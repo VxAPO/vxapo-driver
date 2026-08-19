@@ -329,6 +329,12 @@ pub(crate) fn lock_for_process(
             // active_spec 建立基线（当前生效链的配置指纹）。
             // 此后 hot_reload 与此基线比较决定是否真正切换。
             inner.active_spec = spec_chain;
+        } else {
+            // 复用链**结构**但清空滤波器运行时状态：旧流的 FIR 延迟线/IIR 状态
+            // 若保留，会混进新流开头（实测“自从复用缓存后出现电流/嗡声”）。
+            // Reset 仅清状态（微秒级 memset），不重建链、不重解析配置——
+            // 保留复用本意的性能收益，同时保证新流从干净状态开始。
+            inner.current_chain.reset();
         }
         inner.outgoing_chain = None;
         inner.retired_chain = None;

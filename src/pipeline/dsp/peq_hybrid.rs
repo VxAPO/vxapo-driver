@@ -1037,4 +1037,70 @@ mod tests {
             "rms: {db:.2} dB vs target {target:.2} dB"
         );
     }
+
+    /// 复用回归：旧流（大音量）跑完后 reset()，再喂新流（小音量）——
+    /// 输出必须与全新链一致，前段不得混入旧流尾巴（复用缓存电流声根因）。
+    #[test]
+    fn reset_clears_stale_fir_tail_before_reuse() {
+        let bands = vec![
+            PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4000.0, gain_db: -6.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+        ];
+        let sr = 48_000u32;
+        let make = || {
+            let mut f = HybridPeqFilter::new(PeqParams {
+                crossover_hz: CROSSOVER_HZ,
+                bands: bands.clone(),
+            });
+            f.initialize(sr, &["L".into(), "R".into()]);
+            f
+        };
+        let mut reused = make();
+        let mut fresh = make();
+
+        // 旧流：大音量 440Hz，跑 5000 帧填满 FIR 延迟线。
+        let loud_n = 5000usize;
+        let mut loud = vec![vec![0.0f32; loud_n], vec![0.0f32; loud_n]];
+        for i in 0..loud_n {
+            let v = 0.9 * (std::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin();
+            loud[0][i] = v;
+            loud[1][i] = v;
+        }
+        reused.process(&mut loud, loud_n);
+        // 模拟复用：清状态不清结构。
+        reused.reset();
+
+        // 新流：小音量 1kHz，分块喂入（真实引擎帧型）。
+        let total = 4000usize;
+        let chunk = 480usize;
+        let mut out_a = vec![vec![0.0f32; total], vec![0.0f32; total]];
+        let mut out_b = vec![vec![0.0f32; total], vec![0.0f32; total]];
+        for start in (0..total).step_by(chunk) {
+            let n = chunk.min(total - start);
+            let mut a = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            let mut b = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            for i in 0..n {
+                let v = 0.01 * (std::f32::consts::TAU * 1000.0 * (start + i) as f32 / sr as f32).sin();
+                a[0][i] = v;
+                a[1][i] = v;
+                b[0][i] = v;
+                b[1][i] = v;
+            }
+            reused.process(&mut a, n);
+            fresh.process(&mut b, n);
+            out_a[0][start..start + n].copy_from_slice(&a[0]);
+            out_b[0][start..start + n].copy_from_slice(&b[0]);
+        }
+
+        // 从头到尾必须一致（含前 1024 帧：旧流尾巴若残留，此处必然发散）。
+        for i in 0..total {
+            assert!(
+                (out_a[0][i] - out_b[0][i]).abs() < 1e-4,
+                "i={i}: reused {} vs fresh {}",
+                out_a[0][i],
+                out_b[0][i]
+            );
+        }
+    }
 }
