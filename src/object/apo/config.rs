@@ -325,9 +325,9 @@ pub(crate) fn hot_reload_impl(
     guard.outgoing_chain = Some(old);
     guard.pending_reload = false;
     guard.reloading = false;
-    // 热重载后同步复用键，下次 Relock 直接复用热重载后的链。
+    // 热重载后同步复用键（config_path + 采样率 + 通道），下次 Relock 直接复用热重载后的链。
     guard.last_lock_key = Some((
-        new_spec.clone(),
+        config_path.clone(),
         dsp_ctx.sample_rate,
         dsp_ctx.channel_names.clone(),
     ));

@@ -269,19 +269,18 @@ pub fn read_slot_value(fx_key: &RegKey, slot: ApoSlot) -> SlotValue {
 /// |--------|------|------|
 /// | 0 | Win < 8.1（不探测） | LfxGfx（Legacy 初始默认） |
 /// | 1 | Win8.1+ 且 FxProperties **只有 LFX/GFX 值、SFX/MFX/EFX 全空** | LfxGfx（驱动仅支持 Legacy） |
-/// | 2 | 端点 Properties 子键存在蓝牙容器 ID（`{b3f8fa53-...},41`） | SfxMfx（Win11 蓝牙组合，EFX 无效） |
+/// | 2 | 端点实例 ID 以 BTHENUM/BTHLE 开头（蓝牙音频） | SfxMfx（Win11 蓝牙组合，EFX 无效） |
 /// | 3 | 否则（现代驱动默认） | SfxEfx |
 ///
 /// # 参数
 ///
 /// - `is_windows_8_1_or_newer`：OS 版本判定（registry::is_windows_version_at_least(6,3,9600）)。
 /// - `slots`：5 槽位值（LFX/GFX/SFX/MFX/EFX），来自端点 FxProperties。
-/// - `has_bluetooth_container`：端点 `Properties` 子键下
-///   `{b3f8fa53-0004-438e-9003-51a46e139bfc},41`（PKEY_Device_ContainerId，PID 41）值存在。
+/// - `has_bluetooth`：端点实例 ID 以 BTHENUM/BTHLE 开头（蓝牙音频设备）。
 pub fn detect_install_mode(
     is_windows_8_1_or_newer: bool,
     slots: &[SlotValue; 5],
-    has_bluetooth_container: bool,
+    has_bluetooth: bool,
 ) -> InstallMode {
     if !is_windows_8_1_or_newer {
         return InstallMode::LfxGfx;
@@ -298,7 +297,7 @@ pub fn detect_install_mode(
     }
 
     // C42：蓝牙组合设备容器 ID 存在 → SfxMfx。
-    if has_bluetooth_container {
+    if has_bluetooth {
         return InstallMode::SfxMfx;
     }
 

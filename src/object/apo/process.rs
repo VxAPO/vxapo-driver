@@ -64,7 +64,6 @@ pub(crate) fn reset(apo: &ApoObject_Impl) -> Result<()> {
     inner.temp_buffer_new.fill(0.0);
     inner.startup_fade_total = 0;
     inner.startup_fade_remaining = 0;
-    crate::object::apo::config::diag_append(&format!("RESET clsid={:?}", apo.clsid));
     apo.latency_samples.store(0, Ordering::SeqCst);
     apo.latency_frames_atomic.store(0, Ordering::SeqCst);
     Ok(())
@@ -237,9 +236,30 @@ pub(crate) fn lock_for_process(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let lock_start = std::time::Instant::now();
     let is_postmix = apo.clsid == CLSID_VXAPO_POST_MIX;
-    let (filters, spec_chain) = if is_postmix {
+    // Step 3: 复用键先行——key = (config_path, 采样率, 通道)，不依赖解析结果。
+    //         同 config/格式直接复用现有链（切歌/新建流卡顿根因：每次 Lock 都
+    //         重读并解析 config.toml + 文件 I/O）。PostMix 直通实例不解析。
+    let lock_key = if is_postmix {
+        None
+    } else {
+        Some((
+            config_path.clone(),
+            format.sample_rate,
+            channel_names.clone(),
+        ))
+    };
+    let reuse_cached;
+    {
+        let inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
+        reuse_cached = lock_key.as_ref().is_some_and(|k| {
+            inner.last_lock_key.as_ref() == Some(k) && !inner.current_chain.is_empty()
+        });
+    }
+
+    // Step 3.5: 仅在缓存未命中时解析配置（parse_file_with_spec → 滤波器列表 + spec 指纹）。
+    // active_spec 即本次解析产出的配置指纹（LockForProcess 建立热重载基线）。
+    let (filters, spec_chain) = if is_postmix || reuse_cached {
         (Vec::new(), Vec::new())
     } else {
         let parser = ConfigParser::new();
@@ -257,39 +277,6 @@ pub(crate) fn lock_for_process(
             }
         }
     };
-    // Step 3.5: 复用键与复用判定（，供日志与 Step 4 使用）。
-    let lock_key = if is_postmix {
-        None
-    } else {
-        Some((
-            spec_chain.clone(),
-            format.sample_rate,
-            channel_names.clone(),
-        ))
-    };
-    let reuse_cached;
-    {
-        let inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
-        reuse_cached = lock_key.as_ref().is_some_and(|k| {
-            inner.last_lock_key.as_ref() == Some(k) && !inner.current_chain.is_empty()
-        });
-    }
-    crate::object::apo::config::diag_append(&format!(
-        "LOCK clsid={:?} postmix={} rate={} in={} out={} maxframes={} filters={} spec={} first_spec={} reuse={} lock_ms={} agg_created={} agg_destroyed={}",
-        apo.clsid,
-        is_postmix,
-        format.sample_rate,
-        format.channels,
-        output_format.channels,
-        input_descriptor.u32MaxFrameCount,
-        filters.len(),
-        spec_chain.len(),
-        spec_chain.first().cloned().unwrap_or_default(),
-        reuse_cached as u8,
-        lock_start.elapsed().as_millis(),
-        crate::object::apo::aggregate::AGG_CREATED.load(std::sync::atomic::Ordering::Relaxed),
-        crate::object::apo::aggregate::AGG_DESTROYED.load(std::sync::atomic::Ordering::Relaxed)
-    ));
 
     // Step 4: 组装 Chain。
     // 修订：同 config/格式的 Unlock→Relock（如关闭网页触发的端点重协商）
@@ -335,6 +322,9 @@ pub(crate) fn lock_for_process(
         if !reuse_cached {
             inner.current_chain = Box::new(chain);
             inner.last_lock_key = lock_key;
+            // active_spec 建立基线（当前生效链的配置指纹）。
+            // 此后 hot_reload 与此基线比较决定是否真正切换。
+            inner.active_spec = spec_chain;
         }
         inner.outgoing_chain = None;
         inner.retired_chain = None;
@@ -345,9 +335,6 @@ pub(crate) fn lock_for_process(
         inner.temp_buffer_new = temp_buffer_new;
         inner.pending_reload = false;
         inner.reloading = false;
-        // active_spec 建立基线（当前生效链的配置指纹）。
-        // 此后 hot_reload 与此基线比较决定是否真正切换。
-        inner.active_spec = spec_chain;
         // 启动静音停用（实测：切回开头轻微断续是 Windows 自带行为，
         // 不需要静音）。保留字段与机制，置 0 即直通。
         inner.startup_fade_total = 0;

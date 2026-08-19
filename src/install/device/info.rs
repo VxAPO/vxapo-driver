@@ -202,18 +202,19 @@ pub fn has_fx_properties(endpoint_key: &RegKey) -> bool {
     endpoint_key.open_sub_key(FX_PROPERTIES_KEY).is_ok()
 }
 
-/// 蓝牙组合设备容器 ID 值名（PKEY_Device_ContainerId，WT_DEVICE PID 41）。
+/// 设备实例 ID 值名（PKEY_DeviceInstanceId，`,2`）。
 ///
-/// EAPO DeviceAPOInfo.cpp 51/410-411 实证——端点 `Properties` 子键下存在此值
-/// 即 Win11 蓝牙组合设备（EFX 无效），SfxMfx 模式探测判据。
-const BLUETOOTH_CONTAINER_VALUE: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},41";
+/// EAPO 用容器 ID（`,41`）近似判定蓝牙组合设备，但该值对所有设备都存在，
+/// 导致 USB 设备也会被误判为 SfxMfx（实测：同设备两次安装模式不一致）。
+/// 改为按实例 ID 前缀判定：蓝牙音频设备为 `BTHENUM\`（经典）或 `BTHLE\`（LE 音频）。
+const PKEY_DEVICE_INSTANCE_ID: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},2";
 
 /// EAPO 三档安装模式自动探测（CLI 缺省 / APP 调用入口）。
 ///
 /// 组合三个输入交给 `slots::detect_install_mode`（纯逻辑）：
 /// - OS 版本：`is_windows_version_at_least(6,3,9600)` → Win8.1+；
 /// - 5 槽位：从端点 FxProperties 读取；
-/// - 蓝牙容器：端点 `Properties` 子键下 `{b3f8fa53-...},41` 值存在。
+/// - 蓝牙：端点 `Properties` 子键下设备实例 ID 以 BTHENUM/BTHLE 开头。
 ///
 /// # 返回
 ///
@@ -225,10 +226,18 @@ pub fn detect_mode_for_device(endpoint_key: &RegKey) -> InstallMode {
 
     let has_bluetooth = endpoint_key
         .open_sub_key("Properties")
-        .map(|p| p.value_exists(BLUETOOTH_CONTAINER_VALUE).unwrap_or(false))
+        .ok()
+        .and_then(|p| p.read_sz(PKEY_DEVICE_INSTANCE_ID))
+        .map(|id| is_bluetooth_instance_id(id.as_str()))
         .unwrap_or(false);
 
     eapo_detect_mode(is_win81, &slots, has_bluetooth)
+}
+
+/// 蓝牙端点判定：设备实例 ID 以 `BTHENUM` 或 `BTHLE` 开头（不区分大小写）。
+fn is_bluetooth_instance_id(instance_id: &str) -> bool {
+    let upper = instance_id.to_ascii_uppercase();
+    upper.starts_with("BTHENUM") || upper.starts_with("BTHLE")
 }
 
 /// 按端点 GUID 自动探测安装模式（CLI `install` 缺省 `--mode` 用）。
@@ -487,6 +496,17 @@ mod tests {
     fn no_changes_when_not_installed() {
         let info = make_device_info(empty_slots(), InstallMode::LfxGfx, "");
         assert!(!info.has_changes());
+    }
+
+    #[test]
+    fn bluetooth_instance_id_detection() {
+        assert!(is_bluetooth_instance_id(
+            r"BTHENUM\{0000110b-0000-1000-8000-00805f9b34fb}\8&..."
+        ));
+        assert!(is_bluetooth_instance_id(r"bthle\..."));
+        assert!(!is_bluetooth_instance_id(r"USB\VID_046D&PID_0AEE\..."));
+        assert!(!is_bluetooth_instance_id(""));
+        assert!(!is_bluetooth_instance_id(r"SWD\MMDEVAPI\..."));
     }
 
     #[test]
