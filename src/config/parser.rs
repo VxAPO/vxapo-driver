@@ -309,4 +309,5 @@ intensity = 0.5
         let filters = parser.parse_lines(&lines, &test_ctx()).unwrap();
         assert_eq!(filters.len(), 1);
     }
+
 }

@@ -363,7 +363,7 @@ pub(crate) fn lock_for_process(
         inner.reloading = false;
         // 临时 RT 转储（诊断）：HKLM\SOFTWARE\VxAPO\RtDumpSecs > 0 时，
         // 把本次流的前 N 秒 [in_L,in_R,out_L,out_R] 逐帧写入 rt_dump.f32。
-        if !is_postmix {
+        if !is_postmix && !filters.is_empty() {
             inner.rt_dump = crate::object::apo::config::rt_dump_open(format.sample_rate);
         } else {
             inner.rt_dump = None;
