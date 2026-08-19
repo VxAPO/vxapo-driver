@@ -237,14 +237,18 @@ pub(crate) fn lock_for_process(
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let is_postmix = apo.clsid == CLSID_VXAPO_POST_MIX;
-    // Step 3: 复用键先行——key = (config_path, 采样率, 通道)，不依赖解析结果。
-    //         同 config/格式直接复用现有链（切歌/新建流卡顿根因：每次 Lock 都
-    //         重读并解析 config.toml + 文件 I/O）。PostMix 直通实例不解析。
+    // Step 3: 复用键先行——key = (config_path, 文件指纹, 采样率, 通道)，不依赖
+    //         解析结果。同 config/格式直接复用现有链（切歌/新建流卡顿根因：每次
+    //         Lock 都重读并解析 config.toml + 文件 I/O）；文件指纹保证配置变更时
+    //         键失效、强制重新解析（避免复用旧配置链导致音频错乱）。PostMix 直通。
+    let (cfg_mtime, cfg_size) = crate::object::apo::lock_key::config_stamp(&config_path);
     let lock_key = if is_postmix {
         None
     } else {
         Some((
             config_path.clone(),
+            cfg_mtime,
+            cfg_size,
             format.sample_rate,
             channel_names.clone(),
         ))

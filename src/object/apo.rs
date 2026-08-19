@@ -6,6 +6,7 @@ pub mod child;
 pub mod config;
 pub mod init;
 pub mod inner;
+pub mod lock_key;
 pub mod negotiate;
 pub mod process;
 pub mod state;

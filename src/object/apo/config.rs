@@ -325,9 +325,13 @@ pub(crate) fn hot_reload_impl(
     guard.outgoing_chain = Some(old);
     guard.pending_reload = false;
     guard.reloading = false;
-    // 热重载后同步复用键（config_path + 采样率 + 通道），下次 Relock 直接复用热重载后的链。
+    // 热重载后同步复用键（config_path + 文件指纹 + 采样率 + 通道），
+    // 下次 Relock 直接复用热重载后的链。
+    let (cfg_mtime, cfg_size) = crate::object::apo::lock_key::config_stamp(&config_path);
     guard.last_lock_key = Some((
         config_path.clone(),
+        cfg_mtime,
+        cfg_size,
         dsp_ctx.sample_rate,
         dsp_ctx.channel_names.clone(),
     ));
