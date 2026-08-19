@@ -44,14 +44,21 @@ pub(crate) fn notify(device_guid: &str, stage: &str, phase: &str) {
         handle = open_pipe(&path);
     }
     if handle == INVALID_HANDLE_VALUE {
+        crate::object::apo::config::diag_append(&format!(
+            "TESTPIPE connect-fail stage={stage} phase={phase}"
+        ));
         return;
     }
 
     let mut written = 0u32;
     // SAFETY: handle 有效（CreateFileW 成功）；payload 为有效字节切片。
     unsafe {
-        let _ = WriteFile(handle, Some(payload.as_bytes()), Some(&mut written), None);
+        let ok = WriteFile(handle, Some(payload.as_bytes()), Some(&mut written), None);
         let _ = CloseHandle(handle);
+        crate::object::apo::config::diag_append(&format!(
+            "TESTPIPE stage={stage} phase={phase} written={written} ok={}",
+            ok.is_ok()
+        ));
     }
 }
 
