@@ -7,6 +7,7 @@
 //! 所有失败静默（不阻塞/不影响正常 Initialize）；无管道名时零开销返回。
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
@@ -29,9 +30,9 @@ pub(crate) fn notify(device_guid: &str, stage: &str, phase: &str) {
         return;
     };
     // 残留的 DeviceTestPipeName（CLI 被强杀/看门狗 abort 后未清理）会让每次
-    // Initialize 都尝试连接一个不存在的管道。CLI 侧先建管道服务端再写值再触发，
-    // 因此这里**单次连接即可，不做重试**（重试只会在残留值场景放大阻塞）。
-    // 失败后记住该管道名已失效，本进程生命周期内直接跳过——audiodg 重启即重置。
+    // Initialize 都尝试连接一个不存在的管道。短重试用于吸收服务端多实例
+    // 连接间隙的 ERROR_PIPE_BUSY（231）与建图竞态；**整轮重试全部失败后**
+    // 才把该管道名记为失效，本进程生命周期内直接跳过——audiodg 重启即重置。
     if dead_pipe_seen(&pipe_name) {
         return;
     }
@@ -40,8 +41,19 @@ pub(crate) fn notify(device_guid: &str, stage: &str, phase: &str) {
         "{{\"deviceGuid\":\"{device_guid}\",\"stage\":\"{stage}\",\"phase\":\"{phase}\"}}\n"
     );
 
-    // 单次连接（CLI 服务端在写值前已就绪；连接失败即视为管道不存在/已残留）。
-    let (handle, last_err) = open_pipe(&path);
+    // 服务重启后 audiodg 首次连接可能恰逢服务端 ConnectNamedPipe 尚未就绪，
+    // 或撞上单实例服务端两次 ConnectNamedPipe 之间的空窗（ERROR_PIPE_BUSY）。
+    // 重试 3 次（共约 600ms）；仍失败则视为管道不存在/已残留。
+    let (mut handle, mut last_err) = open_pipe(&path);
+    for _ in 0..3 {
+        if handle != INVALID_HANDLE_VALUE {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let (h, e) = open_pipe(&path);
+        handle = h;
+        last_err = e;
+    }
     if handle == INVALID_HANDLE_VALUE {
         mark_pipe_dead(&pipe_name);
         // 限速：同管道名只记一次（后续调用被 dead 缓存短路，不再写盘）。
