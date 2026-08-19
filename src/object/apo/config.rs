@@ -383,6 +383,11 @@ pub(crate) fn hot_reload_impl(
     ));
     guard.active_spec = new_spec;
     let filter_count = guard.current_chain.filter_count();
+    // 临时 RT 转储（诊断）：热重载应用含滤波器的新链时也开启采集——
+    // 用户“播放中加 PEQ”的电流现场发生在 hot reload 路径，Lock 时未必命中。
+    if filter_count > 0 && guard.rt_dump.is_none() {
+        guard.rt_dump = rt_dump_open(guard.pipeline_context.sample_rate);
+    }
     let length = default_smoothing_length(guard.pipeline_context.sample_rate);
     let mut sm = SmoothingProvider::new(length);
     sm.begin();
