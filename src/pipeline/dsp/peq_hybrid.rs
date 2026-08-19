@@ -877,4 +877,164 @@ mod tests {
         // 192k → 4096 抽头 > 2048 阈值 → 分块 FFT，延迟 = 块大小 128 - 1。
         assert_eq!(f2.latency(), 127);
     }
+
+    /// M16+ 实机配置波形回归：分块喂入（模拟 APOProcess 每 480 帧一调），
+    /// 稳态输出必须保持正弦（频率不变、无长零段、RMS 符合目标）。
+    #[test]
+    fn sine_waveform_preserved_chunked_real_config() {
+        let bands = vec![
+            PeqBand { fc: 1500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 2000.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 5047.1, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 6000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 7812.0, gain_db: -6.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 10000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 13000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 16268.0, gain_db: -1.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 20000.0, gain_db: -3.0, q: 3.0, kind: PeqBandType::Peaking },
+        ];
+        for sr in [44_100u32, 48_000, 96_000] {
+            let mut f = HybridPeqFilter::new(PeqParams {
+                crossover_hz: CROSSOVER_HZ,
+                bands: bands.clone(),
+            });
+            f.initialize(sr, &["L".into(), "R".into()]);
+
+            let freq = 1000.0f32;
+            let chunk = 480usize;
+            let total = 48000usize; // 1 秒
+            let mut out = vec![vec![0.0f32; total], vec![0.0f32; total]];
+            for start in (0..total).step_by(chunk) {
+                let n = chunk.min(total - start);
+                let mut block = vec![vec![0.0f32; n], vec![0.0f32; n]];
+                for i in 0..n {
+                    let v = 0.25
+                        * (std::f32::consts::TAU * freq * (start + i) as f32 / sr as f32).sin();
+                    block[0][i] = v;
+                    block[1][i] = v * 0.5;
+                }
+                f.process(&mut block, n);
+                out[0][start..start + n].copy_from_slice(&block[0]);
+                out[1][start..start + n].copy_from_slice(&block[1]);
+            }
+
+            let st = 8192usize; // 跳过预热（FIR 1024 + 淡入 384）
+            let tail = &out[0][st..];
+            // 1) 全有限
+            assert!(tail.iter().all(|v| v.is_finite()), "finite @sr {sr}");
+            // 2) 稳态无长零段（>128 连续零 = 异常静音/掉帧）
+            let mut zeros = 0usize;
+            for &v in tail {
+                if v.abs() < 1e-6 {
+                    zeros += 1;
+                    assert!(zeros <= 128, "long zero run @sr {sr} len={zeros}");
+                } else {
+                    zeros = 0;
+                }
+            }
+            // 3) 过零率保持 2×freq（±10%，FIR 窗边缘不计）
+            let period = (sr as f32 / freq).round() as usize;
+            let crossings = tail
+                .windows(2)
+                .filter(|w| (w[0] < 0.0 && w[1] >= 0.0) || (w[0] >= 0.0 && w[1] < 0.0))
+                .count();
+            let expect = (tail.len() as f32 * 2.0 * freq / sr as f32).round() as usize;
+            assert!(
+                (crossings as i64 - expect as i64).unsigned_abs() <= (expect as i64 / 10).unsigned_abs() as u64,
+                "crossings @sr {sr}: got {crossings}, expect ~{expect}"
+            );
+            // 4) 稳态 RMS ≈ 目标（1k 处 ≈ -1.17 dB）
+            let span = (tail.len() / period) * period;
+            let rms: f32 = (tail[..span].iter().map(|x| x * x).sum::<f32>() / span as f32).sqrt();
+            let db = 20.0 * (rms / (0.25 / std::f32::consts::SQRT_2)).log10();
+            let target = target_db(&bands, freq, sr);
+            assert!(
+                (db - target).abs() < 0.5,
+                "rms @sr {sr}: {db:.2} dB vs target {target:.2} dB"
+            );
+        }
+    }
+
+    /// APP 实际序列化形态：每段一个 `[[effects]] type="peq"` 块 → 驱动级联
+    /// 10 个单段 HybridPeqFilter。分块喂入必须保持正弦（无慢放/电流音）。
+    #[test]
+    fn sine_waveform_preserved_per_band_blocks_cascaded() {
+        use crate::pipeline::chain::Chain;
+        use crate::pipeline::dsp::filter::Filter;
+
+        let bands = vec![
+            PeqBand { fc: 1500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 2000.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 4500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 5047.1, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 6000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 7812.0, gain_db: -6.0, q: 1.5, kind: PeqBandType::Peaking },
+            PeqBand { fc: 10000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 13000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 16268.0, gain_db: -1.0, q: 2.0, kind: PeqBandType::Peaking },
+            PeqBand { fc: 20000.0, gain_db: -3.0, q: 3.0, kind: PeqBandType::Peaking },
+        ];
+        let sr = 48_000u32;
+        let mut chain = Chain::new();
+        for band in &bands {
+            chain
+                .add_filter(Box::new(HybridPeqFilter::new(PeqParams {
+                    crossover_hz: CROSSOVER_HZ,
+                    bands: vec![*band],
+                })))
+                .unwrap();
+        }
+        chain.initialize(sr, &["L".into(), "R".into()]);
+
+        let freq = 1000.0f32;
+        let chunk = 480usize;
+        let total = 48000usize;
+        let mut out = vec![vec![0.0f32; total], vec![0.0f32; total]];
+        for start in (0..total).step_by(chunk) {
+            let n = chunk.min(total - start);
+            let mut block = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            for i in 0..n {
+                let v =
+                    0.25 * (std::f32::consts::TAU * freq * (start + i) as f32 / sr as f32).sin();
+                block[0][i] = v;
+                block[1][i] = v * 0.5;
+            }
+            chain.process(&mut block, n).unwrap();
+            out[0][start..start + n].copy_from_slice(&block[0]);
+            out[1][start..start + n].copy_from_slice(&block[1]);
+        }
+
+        let st = 16384usize; // 10 条 FIR 预热更久，跳过前 1/3
+        let tail = &out[0][st..];
+        assert!(tail.iter().all(|v| v.is_finite()), "finite");
+        let mut zeros = 0usize;
+        for &v in tail {
+            if v.abs() < 1e-6 {
+                zeros += 1;
+                assert!(zeros <= 128, "long zero run len={zeros}");
+            } else {
+                zeros = 0;
+            }
+        }
+        let period = (sr as f32 / freq).round() as usize;
+        let crossings = tail
+            .windows(2)
+            .filter(|w| (w[0] < 0.0 && w[1] >= 0.0) || (w[0] >= 0.0 && w[1] < 0.0))
+            .count();
+        let expect = (tail.len() as f32 * 2.0 * freq / sr as f32).round() as usize;
+        assert!(
+            (crossings as i64 - expect as i64).unsigned_abs()
+                <= (expect as i64 / 10).unsigned_abs() as u64,
+            "crossings: got {crossings}, expect ~{expect}"
+        );
+        let span = (tail.len() / period) * period;
+        let rms: f32 = (tail[..span].iter().map(|x| x * x).sum::<f32>() / span as f32).sqrt();
+        let db = 20.0 * (rms / (0.25 / std::f32::consts::SQRT_2)).log10();
+        let target = target_db(&bands, freq, sr);
+        assert!(
+            (db - target).abs() < 0.5,
+            "rms: {db:.2} dB vs target {target:.2} dB"
+        );
+    }
 }

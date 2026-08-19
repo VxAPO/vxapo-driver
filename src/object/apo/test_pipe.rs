@@ -6,7 +6,7 @@
 //!
 //! 所有失败静默（不阻塞/不影响正常 Initialize）；无管道名时零开销返回。
 
-use std::time::Duration;
+use std::sync::Mutex;
 
 use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
@@ -28,26 +28,25 @@ pub(crate) fn notify(device_guid: &str, stage: &str, phase: &str) {
     let Some(pipe_name) = read_pipe_name() else {
         return;
     };
+    // 残留的 DeviceTestPipeName（CLI 被强杀/看门狗 abort 后未清理）会让每次
+    // Initialize 都尝试连接一个不存在的管道。CLI 侧先建管道服务端再写值再触发，
+    // 因此这里**单次连接即可，不做重试**（重试只会在残留值场景放大阻塞）。
+    // 失败后记住该管道名已失效，本进程生命周期内直接跳过——audiodg 重启即重置。
+    if dead_pipe_seen(&pipe_name) {
+        return;
+    }
     let path = format!(r"\\.\pipe\{pipe_name}");
     let payload = format!(
         "{{\"deviceGuid\":\"{device_guid}\",\"stage\":\"{stage}\",\"phase\":\"{phase}\"}}\n"
     );
 
-    // 服务重启后 audiodg 首次连接可能恰逢服务端 ConnectNamedPipe 尚未就绪，
-    // 短重试 3 次（共约 600ms）。
-    let (mut handle, mut last_err) = open_pipe(&path);
-    for _ in 0..3 {
-        if handle != INVALID_HANDLE_VALUE {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-        let (h, e) = open_pipe(&path);
-        handle = h;
-        last_err = e;
-    }
+    // 单次连接（CLI 服务端在写值前已就绪；连接失败即视为管道不存在/已残留）。
+    let (handle, last_err) = open_pipe(&path);
     if handle == INVALID_HANDLE_VALUE {
+        mark_pipe_dead(&pipe_name);
+        // 限速：同管道名只记一次（后续调用被 dead 缓存短路，不再写盘）。
         crate::object::apo::config::diag_append(&format!(
-            "TESTPIPE connect-fail stage={stage} phase={phase} err={last_err}"
+            "TESTPIPE connect-fail stage={stage} phase={phase} err={last_err} pipe={pipe_name}"
         ));
         return;
     }
@@ -91,6 +90,19 @@ fn open_pipe(path: &str) -> (HANDLE, i32) {
 fn read_pipe_name() -> Option<String> {
     let key = RegKey::open(HKEY_LOCAL_MACHINE, ROOT).ok()?;
     key.read_sz_value(VALUE_NAME).ok().filter(|s| !s.is_empty())
+}
+
+/// 已确认失效的管道名（本进程缓存；audiodg 重启即清空）。
+static DEAD_PIPES: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+fn dead_pipe_seen(name: &str) -> bool {
+    let guard = DEAD_PIPES.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().is_some_and(|s| s.contains(name))
+}
+
+fn mark_pipe_dead(name: &str) {
+    let mut guard = DEAD_PIPES.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(std::collections::HashSet::new).insert(name.to_string());
 }
 
 #[cfg(test)]
