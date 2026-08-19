@@ -72,31 +72,25 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         }
     }
 
-    // 5b. 运行期自愈：Windows 重新枚举/重启后可能从驱动模板把微软 CAPX
-    //     重新灌回 `MSFX\N`，与 VxAPO 同时加载导致断断续续/慢放。本 DLL 在
-    //     每次加载（Initialize，控制线程）时按端点自愈接管——仅动微软 CAPX，
-    //     仅限已装 VxAPO 的端点；失败仅降级日志，不阻塞初始化。
+    // 5b. 运行期自愈（每端点每进程一次）：Windows 重新枚举/重启后可能从驱动模板
+    //     把微软 CAPX 重新灌回 `MSFX\N`，与 VxAPO 同时加载导致断断续续/慢放。
+    //     仅在端点首次 Initialize 时按端点自愈接管（audiodg 重启即重新执行）；
+    //     后续 Initialize 直接跳过——避免每次建流都做注册表遍历 + 文件 I/O
+    //     （切歌/暂停恢复卡顿根因）。失败仅降级日志，不阻塞初始化。
     if let Some(eg) = endpoint_guid {
         let eg_str = guid_to_string(&eg);
-        let selfheal_start = std::time::Instant::now();
-        match crate::install::selector::operation::find_endpoint_path(&eg_str) {
-            Ok(endpoint_path) => {
-                if let Err(e) =
-                    crate::install::device::sysfx::ensure_takeover_for_endpoint(&endpoint_path)
-                {
-                    log::warn!("Initialize: MSFX self-heal failed for {eg_str}: {e}");
+        if selfheal_once(&eg_str) {
+            match crate::install::selector::operation::find_endpoint_path(&eg_str) {
+                Ok(endpoint_path) => {
+                    if let Err(e) =
+                        crate::install::device::sysfx::ensure_takeover_for_endpoint(&endpoint_path)
+                    {
+                        log::warn!("Initialize: MSFX self-heal failed for {eg_str}: {e}");
+                    }
                 }
-                crate::object::apo::config::diag_append(&format!(
-                    "INIT clsid={:?} pid={} endpoint={eg_str} selfheal_ms={} agg_created={} agg_destroyed={}",
-                    apo.clsid,
-                    std::process::id(),
-                    selfheal_start.elapsed().as_millis(),
-                    crate::object::apo::aggregate::AGG_CREATED.load(std::sync::atomic::Ordering::Relaxed),
-                    crate::object::apo::aggregate::AGG_DESTROYED.load(std::sync::atomic::Ordering::Relaxed)
-                ));
-            }
-            Err(_) => {
-                // 端点路径找不到（虚拟设备/已拔出）→ 无需接管。
+                Err(_) => {
+                    // 端点路径找不到（虚拟设备/已拔出）→ 无需接管。
+                }
             }
         }
     }
@@ -141,4 +135,30 @@ pub(crate) fn get_registration_properties(apo: &ApoObject_Impl) -> Result<*mut A
         std::ptr::write(alloc as *mut APO_REG_PROPERTIES, *prop);
     }
     Ok(alloc as *mut APO_REG_PROPERTIES)
+}
+
+/// 自愈缓存：每端点每进程只执行一次（audiodg 重启即重新执行）。
+///
+/// 返回 `true` 表示本次是首次（调用方应执行自愈），`false` 表示已执行过。
+fn selfheal_once(endpoint: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static HEALED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    let mut guard = HEALED.lock().unwrap_or_else(|e| e.into_inner());
+    let set = guard.get_or_insert_with(HashSet::new);
+    set.insert(endpoint.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selfheal_runs_once_per_endpoint() {
+        assert!(selfheal_once("A"));
+        assert!(!selfheal_once("A"));
+        assert!(selfheal_once("B"));
+        assert!(!selfheal_once("B"));
+    }
 }

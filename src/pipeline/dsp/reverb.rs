@@ -1,4 +1,4 @@
-//! Dattorro 板式混响（起，独立实现）
+//! Dattorro 板式混响
 //!
 //! 依据 Jon Dattorro《Effect Design Part 1: Reverberator and Other Filters》
 //! （J. Audio Eng. Soc., Vol.45, No.9, 1997）公开论文实现，非 FxSound 派生代码：
@@ -18,7 +18,7 @@
 //!  Density 1.0 Lat5 0.70 Lat6 0.50 PreDelay 0 ms MotionRate 0.11
 //!  MotionDepth 0.63 ms Wet 0.3 Dry 0.9`
 //!
-//! 参数语义（起）：
+//! 参数语义：
 //! - RoomSize 0.5..1.5：槽内全部延迟时长缩放（1.0 = 论文原始尺寸）
 //! - Decay 0..1：环路反馈，内部映射到 0.25..0.95
 //! - Damping 0..1：槽内低通（0 = 明亮，1 = 暗淡）
