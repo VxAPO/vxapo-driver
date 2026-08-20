@@ -82,7 +82,17 @@ pub(crate) fn get_latency(apo: &ApoObject_Impl) -> Result<i64> {
     {
         return Ok(child.get_latency());
     }
-    Ok(0)
+    // 384k 场景：分块 FFT 路径实际延迟极小（127×2=254 采样 ≈ 0.66ms @384k）。
+    // 仅当链路延迟很小（≤256 采样）时上报——避免 48k/96k 直通 FIR 的
+    // fir_len/4 大延迟（256~1023）重新触发"上报延迟导致帧协商卡住"的旧问题；
+    // 保持 CalcInputFrames/CalcOutputFrames 为 0（帧数补偿不变）。
+    let inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let samples = inner.current_chain.total_latency() as i64;
+    if samples <= 0 || samples > 256 {
+        return Ok(0);
+    }
+    let sr = inner.pipeline_context.sample_rate.max(1) as i64;
+    Ok(samples * 10_000_000 / sr)
 }
 
 /// `GetInputChannelCount`：仅锁定状态返回输入通道数。
