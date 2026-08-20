@@ -24,6 +24,10 @@ static INSTALL: Once = Once::new();
 pub fn install_panic_hook(logger: &'static Logger) {
     // 幂等：DllGetClassObject 可能为 PreMix/PostMix 各调一次，只安装首个 hook。
     INSTALL.call_once(|| {
+        // 单元测试进程内不安装 abort hook：object::dll_exports 的测试会调用
+        // DllGetClassObject 触发安装，此后任何 #[should_panic] 测试的故意 panic
+        // 都会被 hook 直接 abort（表现为 0xc0000409 STATUS_STACK_BUFFER_OVERRUN）。
+        #[cfg(not(test))]
         std::panic::set_hook(Box::new(move |info| {
             let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
                 format!("panic: {}", s)
@@ -35,6 +39,8 @@ pub fn install_panic_hook(logger: &'static Logger) {
             logger.log(LogLevel::RtViolation, &msg);
             std::process::abort();
         }));
+        #[cfg(test)]
+        let _ = logger;
     });
 }
 

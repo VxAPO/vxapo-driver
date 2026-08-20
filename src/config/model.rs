@@ -98,7 +98,10 @@ pub struct FileEffect {
     #[serde(default)]
     pub motion_rate: Option<f32>,
     #[serde(default)]
-    pub motion_depth_ms: Option<f32>,
+    // 旧配置写的是 motion_depth_ms；该参数实际是归一化值（0..2，2=论文满调制），
+    // 改名 motion_depth 并兼容旧键。
+    #[serde(alias = "motion_depth_ms")]
+    pub motion_depth: Option<f32>,
     #[serde(default)]
     pub gain_boost_db: Option<f32>,
     #[serde(default)]
@@ -232,6 +235,7 @@ impl FileEffect {
                 "lat6",
                 "pre_delay_ms",
                 "motion_rate",
+                "motion_depth",
                 "motion_depth_ms",
                 "wet",
                 "dry",
@@ -282,7 +286,8 @@ impl FileEffect {
             ("lat6", self.lat6.is_some()),
             ("pre_delay_ms", self.pre_delay_ms.is_some()),
             ("motion_rate", self.motion_rate.is_some()),
-            ("motion_depth_ms", self.motion_depth_ms.is_some()),
+            ("motion_depth", self.motion_depth.is_some()),
+            ("motion_depth_ms", self.motion_depth.is_some()),
             ("gain_boost_db", self.gain_boost_db.is_some()),
             ("max_output_db", self.max_output_db.is_some()),
             ("release_ms", self.release_ms.is_some()),
@@ -445,9 +450,9 @@ impl FileEffect {
                 Some(v) => finite_range(v, 0.05, 2.0, file, idx, "motion_rate")?,
                 None => d.motion_rate,
             },
-            motion_depth_ms: match self.motion_depth_ms {
-                Some(v) => finite_range(v, 0.0, 2.0, file, idx, "motion_depth_ms")?,
-                None => d.motion_depth_ms,
+            motion_depth: match self.motion_depth {
+                Some(v) => finite_range(v, 0.0, 2.0, file, idx, "motion_depth")?,
+                None => d.motion_depth,
             },
             wet: unit(self.wet, "wet")?,
             dry: unit(self.dry, "dry")?,

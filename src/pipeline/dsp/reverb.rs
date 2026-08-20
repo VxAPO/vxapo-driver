@@ -16,20 +16,24 @@
 //! config 语法（EAPO 风格，与 完全兼容）：
 //! `Reverb: RoomSize 1.0 Decay 0.566 Damping 0.408 Bandwidth 0.350
 //!  Density 1.0 Lat5 0.70 Lat6 0.50 PreDelay 0 ms MotionRate 0.11
-//!  MotionDepth 0.63 ms Wet 0.3 Dry 0.9`
+//!  MotionDepth 0.63 Wet 0.3 Dry 0.9`
 //!
 //! 参数语义：
 //! - RoomSize 0.5..1.5：槽内全部延迟时长缩放（1.0 = 论文原始尺寸）
-//! - Decay 0..1：环路反馈，内部映射到 0.25..0.95
+//! - Decay 0..1：环路反馈，内部映射到 0.05..0.95（0 时接近干声，无固定尾音）
 //! - Damping 0..1：槽内低通（0 = 明亮，1 = 暗淡）
 //! - Bandwidth 0..1：输入低通（0 = 暗淡，1 = 全开）
-//! - Density 0..1：输入/槽内扩散系数，1.0 = 论文默认（0.75/0.625/0.7/0.5）
+//! - Density 0..1：输入/槽内扩散系数，1.0 = 论文默认（0.75/0.625/0.7/0.5）；
+//!   < 0.7 时系数低于论文设计值，可能出现金属伪影
 //! - Lat5：早反射电平（APF 直达 + <20ms 抽头），默认 0.70
 //! - Lat6：扩散尾音电平，默认 0.50
 //! - PreDelay 0..100 ms
 //! - MotionRate 0.05..2.0：调制 LFO 频率（Hz，默认 0.11 ≈ 论文量级）
-//! - MotionDepth 0..2 ms：调制深度（2ms = 论文 EXCURSION 16 采样@29761Hz）
+//! - MotionDepth 0..2：调制深度归一化值（0 = 无调制，2 = 论文 EXCURSION 16 采样@29761Hz）
 //! - Wet/Dry 0..1
+//!
+//! 次正规数：RT 音频线程入口已设硬件 FTZ/DAZ（见 math.rs），与 biquad/fir 一致，
+//! 无需逐采样冲刷；输出端 is_finite 兜底防止非有限值泄漏。
 
 use crate::pipeline::dsp::filter::Filter;
 
@@ -86,7 +90,7 @@ pub struct ReverbParams {
     pub lat6: f32,
     pub pre_delay_ms: f32,
     pub motion_rate: f32,
-    pub motion_depth_ms: f32,
+    pub motion_depth: f32,
     pub wet: f32,
     pub dry: f32,
 }
@@ -95,7 +99,7 @@ impl Default for ReverbParams {
     fn default() -> Self {
         Self {
             room_size: 1.0,
-            decay: 0.565664,
+            decay: 0.41,
             damping: 0.408290,
             bandwidth: 0.350110,
             density: 1.0,
@@ -103,7 +107,7 @@ impl Default for ReverbParams {
             lat6: 0.50,
             pre_delay_ms: 0.0,
             motion_rate: 0.110871,
-            motion_depth_ms: 0.63,
+            motion_depth: 0.63,
             wet: 0.3,
             dry: 0.9,
         }
@@ -251,13 +255,10 @@ impl ModAllpass {
         if self.phase >= 1.0 {
             self.phase -= 1.0;
         }
-        // 三角波（正交相位由 phase 初值提供），双极 -1..1。
-        let tri = if self.phase < 0.5 {
-            self.phase * 4.0 - 1.0
-        } else {
-            3.0 - self.phase * 4.0
-        };
-        let delay = self.base_delay + tri * self.depth;
+        // 论文使用正弦 LFO（正交相位由 phase 初值提供），双极 -1..1；
+        // 三角波含更高次谐波，较高调制率下会引入可闻着色。
+        let sin_val = (self.phase * core::f32::consts::TAU).sin();
+        let delay = self.base_delay + sin_val * self.depth;
         let y = self.line.read_frac(delay);
         let z = input - g * y;
         self.line.write(z);
@@ -295,7 +296,8 @@ pub struct ReverbFilter {
     apf1_g: Vec<f32>,
     d1: Vec<DelayLine>,
     d1_delay: Vec<usize>,
-    apf2: Vec<ModAllpass>,
+    apf2: Vec<DelayLine>,
+    apf2_delay: Vec<usize>,
     apf2_g: Vec<f32>,
     d2: Vec<DelayLine>,
     d2_delay: Vec<usize>,
@@ -331,6 +333,7 @@ impl ReverbFilter {
             d1: Vec::new(),
             d1_delay: Vec::new(),
             apf2: Vec::new(),
+            apf2_delay: Vec::new(),
             apf2_g: Vec::new(),
             d2: Vec::new(),
             d2_delay: Vec::new(),
@@ -360,8 +363,8 @@ impl ReverbFilter {
         for l in &mut self.d1 {
             l.clear();
         }
-        for a in &mut self.apf2 {
-            a.clear();
+        for l in &mut self.apf2 {
+            l.clear();
         }
         for l in &mut self.d2 {
             l.clear();
@@ -386,8 +389,10 @@ impl ReverbFilter {
         match id {
             0 => &self.d1[0],
             1 => &self.d1[1],
-            2 => &self.apf2[0].line,
-            3 => &self.apf2[1].line,
+            // APF2 内部缓冲存储 z = input - g * read(delay)（非 AllPass 输出端）；
+            // 论文 Table 2 的抽头对应延迟线上的物理存储点，读 z 符合拓扑。
+            2 => &self.apf2[0],
+            3 => &self.apf2[1],
             4 => &self.d2[0],
             _ => &self.d2[1],
         }
@@ -400,7 +405,29 @@ impl Filter for ReverbFilter {
             self.channel_indices = (0..channel_names.len()).collect();
         }
         let sr = sample_rate.max(1) as f32;
-        let p = self.params;
+        // DSP 入口兜底：直接构造 ReverbParams 时也保证参数在合法范围内，
+        // 防止 decay > 1 等越界输入让环路发散（配置解析层已做一次校验）。
+        let mut p = self.params;
+        let clamp_param = |v: f32, lo: f32, hi: f32, def: f32| -> f32 {
+            if !v.is_finite() {
+                def
+            } else {
+                v.clamp(lo, hi)
+            }
+        };
+        p.room_size = clamp_param(p.room_size, 0.5, 1.5, 1.0);
+        p.decay = clamp_param(p.decay, 0.0, 1.0, 0.41);
+        p.damping = clamp_param(p.damping, 0.0, 1.0, 0.408290);
+        p.bandwidth = clamp_param(p.bandwidth, 0.0, 1.0, 0.350110);
+        p.density = clamp_param(p.density, 0.0, 1.0, 1.0);
+        p.lat5 = clamp_param(p.lat5, 0.0, 1.0, 0.70);
+        p.lat6 = clamp_param(p.lat6, 0.0, 1.0, 0.50);
+        p.pre_delay_ms = clamp_param(p.pre_delay_ms, 0.0, 100.0, 0.0);
+        p.motion_rate = clamp_param(p.motion_rate, 0.05, 2.0, 0.110871);
+        p.motion_depth = clamp_param(p.motion_depth, 0.0, 2.0, 0.63);
+        p.wet = clamp_param(p.wet, 0.0, 1.0, 0.3);
+        p.dry = clamp_param(p.dry, 0.0, 1.0, 0.9);
+        self.params = p;
 
         // 参数 → 系数
         let room = p.room_size;
@@ -408,7 +435,8 @@ impl Filter for ReverbFilter {
         let scale_room = |n: f32| -> f32 { (n * room * sr / DAT_REF_SR).max(1.0) };
         let tap = |n: f32| -> usize { scale_ref(n).trunc().max(1.0) as usize };
 
-        self.loop_gain = 0.25 + 0.70 * p.decay;
+        // Decay 下限从 0.25 降到 0.05：decay=0 时接近干声，能做出极短混响
+        self.loop_gain = 0.05 + 0.90 * p.decay;
         let input_cutoff = 60.0 + 22000.0 * p.bandwidth;
         let tank_cutoff = 60.0 + 22000.0 * (1.0 - p.damping);
         self.input_lp = OnePoleLp::new(input_cutoff, sr);
@@ -431,8 +459,8 @@ impl Filter for ReverbFilter {
         self.input_apf_delays = DAT_INPUT_APF.iter().map(|&(del, _)| tap(del)).collect();
         self.input_apf_g = vec![input_g1, input_g1, input_g2, input_g2];
 
-        // 调制深度（论文 EXCURSION=16 采样@29761Hz；MotionDepth 2ms = 全量）
-        let mod_depth = (p.motion_depth_ms / 2.0).clamp(0.0, 1.0);
+        // 调制深度（论文 EXCURSION=16 采样@29761Hz；MotionDepth 2 = 全量）
+        let mod_depth = (p.motion_depth / 2.0).clamp(0.0, 1.0);
         let lfo_depth = DAT_LFO_EXCURSION * sr / DAT_REF_SR * mod_depth;
         let lfo_hz = p.motion_rate.clamp(0.05, 2.0);
         let phase_step = lfo_hz / sr;
@@ -465,19 +493,14 @@ impl Filter for ReverbFilter {
             })
             .collect();
 
-        self.apf2 = DAT_APF2
-            .iter()
-            .enumerate()
-            .map(|(i, &del)| {
-                let base = scale_room(del);
+        // 论文 Fig.1：只有槽内第一对 AllPass（672/908）被 LFO 调制；
+        // 第二对（1800/2656）是固定扩散器，用普通 AllPass，不做调制。
+        self.apf2_delay = DAT_APF2.iter().map(|&del| scale_room(del).trunc() as usize).collect();
+        self.apf2 = (0..2)
+            .map(|i| {
+                let base = self.apf2_delay[i];
                 let tap_max = tap(DAT_TAP_MAX[i + 2]);
-                let mut a = ModAllpass::new();
-                a.line = DelayLine::new((base.ceil() as usize).max(tap_max) + max_exc);
-                a.base_delay = base;
-                a.depth = lfo_depth;
-                a.phase_step = phase_step;
-                a.phase = if i == 0 { 0.5 } else { 0.75 };
-                a
+                DelayLine::new(base.max(tap_max) + 2)
             })
             .collect();
         self.apf2_g = vec![plate_g2, plate_g2];
@@ -555,7 +578,7 @@ impl Filter for ReverbFilter {
             let left = self.d1[0].write_read(left, self.d1_delay[0]);
             let left = self.tank_lp[0].next(left);
             let left = self.tank_hp[0].next(left) * loop_gain;
-            let left = self.apf2[0].next(left, self.apf2_g[0]);
+            let left = allpass(&mut self.apf2[0], self.apf2_delay[0], left, self.apf2_g[0]);
             let left = self.d2[0].write_read(left, self.d2_delay[0]);
 
             // 右槽：调制 APF(908) → D1(4217) → 低通/高通 → ×loop_gain
@@ -565,12 +588,14 @@ impl Filter for ReverbFilter {
             let right = self.d1[1].write_read(right, self.d1_delay[1]);
             let right = self.tank_lp[1].next(right);
             let right = self.tank_hp[1].next(right) * loop_gain;
-            let right = self.apf2[1].next(right, self.apf2_g[1]);
+            let right = allpass(&mut self.apf2[1], self.apf2_delay[1], right, self.apf2_g[1]);
             let right = self.d2[1].write_read(right, self.d2_delay[1]);
 
             // 双槽交叉反馈（论文“global figure eight”）
-            self.right_sum = left * loop_gain;
-            self.left_sum = right * loop_gain;
+            // 循环增益只在槽内低通/高通之后乘一次；交叉路径不再乘，
+            // 避免完整环路等效增益变成 loop_gain² 导致尾音衰减过快。
+            self.right_sum = left;
+            self.left_sum = right;
 
             // 输出抽头（Table 2），早反射/尾音分组
             let mut early_l = apf1_l;
@@ -581,8 +606,11 @@ impl Filter for ReverbFilter {
             for &(line, delay, sign) in &self.tap_l_tail {
                 tail_l += sign * self.tap_line(line).read(delay);
             }
-            let wet_l = (early_l * p.lat5 + tail_l * p.lat6) * 0.5;
+            let wet_l = early_l * p.lat5 + tail_l * p.lat6;
             let wet_l = self.out_dc[0].next(wet_l);
+            // 去掉论文外的 0.5 固定衰减（6dB）；湿声路径用 tanh 软限幅削峰，
+            // 正常电平近似线性，极端峰值被压在 ±1 内（与 wide/aural 一致）。
+            let wet_l = wet_l.tanh();
             let out_l = p.wet * wet_l + p.dry * in_l;
             samples[l][f] = if out_l.is_finite() { out_l } else { 0.0 };
 
@@ -595,8 +623,9 @@ impl Filter for ReverbFilter {
                 for &(line, delay, sign) in &self.tap_r_tail {
                     tail_r += sign * self.tap_line(line).read(delay);
                 }
-                let wet_r = (early_r * p.lat5 + tail_r * p.lat6) * 0.5;
+                let wet_r = early_r * p.lat5 + tail_r * p.lat6;
                 let wet_r = self.out_dc[1].next(wet_r);
+                let wet_r = wet_r.tanh();
                 let out_r = p.wet * wet_r + p.dry * in_r;
                 samples[r][f] = if out_r.is_finite() { out_r } else { 0.0 };
             }
@@ -676,7 +705,7 @@ mod tests {
             decay: 1.0,
             density: 1.0,
             pre_delay_ms: 100.0,
-            motion_depth_ms: 2.0,
+            motion_depth: 2.0,
             motion_rate: 2.0,
             wet: 1.0,
             dry: 0.0,
@@ -717,6 +746,40 @@ mod tests {
         let peak = samples[0].iter().map(|v| v.abs()).fold(0.0f32, f32::max);
         assert!(peak > 0.001);
         assert!(peak < 2.0);
+    }
+
+    #[test]
+    fn out_of_range_params_are_clamped() {
+        // 越界/非有限参数不应让环路发散：DSP 入口 clamp 后输出保持有界。
+        let params = ReverbParams {
+            room_size: 99.0,
+            decay: 5.0,
+            damping: -3.0,
+            bandwidth: 2.0,
+            density: -1.0,
+            lat5: 4.0,
+            lat6: -2.0,
+            pre_delay_ms: 1e6,
+            motion_rate: 0.0,
+            motion_depth: 50.0,
+            wet: 2.0,
+            dry: -1.0,
+            ..Default::default()
+        };
+        let mut f = ReverbFilter::new(params);
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let mut samples = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
+        for i in 0..4800 {
+            samples[0][i] = (core::f32::consts::TAU * 440.0 * i as f32 / 48000.0).sin() * 0.9;
+            samples[1][i] = samples[0][i] * 0.5;
+        }
+        f.process(&mut samples, 4800);
+        for ch in &samples {
+            for &v in ch {
+                assert!(v.is_finite());
+                assert!(v.abs() < 4.0, "clamp 后输出应保持有界，实际 {v}");
+            }
+        }
     }
 
 }

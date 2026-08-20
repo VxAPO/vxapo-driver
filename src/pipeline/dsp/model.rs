@@ -109,7 +109,7 @@ impl EffectConfig {
                 p.lat6,
                 p.pre_delay_ms,
                 p.motion_rate,
-                p.motion_depth_ms,
+                p.motion_depth,
                 p.wet,
                 p.dry
             )),
