@@ -9,8 +9,6 @@
 //! - 高频支路做 **M/S 宽度处理**：`side = (HL-HR)/2` 按
 //!   `1 + 2.3·Intensity^0.6` 放大（甜点 0.5 → ≈2.52×，满档 → ≈3.3×），
 //! 中央按 `1 - 0.10·Intensity^0.6` 补偿（斜率较 降低，缓解中频能量不足）；
-//! - **侧去相关**：高频侧信号再经过固定 ~2ms Haas 延迟（分数插值），
-//!   让宽度更可信（双声道相位差随频率变化，而非纯增益加宽）；
 //! - **中心距离**：按 `Depth` 0..1 对高频中声道加 Haas 延迟（0..8ms）
 //!   并做空气吸收低通（20kHz→6kHz），把中置人声推远；
 //! - 高频支路 **tanh 软限幅**：`headroom_db = 0.2 + 0.8·(1-Intensity)`，
@@ -62,13 +60,11 @@ const INTENSITY_EXP: f32 = 0.6;
 /// tanh 软限幅 headroom 范围（Intensity=1 时最小，Intensity→0 时最大）。
 const HEADROOM_MIN_DB: f32 = 0.2;
 const HEADROOM_MAX_DB: f32 = 1.0;
-/// 侧去相关 Haas 延迟（固定，毫秒）。
-const SIDE_HAAS_MS: f32 = 2.0;
 /// 中心距离最大 Haas 延迟（Depth=1 时，毫秒）。
-const CENTER_HAAS_MAX_MS: f32 = 8.0;
-/// 空气吸收低通截止范围（Depth 0→1：20kHz → 6kHz）。
+const CENTER_HAAS_MAX_MS: f32 = 20.0;
+/// 空气吸收低通截止范围（Depth 0→1：20kHz → 4kHz）。
 const AIR_CUTOFF_MAX_HZ: f32 = 20000.0;
-const AIR_CUTOFF_MIN_HZ: f32 = 6000.0;
+const AIR_CUTOFF_MIN_HZ: f32 = 4000.0;
 
 /// 单极点低通（空气吸收）。
 #[derive(Debug, Clone)]
@@ -329,7 +325,6 @@ pub struct WideFilter {
     gain_side_high: f32,
     gain_comp: f32,
     headroom_factor: f32,
-    side_delay: f32,
     center_delay: f32,
     air_lp: OnePoleLp,
     haas_l: HaasLine,
@@ -346,7 +341,6 @@ impl WideFilter {
             gain_side_high: 1.0,
             gain_comp: 1.0,
             headroom_factor: 1.0,
-            side_delay: 0.0,
             center_delay: 0.0,
             air_lp: OnePoleLp::new(20000.0, 48000.0),
             haas_l: HaasLine::new(1),
@@ -377,11 +371,10 @@ impl Filter for WideFilter {
         self.gain_comp = 1.0 - CENTER_COMP_SLOPE * eff;
         let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - i);
         self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
-        self.side_delay = SIDE_HAAS_MS * sr / 1000.0;
         self.center_delay = depth * CENTER_HAAS_MAX_MS * sr / 1000.0;
         let air_cutoff = AIR_CUTOFF_MAX_HZ - (AIR_CUTOFF_MAX_HZ - AIR_CUTOFF_MIN_HZ) * depth;
         self.air_lp = OnePoleLp::new(air_cutoff, sr);
-        let max_delay = (self.center_delay + self.side_delay).ceil() as usize + 2;
+        let max_delay = self.center_delay.ceil() as usize + 2;
         self.haas_l = HaasLine::new(max_delay);
         self.haas_r = HaasLine::new(max_delay);
 
@@ -405,7 +398,6 @@ impl Filter for WideFilter {
         let g_comp = self.gain_comp;
         let headroom = self.headroom_factor;
         let cd = self.center_delay;
-        let sd = self.side_delay;
 
         for f in 0..frame_count {
             let xl = samples[l][f];
@@ -418,10 +410,10 @@ impl Filter for WideFilter {
             self.haas_l.write(hl);
             self.haas_r.write(hr);
 
-            // 中声道：Haas 延迟 cd（中心距离）+ 空气吸收低通；侧声道：
-            // 相对中声道再延迟 sd（去相关），保证双声道相位差随频率变化。
+            // 中声道/侧声道统一读 cd 延迟：Haas 延迟 + 空气吸收低通把中置推远，
+            // 侧信号不加额外延迟（固定延迟会产生脑后/嗡嗡的相位染色）。
             let mid_h = (self.haas_l.read_frac(cd) + self.haas_r.read_frac(cd)) * 0.5;
-            let side_h = (self.haas_l.read_frac(cd + sd) - self.haas_r.read_frac(cd + sd)) * 0.5;
+            let side_h = (self.haas_l.read_frac(cd) - self.haas_r.read_frac(cd)) * 0.5;
             let out_mid_h = self.air_lp.next(mid_h) * g_comp;
             let out_side_h = side_h * g_high;
 
@@ -437,7 +429,7 @@ impl Filter for WideFilter {
             LpEngine::Direct { center, .. } => *center as u32,
             LpEngine::Partitioned { latency, .. } => *latency as u32,
         };
-        base + (self.center_delay + self.side_delay).ceil() as u32
+        base + self.center_delay.ceil() as u32
     }
 
     fn set_channel_indices(&mut self, indices: &[usize]) {
@@ -742,15 +734,11 @@ mod tests {
     }
 
     #[test]
-    fn latency_includes_side_delay() {
+    fn latency_is_fir_center_at_zero_depth() {
         let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
-        // depth=0 时仅含固定侧去相关 2ms；depth=1 再 +8ms（见 latency_includes_haas_delay）。
-        let center = ((wide_fir_len(48000) - 1) / 2) as u32;
-        assert_eq!(
-            f.latency(),
-            center + (SIDE_HAAS_MS * 48000.0 / 1000.0).ceil() as u32
-        );
+        // depth=0 时无中心延迟，latency 即 FIR 中心。
+        assert_eq!(f.latency(), ((wide_fir_len(48000) - 1) / 2) as u32);
     }
 
     #[test]
@@ -762,8 +750,8 @@ mod tests {
         });
         f.initialize(48000, &["L".into(), "R".into()]);
         let center = ((wide_fir_len(48000) - 1) / 2) as u32;
-        // 满 depth：中心 Haas 8ms + 侧去相关 2ms。
-        assert_eq!(f.latency(), center + (0.010f32 * 48000.0).ceil() as u32);
+        // 满 depth：中心 Haas 20ms。
+        assert_eq!(f.latency(), center + (0.020f32 * 48000.0).ceil() as u32);
     }
 
     #[test]
