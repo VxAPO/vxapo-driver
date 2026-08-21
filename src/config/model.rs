@@ -66,6 +66,8 @@ pub struct FileEffect {
     #[serde(default)]
     pub crossover_hz: Option<f32>,
     #[serde(default)]
+    pub depth: Option<f32>,
+    #[serde(default)]
     pub bands: Option<Vec<FilePeqBand>>,
     #[serde(default)]
     pub tune_hz: Option<f32>,
@@ -250,7 +252,7 @@ impl FileEffect {
                 "wet",
                 "dry",
             ][..],
-            EffectType::Wide => &["intensity"][..],
+            EffectType::Wide => &["intensity", "depth", "crossover_hz"][..],
             EffectType::Loudness => &["phon", "reference_phon"][..],
         };
         for field in self.set_fields() {
@@ -295,6 +297,7 @@ impl FileEffect {
             ("lookahead_ms", self.lookahead_ms.is_some()),
             ("dither", self.dither.is_some()),
             ("intensity", self.intensity.is_some()),
+            ("depth", self.depth.is_some()),
             ("phon", self.phon.is_some()),
             ("reference_phon", self.reference_phon.is_some()),
         ] {
@@ -515,6 +518,14 @@ impl FileEffect {
             intensity: match self.intensity {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "intensity")?,
                 None => d.intensity,
+            },
+            depth: match self.depth {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "depth")?,
+                None => d.depth,
+            },
+            crossover_hz: match self.crossover_hz {
+                Some(v) => finite_range(v, 100.0, 1000.0, file, idx, "crossover_hz")?,
+                None => d.crossover_hz,
             },
         })
     }

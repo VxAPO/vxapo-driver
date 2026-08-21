@@ -37,9 +37,9 @@ impl Default for AuralParams {
             tune_hz: DEFAULT_TUNE_HZ,
             drive: 1.76993,
             odd: 1.5,
-            even: 0.0,
-            wet: 1.0,
-            dry: 0.0,
+            even: 0.25,
+            wet: 0.5,
+            dry: 0.5,
         }
     }
 }

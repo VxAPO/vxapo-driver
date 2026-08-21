@@ -1,19 +1,24 @@
 //! Wide（立体声加宽器）
 //!
 //! 设计：
-//! - **200 Hz 线性相位 FIR 分频**（1024 点 Hamming 窗低通 + 互补高通）：
+//! - **可调线性相位 FIR 分频**（`crossover_hz` 100..1000，默认 200 Hz；
+//!   1024 点 Kaiser 窗低通 + 互补高通）：
 //!   低频支路 = LP FIR 输出，高频支路 = 延迟对齐原信号 − LP 输出，
 //!   两路**完美重建**（无 IIR 相位旋转 / 群延迟差），低频原样不散；
 //!   延迟 = 511 采样（与 GraphicEQ 1024 点 FIR 同级）；
 //! - 高频支路做 **M/S 宽度处理**：`side = (HL-HR)/2` 按
 //!   `1 + 2.3·Intensity^0.6` 放大（甜点 0.5 → ≈2.52×，满档 → ≈3.3×），
 //! 中央按 `1 - 0.10·Intensity^0.6` 补偿（斜率较 降低，缓解中频能量不足）；
+//! - **侧去相关**：高频侧信号再经过固定 ~2ms Haas 延迟（分数插值），
+//!   让宽度更可信（双声道相位差随频率变化，而非纯增益加宽）；
+//! - **中心距离**：按 `Depth` 0..1 对高频中声道加 Haas 延迟（0..8ms）
+//!   并做空气吸收低通（20kHz→6kHz），把中置人声推远；
 //! - 高频支路 **tanh 软限幅**：`headroom_db = 0.2 + 0.8·(1-Intensity)`，
 //!   `out = tanh(out·10^(-headroom_db/20))`；低频支路不经过 tanh；
-//!   `Intensity=0` 仍走直通分支，位精确。
+//!   `Intensity=0`（或单声道）仍走直通分支，位精确。
 //!
 //! config 语法（EAPO 风格）：
-//! `Wide: Intensity 0.354331`
+//! `Wide: Intensity 0.354331 Depth 0.0 Crossover 200`
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
@@ -22,6 +27,10 @@ use crate::pipeline::dsp::fir::PartitionedFir;
 pub struct WideParams {
     /// 加宽强度（范围 [0, 1]，0 时严格直通）。
     pub intensity: f32,
+    /// 中心距离 / 空气吸收（范围 [0, 1]，0 = 中置在原位）。
+    pub depth: f32,
+    /// M/S 分频点（Hz，100..1000，默认 200；以下低频保持原样）。
+    pub crossover_hz: f32,
 }
 
 impl Default for WideParams {
@@ -29,12 +38,15 @@ impl Default for WideParams {
         Self {
             // 与原 Wide32.c Quick preset 对齐，保持 config 兼容。
             intensity: 0.354331,
+            depth: 0.0,
+            crossover_hz: 200.0,
         }
     }
 }
 
-/// FIR 分频点（Hz），以下低频不处理。
-const CROSSOVER_HZ: f32 = 200.0;
+/// FIR 分频点范围（Hz）。
+const CROSSOVER_MIN_HZ: f32 = 100.0;
+const CROSSOVER_MAX_HZ: f32 = 1000.0;
 /// 直接 FIR 上限（超过走分块 FFT，与 PEQ 一致；避免高采样率长 IR 超实时预算）。
 const DIRECT_FIR_MAX_LEN: usize = 2048;
 /// FIR 长度下限（低采样率最小抽头数）。
@@ -50,6 +62,79 @@ const INTENSITY_EXP: f32 = 0.6;
 /// tanh 软限幅 headroom 范围（Intensity=1 时最小，Intensity→0 时最大）。
 const HEADROOM_MIN_DB: f32 = 0.2;
 const HEADROOM_MAX_DB: f32 = 1.0;
+/// 侧去相关 Haas 延迟（固定，毫秒）。
+const SIDE_HAAS_MS: f32 = 2.0;
+/// 中心距离最大 Haas 延迟（Depth=1 时，毫秒）。
+const CENTER_HAAS_MAX_MS: f32 = 8.0;
+/// 空气吸收低通截止范围（Depth 0→1：20kHz → 6kHz）。
+const AIR_CUTOFF_MAX_HZ: f32 = 20000.0;
+const AIR_CUTOFF_MIN_HZ: f32 = 6000.0;
+
+/// 单极点低通（空气吸收）。
+#[derive(Debug, Clone)]
+struct OnePoleLp {
+    coeff: f32,
+    state: f32,
+}
+
+impl OnePoleLp {
+    fn new(cutoff_hz: f32, sr: f32) -> Self {
+        let c = 1.0 - (-core::f32::consts::TAU * cutoff_hz / sr).exp();
+        Self { coeff: c, state: 0.0 }
+    }
+
+    #[inline]
+    fn next(&mut self, x: f32) -> f32 {
+        let y = self.coeff * x + (1.0 - self.coeff) * self.state;
+        self.state = y;
+        y
+    }
+
+    fn clear(&mut self) {
+        self.state = 0.0;
+    }
+}
+
+/// 分数延迟线（Haas/去相关），线性插值读取。
+#[derive(Debug, Clone)]
+struct HaasLine {
+    buf: Vec<f32>,
+    pos: usize,
+}
+
+impl HaasLine {
+    fn new(len: usize) -> Self {
+        Self {
+            buf: vec![0.0; len.max(1)],
+            pos: 0,
+        }
+    }
+
+    #[inline]
+    fn write(&mut self, v: f32) {
+        self.buf[self.pos] = v;
+        self.pos += 1;
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+        }
+    }
+
+    #[inline]
+    fn read_frac(&self, delay: f32) -> f32 {
+        let base = delay.floor();
+        let frac = delay - base;
+        let d = base as usize;
+        let len = self.buf.len();
+        let y1 = self.buf[(self.pos + len - 1 - d) % len];
+        let y2 = self.buf[(self.pos + len - 2 - d) % len];
+        y1 + (y2 - y1) * frac
+    }
+
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.pos = 0;
+    }
+}
 
 /// FIR 分频长度随采样率缩放（≈21.3ms 时间长度，与 PEQ 同公式）：
 /// 44.1/48k→1024，96k→2048，192k→4096，384k→8192。
@@ -244,6 +329,11 @@ pub struct WideFilter {
     gain_side_high: f32,
     gain_comp: f32,
     headroom_factor: f32,
+    side_delay: f32,
+    center_delay: f32,
+    air_lp: OnePoleLp,
+    haas_l: HaasLine,
+    haas_r: HaasLine,
     fir: FirSplit,
 }
 
@@ -256,6 +346,11 @@ impl WideFilter {
             gain_side_high: 1.0,
             gain_comp: 1.0,
             headroom_factor: 1.0,
+            side_delay: 0.0,
+            center_delay: 0.0,
+            air_lp: OnePoleLp::new(20000.0, 48000.0),
+            haas_l: HaasLine::new(1),
+            haas_r: HaasLine::new(1),
             fir: FirSplit::new(vec![1.0], 0),
         }
     }
@@ -272,14 +367,25 @@ impl Filter for WideFilter {
             return None;
         }
 
-        let i = self.params.intensity;
+        let sr = sample_rate.max(1) as f32;
+        let p = self.params;
+        let i = p.intensity.clamp(0.0, 1.0);
+        let depth = p.depth.clamp(0.0, 1.0);
+        let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let eff = i.powf(INTENSITY_EXP);
         self.gain_side_high = 1.0 + SIDE_GAIN_HIGH_SLOPE * eff;
         self.gain_comp = 1.0 - CENTER_COMP_SLOPE * eff;
         let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - i);
         self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
+        self.side_delay = SIDE_HAAS_MS * sr / 1000.0;
+        self.center_delay = depth * CENTER_HAAS_MAX_MS * sr / 1000.0;
+        let air_cutoff = AIR_CUTOFF_MAX_HZ - (AIR_CUTOFF_MAX_HZ - AIR_CUTOFF_MIN_HZ) * depth;
+        self.air_lp = OnePoleLp::new(air_cutoff, sr);
+        let max_delay = (self.center_delay + self.side_delay).ceil() as usize + 2;
+        self.haas_l = HaasLine::new(max_delay);
+        self.haas_r = HaasLine::new(max_delay);
 
-        let ir = design_lowpass_ir(CROSSOVER_HZ, sample_rate, wide_fir_len(sample_rate));
+        let ir = design_lowpass_ir(xover, sample_rate, wide_fir_len(sample_rate));
         self.fir = FirSplit::new(ir, 2);
         None
     }
@@ -298,18 +404,25 @@ impl Filter for WideFilter {
         let g_high = self.gain_side_high;
         let g_comp = self.gain_comp;
         let headroom = self.headroom_factor;
+        let cd = self.center_delay;
+        let sd = self.side_delay;
 
         for f in 0..frame_count {
             let xl = samples[l][f];
             let xr = samples[r][f];
 
-            // FIR 分频：低频直通不处理，高频做 M/S 宽度处理。
+            // FIR 分频：低频直通不处理，高频做 M/S 宽度 + 去相关 + 中心距离。
             let (ll, hl) = self.fir.split_channel(0, xl);
             let (rl, hr) = self.fir.split_channel(1, xr);
 
-            let mid_h = (hl + hr) * 0.5;
-            let side_h = (hl - hr) * 0.5;
-            let out_mid_h = mid_h * g_comp;
+            self.haas_l.write(hl);
+            self.haas_r.write(hr);
+
+            // 中声道：Haas 延迟 cd（中心距离）+ 空气吸收低通；侧声道：
+            // 相对中声道再延迟 sd（去相关），保证双声道相位差随频率变化。
+            let mid_h = (self.haas_l.read_frac(cd) + self.haas_r.read_frac(cd)) * 0.5;
+            let side_h = (self.haas_l.read_frac(cd + sd) - self.haas_r.read_frac(cd + sd)) * 0.5;
+            let out_mid_h = self.air_lp.next(mid_h) * g_comp;
             let out_side_h = side_h * g_high;
 
             let proc_l = (out_mid_h + out_side_h) * headroom;
@@ -320,10 +433,11 @@ impl Filter for WideFilter {
     }
 
     fn latency(&self) -> u32 {
-        match &self.fir.engine {
+        let base = match &self.fir.engine {
             LpEngine::Direct { center, .. } => *center as u32,
             LpEngine::Partitioned { latency, .. } => *latency as u32,
-        }
+        };
+        base + (self.center_delay + self.side_delay).ceil() as u32
     }
 
     fn set_channel_indices(&mut self, indices: &[usize]) {
@@ -332,6 +446,9 @@ impl Filter for WideFilter {
 
     fn reset(&mut self) {
         self.fir.reset();
+        self.haas_l.clear();
+        self.haas_r.clear();
+        self.air_lp.clear();
     }
 }
 
@@ -354,7 +471,7 @@ mod tests {
         }
         for sr in [44_100u32, 48_000, 96_000, 192_000, 384_000] {
             let n = wide_fir_len(sr);
-            let ir = design_lowpass_ir(CROSSOVER_HZ, sr, n);
+            let ir = design_lowpass_ir(200.0, sr, n);
             eprintln!(
                 "DIAG kaiser sr={} n={} lp200={:.1}dB lp500={:.1}dB",
                 sr,
@@ -367,7 +484,7 @@ mod tests {
 
     #[test]
     fn intensity_zero_is_passthrough() {
-        let mut f = WideFilter::new(WideParams { intensity: 0.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 0.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
         let mut samples = vec![vec![0.4f32; 256], vec![0.2f32; 256]];
         let before = samples.clone();
@@ -381,7 +498,7 @@ mod tests {
 
     #[test]
     fn mono_is_passthrough() {
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["Mono".into()]);
         let mut samples = vec![vec![0.8f32; 64]];
         f.process(&mut samples, 64);
@@ -392,7 +509,7 @@ mod tests {
 
     #[test]
     fn silence_stays_silent() {
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
         let mut samples = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
         f.process(&mut samples, 4800);
@@ -418,7 +535,7 @@ mod tests {
     fn side_signal_is_widened() {
         // 1 kHz 带侧成分输入（低幅度，tanh 近似线性）：宽度应随 Intensity 单调递增。
         let run = |intensity: f32| -> f32 {
-            let mut f = WideFilter::new(WideParams { intensity });
+            let mut f = WideFilter::new(WideParams { intensity, ..Default::default() });
             f.initialize(48000, &["L".into(), "R".into()]);
             let n = 4800usize;
             let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -453,7 +570,7 @@ mod tests {
     fn intensity_mapping_curve() {
         // 幂指数映射：i' = i^0.6，gHigh = 1+2.3·i'，gComp = 1-0.15·i'。
         let setup = |intensity: f32| -> (f32, f32) {
-            let mut f = WideFilter::new(WideParams { intensity });
+            let mut f = WideFilter::new(WideParams { intensity, ..Default::default() });
             f.initialize(48000, &["L".into(), "R".into()]);
             (f.gain_side_high, f.gain_comp)
         };
@@ -478,7 +595,7 @@ mod tests {
     fn center_signal_is_compensated_and_symmetric() {
         // 纯中央信号：无侧成分 → 输出仍对称，幅度按 1-0.15·i'（i=1 → 0.85）补偿；
         // 低幅度下 tanh 近似线性，容差内验证。
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
         let n = 4800usize;
         let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -510,7 +627,7 @@ mod tests {
         // 200 Hz 以下低频支路完全不处理：60 Hz 带侧成分应原样通过；
         // 1 kHz 侧成分被放大。
         let run = |freq: f32, n: usize| -> (f32, f32) {
-            let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+            let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
             f.initialize(48000, &["L".into(), "R".into()]);
             let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
             for i in 0..n {
@@ -548,9 +665,10 @@ mod tests {
     fn fir_split_reconstructs_delayed_input() {
         // 线性相位 FIR 完美重建：低频支路 + 高频支路 = 延迟 center 帧的原信号
         // （逐样本，含相位——这是 FIR 相对 IIR 分频的核心优势）。
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let center = f.latency() as usize;
+        // 只测 FIR 分频本身：用 FIR 群延迟中心，不含 Haas 延迟。
+        let center = ((wide_fir_len(48000) - 1) / 2) as usize;
         let n = 4800usize;
         let input: Vec<f32> = (0..n)
             .map(|i| {
@@ -577,10 +695,10 @@ mod tests {
     fn fir_split_reconstructs_partitioned_high_rate() {
         // 192k：4096 抽头走分块 FFT——低通支路 + 互补高通必须仍等于
         // 延迟 latency 帧的原信号（延迟对齐环正确性）。
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(192_000, &["L".into(), "R".into()]);
-        let latency = f.latency() as usize;
-        assert_eq!(latency, 127, "192k 应走分块 FFT（延迟 127）");
+        // 192k：4096 抽头走分块 FFT，分块延迟 127。
+        let latency = 127usize;
         let n = 4000usize;
         let input: Vec<f32> = (0..n)
             .map(|i| {
@@ -606,9 +724,9 @@ mod tests {
     #[test]
     fn fir_delays_by_center_samples() {
         // 单脉冲经低通 FIR 的主峰应出现在 center 帧（对称 FIR 群延迟）。
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let center = f.latency() as usize;
+        let center = ((wide_fir_len(48000) - 1) / 2) as usize;
         let n = center + 128;
         let mut best = 0usize;
         let mut best_v = 0.0f32;
@@ -624,16 +742,117 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_fir_center() {
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+    fn latency_includes_side_delay() {
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
-        assert_eq!(f.latency(), ((wide_fir_len(48000) - 1) / 2) as u32);
+        // depth=0 时仅含固定侧去相关 2ms；depth=1 再 +8ms（见 latency_includes_haas_delay）。
+        let center = ((wide_fir_len(48000) - 1) / 2) as u32;
+        assert_eq!(
+            f.latency(),
+            center + (SIDE_HAAS_MS * 48000.0 / 1000.0).ceil() as u32
+        );
+    }
+
+    #[test]
+    fn latency_includes_haas_delay() {
+        let mut f = WideFilter::new(WideParams {
+            intensity: 1.0,
+            depth: 1.0,
+            ..Default::default()
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let center = ((wide_fir_len(48000) - 1) / 2) as u32;
+        // 满 depth：中心 Haas 8ms + 侧去相关 2ms。
+        assert_eq!(f.latency(), center + (0.010f32 * 48000.0).ceil() as u32);
+    }
+
+    #[test]
+    fn depth_monotonically_attenuates_center() {
+        // 纯中置输入（L==R）高频：空气吸收应让中声道能量随 depth 单调下降。
+        fn mid_energy(depth: f32) -> f32 {
+            let mut f = WideFilter::new(WideParams {
+                intensity: 1.0,
+                depth,
+                ..Default::default()
+            });
+            f.initialize(48000, &["L".into(), "R".into()]);
+            let n = 9600usize;
+            let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            for i in 0..n {
+                let v = 0.5 * (core::f32::consts::TAU * 8000.0 * i as f32 / 48000.0).sin();
+                s[0][i] = v;
+                s[1][i] = v;
+            }
+            f.process(&mut s, n);
+            let mut e = 0.0f32;
+            for i in 4800..n {
+                let m = (s[0][i] + s[1][i]) * 0.5;
+                e += m * m;
+            }
+            e
+        }
+        let e0 = mid_energy(0.0);
+        let e1 = mid_energy(1.0);
+        assert!(e0 > 0.0 && e1 > 0.0, "center energy should be non-zero");
+        assert!(
+            e1 < e0 * 0.95,
+            "depth=1 air absorption should clearly reduce center energy: {e0} vs {e1}"
+        );
+    }
+
+    #[test]
+    fn crossover_endpoints_are_bounded() {
+        for xover in [100.0f32, 1000.0] {
+            let mut f = WideFilter::new(WideParams {
+                intensity: 1.0,
+                depth: 1.0,
+                crossover_hz: xover,
+            });
+            f.initialize(48000, &["L".into(), "R".into()]);
+            let n = 4800usize;
+            let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            for i in 0..n {
+                let v = 0.9 * (core::f32::consts::TAU * 1000.0 * i as f32 / 48000.0).sin();
+                s[0][i] = v;
+                s[1][i] = -v;
+            }
+            f.process(&mut s, n);
+            for ch in &s {
+                for &v in ch {
+                    assert!(v.is_finite());
+                    assert!(v.abs() < 4.0, "crossover {xover}: bounded, got {v}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn out_of_range_params_are_clamped() {
+        let mut f = WideFilter::new(WideParams {
+            intensity: 5.0,
+            depth: -1.0,
+            crossover_hz: 99999.0,
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let n = 4800usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            let v = 0.8 * (core::f32::consts::TAU * 500.0 * i as f32 / 48000.0).sin();
+            s[0][i] = v;
+            s[1][i] = v * 0.5;
+        }
+        f.process(&mut s, n);
+        for ch in &s {
+            for &v in ch {
+                assert!(v.is_finite(), "clamped params must stay finite");
+            }
+        }
     }
 
     #[test]
     fn low_level_is_transparent() {
         // 低电平下 tanh 近似线性：2 次/3 次谐波应可忽略。
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
         let n = 9600usize;
         let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -663,7 +882,7 @@ mod tests {
     #[test]
     fn extreme_antiphase_is_bounded() {
         // 1 kHz 纯反相、满强度：输出应被 tanh 限制在 ±1 内且明显放大。
-        let mut f = WideFilter::new(WideParams { intensity: 1.0 });
+        let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
         let n = 4800usize;
         let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -688,7 +907,7 @@ mod tests {
     #[test]
     fn deterministic_and_reproducible() {
         let run = || -> Vec<f32> {
-            let mut f = WideFilter::new(WideParams { intensity: 0.7 });
+            let mut f = WideFilter::new(WideParams { intensity: 0.7, ..Default::default() });
             f.initialize(48000, &["L".into(), "R".into()]);
             let mut samples = vec![vec![0.0f32; 2048], vec![0.0f32; 2048]];
             for i in 0..2048 {
@@ -710,7 +929,7 @@ mod tests {
     fn finite_across_intensities_and_sample_rates() {
         for sr in [44_100u32, 48_000, 96_000] {
             for intensity in [0.0f32, 0.354331, 0.7, 1.0] {
-                let mut f = WideFilter::new(WideParams { intensity });
+                let mut f = WideFilter::new(WideParams { intensity, ..Default::default() });
                 f.initialize(sr, &["L".into(), "R".into()]);
                 let mut samples = vec![vec![0.0f32; 480], vec![0.0f32; 480]];
                 for i in 0..480 {

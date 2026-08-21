@@ -108,8 +108,8 @@ impl Default for ReverbParams {
             pre_delay_ms: 0.0,
             motion_rate: 0.110871,
             motion_depth: 0.63,
-            wet: 0.3,
-            dry: 0.9,
+            wet: 0.27,
+            dry: 0.73,
         }
     }
 }
@@ -425,8 +425,8 @@ impl Filter for ReverbFilter {
         p.pre_delay_ms = clamp_param(p.pre_delay_ms, 0.0, 100.0, 0.0);
         p.motion_rate = clamp_param(p.motion_rate, 0.05, 2.0, 0.110871);
         p.motion_depth = clamp_param(p.motion_depth, 0.0, 2.0, 0.63);
-        p.wet = clamp_param(p.wet, 0.0, 1.0, 0.3);
-        p.dry = clamp_param(p.dry, 0.0, 1.0, 0.9);
+        p.wet = clamp_param(p.wet, 0.0, 1.0, 0.27);
+        p.dry = clamp_param(p.dry, 0.0, 1.0, 0.73);
         self.params = p;
 
         // 参数 → 系数

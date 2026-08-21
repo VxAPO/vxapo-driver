@@ -117,7 +117,10 @@ impl EffectConfig {
                 "gb={:.6};mo={:.6};rel={:.6};tgt={:.6};la={:.6};dith={:?};wet={:.6};dry={:.6}",
                 p.gain_boost_db, p.max_output_db, p.release_ms, p.target, p.lookahead_ms, p.dither, p.wet, p.dry
             )),
-            EffectParams::Wide(p) => s.push_str(&format!("intensity={:.6}", p.intensity)),
+            EffectParams::Wide(p) => s.push_str(&format!(
+                "intensity={:.6};depth={:.6};xover={:.1}",
+                p.intensity, p.depth, p.crossover_hz
+            )),
             EffectParams::Loudness(p) => s.push_str(&format!(
                 "phon={:.6};ref={:.6}",
                 p.phon, p.reference_phon
