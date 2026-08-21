@@ -25,8 +25,12 @@ use crate::pipeline::dsp::fir::PartitionedFir;
 pub struct WideParams {
     /// 加宽强度（范围 [0, 1]，0 时严格直通）。
     pub intensity: f32,
-    /// 中心距离 / 空气吸收（范围 [0, 1]，0 = 中置在原位）。
-    pub depth: f32,
+    /// 高频侧增益（0..1，额外叠加到侧信号增益斜率，配合段内 tanh + 输出软限幅防削波）。
+    pub gain: f32,
+    /// 中声道 Haas 延迟（毫秒，0..20；把中置人声推远）。
+    pub center_delay_ms: f32,
+    /// 空气吸收（0..1，中声道高频低通 20kHz → 4kHz）。
+    pub air: f32,
     /// M/S 分频点（Hz，100..1000，默认 200；以下低频保持原样）。
     pub crossover_hz: f32,
 }
@@ -36,7 +40,9 @@ impl Default for WideParams {
         Self {
             // 与原 Wide32.c Quick preset 对齐，保持 config 兼容。
             intensity: 0.354331,
-            depth: 0.0,
+            gain: 0.0,
+            center_delay_ms: 0.0,
+            air: 0.0,
             crossover_hz: 200.0,
         }
     }
@@ -51,8 +57,10 @@ const DIRECT_FIR_MAX_LEN: usize = 2048;
 const FIR_MIN_LEN: usize = 1024;
 /// FIR 长度上限（384k 时 8192 抽头 ≈ 21.3ms，分块 FFT 承担）。
 const FIR_MAX_LEN: usize = 8192;
-/// 高频段侧信号增益斜率（1 + 2.3·Intensity^0.6）。
-const SIDE_GAIN_HIGH_SLOPE: f32 = 2.3;
+/// 高频段侧信号基础增益斜率（1 + 2.3·Intensity^0.6）。
+const SIDE_GAIN_BASE_SLOPE: f32 = 2.3;
+/// gain=1 时额外叠加的斜率（最多 +4.0）。
+const SIDE_GAIN_ADD_SLOPE: f32 = 4.0;
 /// 中央信号补偿斜率（1 - 0.10·Intensity^0.6）。
 const CENTER_COMP_SLOPE: f32 = 0.10;
 /// Intensity 幂指数（把甜点移到 0.5 附近）。
@@ -60,11 +68,24 @@ const INTENSITY_EXP: f32 = 0.6;
 /// tanh 软限幅 headroom 范围（Intensity=1 时最小，Intensity→0 时最大）。
 const HEADROOM_MIN_DB: f32 = 0.2;
 const HEADROOM_MAX_DB: f32 = 1.0;
-/// 中心距离最大 Haas 延迟（Depth=1 时，毫秒）。
-const CENTER_HAAS_MAX_MS: f32 = 20.0;
-/// 空气吸收低通截止范围（Depth 0→1：20kHz → 4kHz）。
+/// 中心延迟参数上限（毫秒）。
+const CENTER_DELAY_MAX_MS: f32 = 20.0;
+/// 空气吸收低通截止范围（air 0→1：20kHz → 4kHz）。
 const AIR_CUTOFF_MAX_HZ: f32 = 20000.0;
 const AIR_CUTOFF_MIN_HZ: f32 = 4000.0;
+
+/// 输出端软膝限幅：|x| <= 0.9 线性直通（低音/正常电平不动），
+/// 超出部分用 tanh 圆角压缩，输出上限 1.0，防止高频增益下硬削波。
+#[inline]
+fn output_soft_clip(x: f32) -> f32 {
+    const KNEE: f32 = 0.9;
+    let a = x.abs();
+    if a <= KNEE {
+        x
+    } else {
+        x.signum() * (KNEE + (a - KNEE).tanh() * (1.0 - KNEE))
+    }
+}
 
 /// 单极点低通（空气吸收）。
 #[derive(Debug, Clone)]
@@ -364,15 +385,17 @@ impl Filter for WideFilter {
         let sr = sample_rate.max(1) as f32;
         let p = self.params;
         let i = p.intensity.clamp(0.0, 1.0);
-        let depth = p.depth.clamp(0.0, 1.0);
+        let gain = p.gain.clamp(0.0, 1.0);
+        let delay_ms = p.center_delay_ms.clamp(0.0, CENTER_DELAY_MAX_MS);
+        let air = p.air.clamp(0.0, 1.0);
         let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let eff = i.powf(INTENSITY_EXP);
-        self.gain_side_high = 1.0 + SIDE_GAIN_HIGH_SLOPE * eff;
+        self.gain_side_high = 1.0 + (SIDE_GAIN_BASE_SLOPE + SIDE_GAIN_ADD_SLOPE * gain) * eff;
         self.gain_comp = 1.0 - CENTER_COMP_SLOPE * eff;
         let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - i);
         self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
-        self.center_delay = depth * CENTER_HAAS_MAX_MS * sr / 1000.0;
-        let air_cutoff = AIR_CUTOFF_MAX_HZ - (AIR_CUTOFF_MAX_HZ - AIR_CUTOFF_MIN_HZ) * depth;
+        self.center_delay = delay_ms * sr / 1000.0;
+        let air_cutoff = AIR_CUTOFF_MAX_HZ - (AIR_CUTOFF_MAX_HZ - AIR_CUTOFF_MIN_HZ) * air;
         self.air_lp = OnePoleLp::new(air_cutoff, sr);
         let max_delay = self.center_delay.ceil() as usize + 2;
         self.haas_l = HaasLine::new(max_delay);
@@ -419,8 +442,10 @@ impl Filter for WideFilter {
 
             let proc_l = (out_mid_h + out_side_h) * headroom;
             let proc_r = (out_mid_h - out_side_h) * headroom;
-            samples[l][f] = ll + proc_l.tanh();
-            samples[r][f] = rl + proc_r.tanh();
+            // 段内 tanh 软限幅（高频支路本身不硬削波）+ 输出端软膝限幅
+            //（低音 + 加宽高频叠加后也不会超过 1.0）。
+            samples[l][f] = output_soft_clip(ll + proc_l.tanh());
+            samples[r][f] = output_soft_clip(rl + proc_r.tanh());
         }
     }
 
@@ -734,10 +759,10 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_fir_center_at_zero_depth() {
+    fn latency_is_fir_center_at_zero_delay() {
         let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
-        // depth=0 时无中心延迟，latency 即 FIR 中心。
+        // 中心延迟为 0 时 latency 即 FIR 中心。
         assert_eq!(f.latency(), ((wide_fir_len(48000) - 1) / 2) as u32);
     }
 
@@ -745,22 +770,22 @@ mod tests {
     fn latency_includes_haas_delay() {
         let mut f = WideFilter::new(WideParams {
             intensity: 1.0,
-            depth: 1.0,
+            center_delay_ms: 20.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
         let center = ((wide_fir_len(48000) - 1) / 2) as u32;
-        // 满 depth：中心 Haas 20ms。
+        // 满中心延迟：20ms。
         assert_eq!(f.latency(), center + (0.020f32 * 48000.0).ceil() as u32);
     }
 
     #[test]
-    fn depth_monotonically_attenuates_center() {
+    fn air_monotonically_attenuates_center() {
         // 纯中置输入（L==R）高频：空气吸收应让中声道能量随 depth 单调下降。
-        fn mid_energy(depth: f32) -> f32 {
+        fn mid_energy(air: f32) -> f32 {
             let mut f = WideFilter::new(WideParams {
                 intensity: 1.0,
-                depth,
+                air,
                 ..Default::default()
             });
             f.initialize(48000, &["L".into(), "R".into()]);
@@ -784,7 +809,7 @@ mod tests {
         assert!(e0 > 0.0 && e1 > 0.0, "center energy should be non-zero");
         assert!(
             e1 < e0 * 0.95,
-            "depth=1 air absorption should clearly reduce center energy: {e0} vs {e1}"
+            "air=1 should clearly reduce center energy: {e0} vs {e1}"
         );
     }
 
@@ -793,7 +818,9 @@ mod tests {
         for xover in [100.0f32, 1000.0] {
             let mut f = WideFilter::new(WideParams {
                 intensity: 1.0,
-                depth: 1.0,
+                gain: 1.0,
+                air: 1.0,
+                center_delay_ms: 20.0,
                 crossover_hz: xover,
             });
             f.initialize(48000, &["L".into(), "R".into()]);
@@ -818,7 +845,9 @@ mod tests {
     fn out_of_range_params_are_clamped() {
         let mut f = WideFilter::new(WideParams {
             intensity: 5.0,
-            depth: -1.0,
+            gain: 2.0,
+            center_delay_ms: 99.0,
+            air: -1.0,
             crossover_hz: 99999.0,
         });
         f.initialize(48000, &["L".into(), "R".into()]);

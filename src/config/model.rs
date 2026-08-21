@@ -68,6 +68,12 @@ pub struct FileEffect {
     #[serde(default)]
     pub depth: Option<f32>,
     #[serde(default)]
+    pub center_delay_ms: Option<f32>,
+    #[serde(default)]
+    pub air: Option<f32>,
+    #[serde(default)]
+    pub gain: Option<f32>,
+    #[serde(default)]
     pub bands: Option<Vec<FilePeqBand>>,
     #[serde(default)]
     pub tune_hz: Option<f32>,
@@ -252,7 +258,14 @@ impl FileEffect {
                 "wet",
                 "dry",
             ][..],
-            EffectType::Wide => &["intensity", "depth", "crossover_hz"][..],
+            EffectType::Wide => &[
+                "intensity",
+                "depth",
+                "crossover_hz",
+                "center_delay_ms",
+                "air",
+                "gain",
+            ][..],
             EffectType::Loudness => &["phon", "reference_phon"][..],
         };
         for field in self.set_fields() {
@@ -298,6 +311,9 @@ impl FileEffect {
             ("dither", self.dither.is_some()),
             ("intensity", self.intensity.is_some()),
             ("depth", self.depth.is_some()),
+            ("center_delay_ms", self.center_delay_ms.is_some()),
+            ("air", self.air.is_some()),
+            ("gain", self.gain.is_some()),
             ("phon", self.phon.is_some()),
             ("reference_phon", self.reference_phon.is_some()),
         ] {
@@ -514,14 +530,41 @@ impl FileEffect {
 
     fn into_wide(&self, file: &str, idx: usize) -> Result<WideParams, ConfigError> {
         let d = WideParams::default();
+        // 旧 `depth` 键（本会话早期版本）：同时映射到中心延迟与空气吸收。
+        let depth_fallback = |what: &str| -> Result<f32, ConfigError> {
+            match self.depth {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, what),
+                None => Ok(0.0),
+            }
+        };
         Ok(WideParams {
             intensity: match self.intensity {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "intensity")?,
                 None => d.intensity,
             },
-            depth: match self.depth {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "depth")?,
-                None => d.depth,
+            gain: match self.gain {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "gain")?,
+                None => d.gain,
+            },
+            center_delay_ms: match self.center_delay_ms {
+                Some(v) => finite_range(v, 0.0, 20.0, file, idx, "center_delay_ms")?,
+                None => {
+                    if self.depth.is_some() {
+                        depth_fallback("depth")? * 20.0
+                    } else {
+                        d.center_delay_ms
+                    }
+                }
+            },
+            air: match self.air {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air")?,
+                None => {
+                    if self.depth.is_some() {
+                        depth_fallback("depth")?
+                    } else {
+                        d.air
+                    }
+                }
             },
             crossover_hz: match self.crossover_hz {
                 Some(v) => finite_range(v, 100.0, 1000.0, file, idx, "crossover_hz")?,
