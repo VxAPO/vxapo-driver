@@ -68,8 +68,6 @@ pub struct FileEffect {
     #[serde(default)]
     pub depth: Option<f32>,
     #[serde(default)]
-    pub center_delay_ms: Option<f32>,
-    #[serde(default)]
     pub air: Option<f32>,
     #[serde(default)]
     pub gain: Option<f32>,
@@ -262,7 +260,6 @@ impl FileEffect {
                 "intensity",
                 "depth",
                 "crossover_hz",
-                "center_delay_ms",
                 "air",
                 "gain",
             ][..],
@@ -311,7 +308,6 @@ impl FileEffect {
             ("dither", self.dither.is_some()),
             ("intensity", self.intensity.is_some()),
             ("depth", self.depth.is_some()),
-            ("center_delay_ms", self.center_delay_ms.is_some()),
             ("air", self.air.is_some()),
             ("gain", self.gain.is_some()),
             ("phon", self.phon.is_some()),
@@ -530,7 +526,7 @@ impl FileEffect {
 
     fn into_wide(&self, file: &str, idx: usize) -> Result<WideParams, ConfigError> {
         let d = WideParams::default();
-        // 旧 `depth` 键（本会话早期版本）：同时映射到中心延迟与空气吸收。
+        // 旧 `depth` 键（本会话早期版本）：映射到空气吸收。
         let depth_fallback = |what: &str| -> Result<f32, ConfigError> {
             match self.depth {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, what),
@@ -545,16 +541,6 @@ impl FileEffect {
             gain: match self.gain {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "gain")?,
                 None => d.gain,
-            },
-            center_delay_ms: match self.center_delay_ms {
-                Some(v) => finite_range(v, 0.0, 20.0, file, idx, "center_delay_ms")?,
-                None => {
-                    if self.depth.is_some() {
-                        depth_fallback("depth")? * 20.0
-                    } else {
-                        d.center_delay_ms
-                    }
-                }
             },
             air: match self.air {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air")?,

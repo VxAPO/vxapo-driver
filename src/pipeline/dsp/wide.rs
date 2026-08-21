@@ -9,14 +9,16 @@
 //! - 高频支路做 **M/S 宽度处理**：`side = (HL-HR)/2` 按
 //!   `1 + 2.3·Intensity^0.6` 放大（甜点 0.5 → ≈2.52×，满档 → ≈3.3×），
 //! 中央按 `1 - 0.10·Intensity^0.6` 补偿（斜率较 降低，缓解中频能量不足）；
-//! - **中心距离**：按 `Depth` 0..1 对高频中声道加 Haas 延迟（0..8ms）
-//!   并做空气吸收低通（20kHz→6kHz），把中置人声推远；
+//! - **中心距离（空气吸收）**：按 `Air` 0..1 对高频中声道做低通
+//!   （20kHz→4kHz），把中置人声推远；
+//! - **高频补偿**：`Gain` 0..1 增强 M/S 加宽时的中声道补偿，防止高强度
+//!   下侧通道顶到 tanh 饱和；
 //! - 高频支路 **tanh 软限幅**：`headroom_db = 0.2 + 0.8·(1-Intensity)`，
 //!   `out = tanh(out·10^(-headroom_db/20))`；低频支路不经过 tanh；
 //!   `Intensity=0`（或单声道）仍走直通分支，位精确。
 //!
 //! config 语法（EAPO 风格）：
-//! `Wide: Intensity 0.354331 Depth 0.0 Crossover 200`
+//! `Wide: Intensity 0.354331 Gain 0.0 Air 0.0 Crossover 200`
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
@@ -25,11 +27,9 @@ use crate::pipeline::dsp::fir::PartitionedFir;
 pub struct WideParams {
     /// 加宽强度（范围 [0, 1]，0 时严格直通）。
     pub intensity: f32,
-    /// 高频侧增益（0..1，额外叠加到侧信号增益斜率，配合段内 tanh + 输出软限幅防削波）。
+    /// 高频补偿（0..1）：调节 M/S 加宽时中声道让出的余量，防止高强度下侧通道顶到 tanh 饱和。
     pub gain: f32,
-    /// 中声道 Haas 延迟（毫秒，0..20；把中置人声推远）。
-    pub center_delay_ms: f32,
-    /// 空气吸收（0..1，中声道高频低通 20kHz → 4kHz）。
+    /// 空气吸收（0..1，中声道高频低通 20kHz → 4kHz，把中置人声推远）。
     pub air: f32,
     /// M/S 分频点（Hz，100..1000，默认 200；以下低频保持原样）。
     pub crossover_hz: f32,
@@ -41,7 +41,6 @@ impl Default for WideParams {
             // 与原 Wide32.c Quick preset 对齐，保持 config 兼容。
             intensity: 0.354331,
             gain: 0.0,
-            center_delay_ms: 0.0,
             air: 0.0,
             crossover_hz: 200.0,
         }
@@ -57,19 +56,17 @@ const DIRECT_FIR_MAX_LEN: usize = 2048;
 const FIR_MIN_LEN: usize = 1024;
 /// FIR 长度上限（384k 时 8192 抽头 ≈ 21.3ms，分块 FFT 承担）。
 const FIR_MAX_LEN: usize = 8192;
-/// 高频段侧信号基础增益斜率（1 + 2.3·Intensity^0.6）。
-const SIDE_GAIN_BASE_SLOPE: f32 = 2.3;
-/// gain=1 时额外叠加的斜率（最多 +4.0）。
-const SIDE_GAIN_ADD_SLOPE: f32 = 4.0;
-/// 中央信号补偿斜率（1 - 0.10·Intensity^0.6）。
+/// 高频段侧信号增益斜率（1 + 2.3·Intensity^0.6）。
+const SIDE_GAIN_HIGH_SLOPE: f32 = 2.3;
+/// 中央信号基础补偿斜率（1 - 0.10·Intensity^0.6）。
 const CENTER_COMP_SLOPE: f32 = 0.10;
+/// gain=1 时补偿斜率额外叠加量（最多 +0.25）。
+const CENTER_COMP_GAIN_SLOPE: f32 = 0.25;
 /// Intensity 幂指数（把甜点移到 0.5 附近）。
 const INTENSITY_EXP: f32 = 0.6;
 /// tanh 软限幅 headroom 范围（Intensity=1 时最小，Intensity→0 时最大）。
 const HEADROOM_MIN_DB: f32 = 0.2;
 const HEADROOM_MAX_DB: f32 = 1.0;
-/// 中心延迟参数上限（毫秒）。
-const CENTER_DELAY_MAX_MS: f32 = 20.0;
 /// 空气吸收低通截止范围（air 0→1：20kHz → 4kHz）。
 const AIR_CUTOFF_MAX_HZ: f32 = 20000.0;
 const AIR_CUTOFF_MIN_HZ: f32 = 4000.0;
@@ -109,47 +106,6 @@ impl OnePoleLp {
 
     fn clear(&mut self) {
         self.state = 0.0;
-    }
-}
-
-/// 分数延迟线（Haas/去相关），线性插值读取。
-#[derive(Debug, Clone)]
-struct HaasLine {
-    buf: Vec<f32>,
-    pos: usize,
-}
-
-impl HaasLine {
-    fn new(len: usize) -> Self {
-        Self {
-            buf: vec![0.0; len.max(1)],
-            pos: 0,
-        }
-    }
-
-    #[inline]
-    fn write(&mut self, v: f32) {
-        self.buf[self.pos] = v;
-        self.pos += 1;
-        if self.pos == self.buf.len() {
-            self.pos = 0;
-        }
-    }
-
-    #[inline]
-    fn read_frac(&self, delay: f32) -> f32 {
-        let base = delay.floor();
-        let frac = delay - base;
-        let d = base as usize;
-        let len = self.buf.len();
-        let y1 = self.buf[(self.pos + len - 1 - d) % len];
-        let y2 = self.buf[(self.pos + len - 2 - d) % len];
-        y1 + (y2 - y1) * frac
-    }
-
-    fn clear(&mut self) {
-        self.buf.fill(0.0);
-        self.pos = 0;
     }
 }
 
@@ -346,10 +302,7 @@ pub struct WideFilter {
     gain_side_high: f32,
     gain_comp: f32,
     headroom_factor: f32,
-    center_delay: f32,
     air_lp: OnePoleLp,
-    haas_l: HaasLine,
-    haas_r: HaasLine,
     fir: FirSplit,
 }
 
@@ -362,10 +315,7 @@ impl WideFilter {
             gain_side_high: 1.0,
             gain_comp: 1.0,
             headroom_factor: 1.0,
-            center_delay: 0.0,
             air_lp: OnePoleLp::new(20000.0, 48000.0),
-            haas_l: HaasLine::new(1),
-            haas_r: HaasLine::new(1),
             fir: FirSplit::new(vec![1.0], 0),
         }
     }
@@ -386,20 +336,16 @@ impl Filter for WideFilter {
         let p = self.params;
         let i = p.intensity.clamp(0.0, 1.0);
         let gain = p.gain.clamp(0.0, 1.0);
-        let delay_ms = p.center_delay_ms.clamp(0.0, CENTER_DELAY_MAX_MS);
         let air = p.air.clamp(0.0, 1.0);
         let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let eff = i.powf(INTENSITY_EXP);
-        self.gain_side_high = 1.0 + (SIDE_GAIN_BASE_SLOPE + SIDE_GAIN_ADD_SLOPE * gain) * eff;
-        self.gain_comp = 1.0 - CENTER_COMP_SLOPE * eff;
+        self.gain_side_high = 1.0 + SIDE_GAIN_HIGH_SLOPE * eff;
+        // 高频补偿随 gain 增强：中声道让出更多余量，高强度下侧通道不易顶到 tanh 饱和。
+        self.gain_comp = 1.0 - (CENTER_COMP_SLOPE + CENTER_COMP_GAIN_SLOPE * gain) * eff;
         let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - i);
         self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
-        self.center_delay = delay_ms * sr / 1000.0;
         let air_cutoff = AIR_CUTOFF_MAX_HZ - (AIR_CUTOFF_MAX_HZ - AIR_CUTOFF_MIN_HZ) * air;
         self.air_lp = OnePoleLp::new(air_cutoff, sr);
-        let max_delay = self.center_delay.ceil() as usize + 2;
-        self.haas_l = HaasLine::new(max_delay);
-        self.haas_r = HaasLine::new(max_delay);
 
         let ir = design_lowpass_ir(xover, sample_rate, wide_fir_len(sample_rate));
         self.fir = FirSplit::new(ir, 2);
@@ -420,23 +366,17 @@ impl Filter for WideFilter {
         let g_high = self.gain_side_high;
         let g_comp = self.gain_comp;
         let headroom = self.headroom_factor;
-        let cd = self.center_delay;
 
         for f in 0..frame_count {
             let xl = samples[l][f];
             let xr = samples[r][f];
 
-            // FIR 分频：低频直通不处理，高频做 M/S 宽度 + 去相关 + 中心距离。
+            // FIR 分频：低频直通不处理，高频做 M/S 宽度 + 空气吸收（中心距离）。
             let (ll, hl) = self.fir.split_channel(0, xl);
             let (rl, hr) = self.fir.split_channel(1, xr);
 
-            self.haas_l.write(hl);
-            self.haas_r.write(hr);
-
-            // 中声道/侧声道统一读 cd 延迟：Haas 延迟 + 空气吸收低通把中置推远，
-            // 侧信号不加额外延迟（固定延迟会产生脑后/嗡嗡的相位染色）。
-            let mid_h = (self.haas_l.read_frac(cd) + self.haas_r.read_frac(cd)) * 0.5;
-            let side_h = (self.haas_l.read_frac(cd) - self.haas_r.read_frac(cd)) * 0.5;
+            let mid_h = (hl + hr) * 0.5;
+            let side_h = (hl - hr) * 0.5;
             let out_mid_h = self.air_lp.next(mid_h) * g_comp;
             let out_side_h = side_h * g_high;
 
@@ -450,11 +390,10 @@ impl Filter for WideFilter {
     }
 
     fn latency(&self) -> u32 {
-        let base = match &self.fir.engine {
+        match &self.fir.engine {
             LpEngine::Direct { center, .. } => *center as u32,
             LpEngine::Partitioned { latency, .. } => *latency as u32,
-        };
-        base + self.center_delay.ceil() as u32
+        }
     }
 
     fn set_channel_indices(&mut self, indices: &[usize]) {
@@ -463,8 +402,6 @@ impl Filter for WideFilter {
 
     fn reset(&mut self) {
         self.fir.reset();
-        self.haas_l.clear();
-        self.haas_r.clear();
         self.air_lp.clear();
     }
 }
@@ -759,24 +696,11 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_fir_center_at_zero_delay() {
+    fn latency_is_fir_center() {
         let mut f = WideFilter::new(WideParams { intensity: 1.0, ..Default::default() });
         f.initialize(48000, &["L".into(), "R".into()]);
-        // 中心延迟为 0 时 latency 即 FIR 中心。
+        // 无额外延迟结构，latency 即 FIR 中心。
         assert_eq!(f.latency(), ((wide_fir_len(48000) - 1) / 2) as u32);
-    }
-
-    #[test]
-    fn latency_includes_haas_delay() {
-        let mut f = WideFilter::new(WideParams {
-            intensity: 1.0,
-            center_delay_ms: 20.0,
-            ..Default::default()
-        });
-        f.initialize(48000, &["L".into(), "R".into()]);
-        let center = ((wide_fir_len(48000) - 1) / 2) as u32;
-        // 满中心延迟：20ms。
-        assert_eq!(f.latency(), center + (0.020f32 * 48000.0).ceil() as u32);
     }
 
     #[test]
@@ -820,7 +744,6 @@ mod tests {
                 intensity: 1.0,
                 gain: 1.0,
                 air: 1.0,
-                center_delay_ms: 20.0,
                 crossover_hz: xover,
             });
             f.initialize(48000, &["L".into(), "R".into()]);
@@ -846,7 +769,6 @@ mod tests {
         let mut f = WideFilter::new(WideParams {
             intensity: 5.0,
             gain: 2.0,
-            center_delay_ms: 99.0,
             air: -1.0,
             crossover_hz: 99999.0,
         });
