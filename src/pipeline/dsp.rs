@@ -7,13 +7,13 @@
 
 pub mod aural;
 pub mod biquad;
+pub mod compressor;
 pub mod factory;
 pub mod fir;
 pub mod filter;
 pub mod gain;
 pub mod loudness;
 pub mod math;
-pub mod maximizer;
 pub mod model;
 pub mod peq_hybrid;
 pub mod reverb;

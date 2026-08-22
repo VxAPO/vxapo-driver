@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::config::error::ConfigError;
 use crate::pipeline::dsp::aural::AuralParams;
-use crate::pipeline::dsp::maximizer::{DitherType, MaximizerParams};
+use crate::pipeline::dsp::compressor::CompressorParams;
 use crate::pipeline::dsp::model::{
     ChainModel, EffectConfig, EffectParams, EffectType, LoudnessParams, PeqBand, PeqBandType,
     PeqParams, PreampParams, MAX_PEQ_BANDS, MIN_PEQ_BANDS,
@@ -70,6 +70,8 @@ pub struct FileEffect {
     #[serde(default)]
     pub air: Option<f32>,
     #[serde(default)]
+    pub mix: Option<f32>,
+    #[serde(default)]
     pub gain: Option<f32>,
     #[serde(default)]
     pub bands: Option<Vec<FilePeqBand>>,
@@ -120,6 +122,28 @@ pub struct FileEffect {
     pub lookahead_ms: Option<f32>,
     #[serde(default)]
     pub dither: Option<String>,
+    #[serde(default)]
+    pub target_rms_db: Option<f32>,
+    #[serde(default)]
+    pub response_s: Option<f32>,
+    #[serde(default)]
+    pub max_gain_db: Option<f32>,
+    #[serde(default)]
+    pub dynamic_preserve: Option<f32>,
+    #[serde(default)]
+    pub noise_gate_db: Option<f32>,
+    #[serde(default)]
+    pub peak_limit_db: Option<f32>,
+    #[serde(default)]
+    pub threshold_db: Option<f32>,
+    #[serde(default)]
+    pub ratio: Option<f32>,
+    #[serde(default)]
+    pub knee_db: Option<f32>,
+    #[serde(default)]
+    pub attack_ms: Option<f32>,
+    #[serde(default)]
+    pub makeup_gain_db: Option<f32>,
     #[serde(default)]
     pub intensity: Option<f32>,
     #[serde(default)]
@@ -206,7 +230,7 @@ impl FileEffect {
             EffectType::Preamp => EffectParams::Preamp(self.into_preamp(file, idx)?),
             EffectType::Aural => EffectParams::Aural(self.into_aural(file, idx)?),
             EffectType::Reverb => EffectParams::Reverb(self.into_reverb(file, idx)?),
-            EffectType::Maximizer => EffectParams::Maximizer(self.into_maximizer(file, idx)?),
+            EffectType::Compressor => EffectParams::Compressor(self.into_compressor(file, idx)?),
             EffectType::Wide => EffectParams::Wide(self.into_wide(file, idx)?),
             EffectType::Loudness => EffectParams::Loudness(self.into_loudness(file, idx)?),
         };
@@ -246,21 +270,36 @@ impl FileEffect {
                 "wet",
                 "dry",
             ][..],
-            EffectType::Maximizer => &[
+            // 旧 maximizer / leveler 字段一并允许（旧配置映射时忽略）。
+            EffectType::Compressor => &[
+                "threshold_db",
+                "ratio",
+                "knee_db",
+                "attack_ms",
+                "release_ms",
+                "makeup_gain_db",
+                "wet",
+                "dry",
+                // —— 旧 maximizer 兼容（忽略）——
                 "gain_boost_db",
                 "max_output_db",
-                "release_ms",
                 "target",
                 "lookahead_ms",
                 "dither",
-                "wet",
-                "dry",
+                // —— 旧 leveler 兼容（忽略）——
+                "target_rms_db",
+                "response_s",
+                "max_gain_db",
+                "dynamic_preserve",
+                "noise_gate_db",
+                "peak_limit_db",
             ][..],
             EffectType::Wide => &[
                 "intensity",
                 "depth",
                 "crossover_hz",
                 "air",
+                "mix",
                 "gain",
             ][..],
             EffectType::Loudness => &["phon", "reference_phon"][..],
@@ -306,9 +345,21 @@ impl FileEffect {
             ("target", self.target.is_some()),
             ("lookahead_ms", self.lookahead_ms.is_some()),
             ("dither", self.dither.is_some()),
+            ("target_rms_db", self.target_rms_db.is_some()),
+            ("response_s", self.response_s.is_some()),
+            ("max_gain_db", self.max_gain_db.is_some()),
+            ("dynamic_preserve", self.dynamic_preserve.is_some()),
+            ("noise_gate_db", self.noise_gate_db.is_some()),
+            ("peak_limit_db", self.peak_limit_db.is_some()),
+            ("threshold_db", self.threshold_db.is_some()),
+            ("ratio", self.ratio.is_some()),
+            ("knee_db", self.knee_db.is_some()),
+            ("attack_ms", self.attack_ms.is_some()),
+            ("makeup_gain_db", self.makeup_gain_db.is_some()),
             ("intensity", self.intensity.is_some()),
             ("depth", self.depth.is_some()),
             ("air", self.air.is_some()),
+            ("mix", self.mix.is_some()),
             ("gain", self.gain.is_some()),
             ("phon", self.phon.is_some()),
             ("reference_phon", self.reference_phon.is_some()),
@@ -474,45 +525,34 @@ impl FileEffect {
         })
     }
 
-    fn into_maximizer(&self, file: &str, idx: usize) -> Result<MaximizerParams, ConfigError> {
-        let d = MaximizerParams::default();
-        let dither = match &self.dither {
-            Some(s) => match s.to_ascii_lowercase().as_str() {
-                "none" | "off" => DitherType::None,
-                "uniform" => DitherType::Uniform,
-                "triangular" | "triangle" => DitherType::Triangular,
-                "shaped" => DitherType::Shaped,
-                _ => {
-                    return Err(model_err(
-                        file,
-                        format!("effects[{idx}]: invalid dither '{s}'"),
-                    ))
-                }
+    fn into_compressor(&self, file: &str, idx: usize) -> Result<CompressorParams, ConfigError> {
+        let d = CompressorParams::default();
+        // 旧 maximizer / leveler 字段全部忽略，走新默认值。
+        Ok(CompressorParams {
+            threshold_db: match self.threshold_db {
+                Some(v) => finite_range(v, -60.0, 0.0, file, idx, "threshold_db")?,
+                None => d.threshold_db,
             },
-            None => d.dither,
-        };
-        Ok(MaximizerParams {
-            gain_boost_db: match self.gain_boost_db {
-                Some(v) => finite_range(v, 0.0, 30.0, file, idx, "gain_boost_db")?,
-                None => d.gain_boost_db,
+            ratio: match self.ratio {
+                Some(v) => finite_range(v, 1.0, 20.0, file, idx, "ratio")?,
+                None => d.ratio,
             },
-            max_output_db: match self.max_output_db {
-                Some(v) => finite_range(v, -30.0, 0.0, file, idx, "max_output_db")?,
-                None => d.max_output_db,
+            knee_db: match self.knee_db {
+                Some(v) => finite_range(v, 0.0, 12.0, file, idx, "knee_db")?,
+                None => d.knee_db,
+            },
+            attack_ms: match self.attack_ms {
+                Some(v) => finite_range(v, 0.1, 100.0, file, idx, "attack_ms")?,
+                None => d.attack_ms,
             },
             release_ms: match self.release_ms {
-                Some(v) => finite_range(v, 0.1, 100.0, file, idx, "release_ms")?,
+                Some(v) => finite_range(v, 10.0, 1000.0, file, idx, "release_ms")?,
                 None => d.release_ms,
             },
-            target: match self.target {
-                Some(v) => finite_range(v, 0.01, 1.0, file, idx, "target")?,
-                None => d.target,
+            makeup_gain_db: match self.makeup_gain_db {
+                Some(v) => finite_range(v, 0.0, 24.0, file, idx, "makeup_gain_db")?,
+                None => d.makeup_gain_db,
             },
-            lookahead_ms: match self.lookahead_ms {
-                Some(v) => finite_range(v, 0.0, 10.0, file, idx, "lookahead_ms")?,
-                None => d.lookahead_ms,
-            },
-            dither,
             wet: match self.wet {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "wet")?,
                 None => d.wet,
@@ -534,26 +574,29 @@ impl FileEffect {
             }
         };
         Ok(WideParams {
-            intensity: match self.intensity {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "intensity")?,
-                None => d.intensity,
-            },
             gain: match self.gain {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "gain")?,
                 None => d.gain,
             },
+            // 空气吸收：优先显式 air；旧配置的 depth / intensity 依次回退映射。
             air: match self.air {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air")?,
                 None => {
                     if self.depth.is_some() {
                         depth_fallback("depth")?
+                    } else if let Some(intensity) = self.intensity {
+                        finite_range(intensity, 0.0, 1.0, file, idx, "intensity")?
                     } else {
                         d.air
                     }
                 }
             },
+            mix: match self.mix {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "mix")?,
+                None => d.mix,
+            },
             crossover_hz: match self.crossover_hz {
-                Some(v) => finite_range(v, 100.0, 1000.0, file, idx, "crossover_hz")?,
+                Some(v) => finite_range(v, 200.0, 1000.0, file, idx, "crossover_hz")?,
                 None => d.crossover_hz,
             },
         })
@@ -667,7 +710,7 @@ intensity = 0.5
             _ => panic!("expected peq"),
         }
         match &model.effects[2].params {
-            EffectParams::Wide(w) => assert_eq!(w.intensity, 0.5),
+            EffectParams::Wide(w) => assert_eq!(w.air, 0.5),
             _ => panic!("expected wide"),
         }
     }
@@ -711,7 +754,7 @@ type = "wide"
             _ => panic!("expected peq"),
         }
         match &model.effects[1].params {
-            EffectParams::Wide(w) => assert_eq!(w.intensity, WideParams::default().intensity),
+            EffectParams::Wide(w) => assert_eq!(w.air, WideParams::default().air),
             _ => panic!("expected wide"),
         }
     }
@@ -919,12 +962,43 @@ q = 2.0
     }
 
     #[test]
-    fn invalid_dither_rejected() {
-        let err = convert(
-            "[[effects]]\ntype = \"maximizer\"\ndither = \"pink\"\ngain_boost_db = 6.0\nmax_output_db = -0.3\nrelease_ms = 10.0\ntarget = 0.32\nlookahead_ms = 0.75\n",
+    fn compressor_range_rejected() {
+        let err = convert("[[effects]]\ntype = \"compressor\"\nthreshold_db = 5.0\n")
+            .unwrap_err();
+        assert!(err.to_string().contains("threshold_db"));
+        let err2 = convert("[[effects]]\ntype = \"compressor\"\nratio = 50.0\n")
+            .unwrap_err();
+        assert!(err2.to_string().contains("ratio"));
+    }
+
+    #[test]
+    fn legacy_maximizer_and_leveler_map_to_compressor() {
+        // 旧 maximizer / leveler 段落：类型映射为 compressor，旧参数忽略。
+        let model = convert(
+            "[[effects]]\ntype = \"maximizer\"\ngain_boost_db = 6.0\nmax_output_db = -0.3\nrelease_ms = 10.0\ntarget = 0.32\nlookahead_ms = 0.75\ndither = \"shaped\"\n",
         )
-        .unwrap_err();
-        assert!(err.to_string().contains("invalid dither"));
+        .unwrap();
+        assert_eq!(model.effects.len(), 1);
+        assert_eq!(model.effects[0].kind, EffectType::Compressor);
+        match &model.effects[0].params {
+            EffectParams::Compressor(p) => {
+                assert_eq!(p.threshold_db, CompressorParams::default().threshold_db);
+                assert_eq!(p.ratio, CompressorParams::default().ratio);
+            }
+            _ => panic!("expected compressor"),
+        }
+        // leveler 旧段落同样映射。
+        let model2 = convert(
+            "[[effects]]\ntype = \"leveler\"\ntarget_rms_db = -12.0\nresponse_s = 5.0\n",
+        )
+        .unwrap();
+        assert_eq!(model2.effects[0].kind, EffectType::Compressor);
+        match &model2.effects[0].params {
+            EffectParams::Compressor(p) => {
+                assert_eq!(p.threshold_db, CompressorParams::default().threshold_db);
+            }
+            _ => panic!("expected compressor"),
+        }
     }
 
     #[test]

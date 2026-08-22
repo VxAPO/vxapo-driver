@@ -400,7 +400,8 @@ intensity = 0.5
             .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
             .unwrap();
         assert_eq!(filters.len(), 1);
-        assert_eq!(specs[0], "wide:false|intensity=0.500000;gain=0.000000;air=0.000000;xover=200.0");
+        // 旧 intensity 键回退映射为 air（驱动只消费 gain/air/mix/xover）。
+        assert_eq!(specs[0], "wide:false|gain=0.000000;air=0.500000;mix=0.600000;xover=200.0");
         let mut samples = vec![vec![0.3f32; 8], vec![0.2f32; 8]];
         let before = samples.clone();
         filters[0].process(&mut samples, 8);

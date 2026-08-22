@@ -6,10 +6,10 @@
 //! `OutcomeKind` / `index` 常量）。
 
 use crate::pipeline::dsp::aural::AuralEnhancerFilter;
+use crate::pipeline::dsp::compressor::CompressorFilter;
 use crate::pipeline::dsp::filter::{DspContext, Filter, PassthroughFilter};
 use crate::pipeline::dsp::gain::GainFilter;
 use crate::pipeline::dsp::loudness::LoudnessFilter;
-use crate::pipeline::dsp::maximizer::MaximizerFilter;
 use crate::pipeline::dsp::model::{EffectConfig, EffectParams, EffectType};
 use crate::pipeline::dsp::peq_hybrid::HybridPeqFilter;
 use crate::pipeline::dsp::reverb::ReverbFilter;
@@ -26,7 +26,7 @@ pub fn create_from_model(effect: &EffectConfig, ctx: &DspContext) -> Box<dyn Fil
         EffectParams::Preamp(p) => Box::new(GainFilter::new(p.gain_db)),
         EffectParams::Aural(p) => Box::new(AuralEnhancerFilter::new(*p)),
         EffectParams::Reverb(p) => Box::new(ReverbFilter::new(*p)),
-        EffectParams::Maximizer(p) => Box::new(MaximizerFilter::new(*p)),
+        EffectParams::Compressor(p) => Box::new(CompressorFilter::new(*p)),
         EffectParams::Wide(p) => Box::new(WideFilter::new(*p)),
         EffectParams::Loudness(p) => {
             let mut f = LoudnessFilter::new(p.phon, p.reference_phon);
@@ -43,7 +43,7 @@ fn matches_kind(kind: &EffectType, params: &EffectParams) -> bool {
             | (EffectType::Preamp, EffectParams::Preamp(_))
             | (EffectType::Aural, EffectParams::Aural(_))
             | (EffectType::Reverb, EffectParams::Reverb(_))
-            | (EffectType::Maximizer, EffectParams::Maximizer(_))
+            | (EffectType::Compressor, EffectParams::Compressor(_))
             | (EffectType::Wide, EffectParams::Wide(_))
             | (EffectType::Loudness, EffectParams::Loudness(_))
     )
@@ -114,8 +114,8 @@ mod tests {
                 EffectParams::Reverb(crate::pipeline::dsp::reverb::ReverbParams::default()),
             ),
             effect(
-                EffectType::Maximizer,
-                EffectParams::Maximizer(crate::pipeline::dsp::maximizer::MaximizerParams::default()),
+                EffectType::Compressor,
+                EffectParams::Compressor(crate::pipeline::dsp::compressor::CompressorParams::default()),
             ),
             effect(
                 EffectType::Wide,

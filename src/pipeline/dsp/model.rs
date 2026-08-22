@@ -5,7 +5,7 @@
 //! 依赖方向：config → dsp，dsp 层不引用 config。
 
 use crate::pipeline::dsp::aural::AuralParams;
-use crate::pipeline::dsp::maximizer::MaximizerParams;
+use crate::pipeline::dsp::compressor::CompressorParams;
 use crate::pipeline::dsp::reverb::ReverbParams;
 use crate::pipeline::dsp::wide::WideParams;
 
@@ -39,7 +39,7 @@ pub enum EffectType {
     Preamp,
     Aural,
     Reverb,
-    Maximizer,
+    Compressor,
     Wide,
     Loudness,
 }
@@ -51,7 +51,8 @@ impl EffectType {
             "preamp" => Some(Self::Preamp),
             "aural" | "auralenhancer" => Some(Self::Aural),
             "reverb" => Some(Self::Reverb),
-            "maximizer" => Some(Self::Maximizer),
+            // 旧名 maximizer / leveler 兼容映射为压缩器。
+            "compressor" | "leveler" | "maximizer" => Some(Self::Compressor),
             "wide" => Some(Self::Wide),
             "loudness" | "loudnesscorrection" => Some(Self::Loudness),
             _ => None,
@@ -64,7 +65,7 @@ impl EffectType {
             Self::Preamp => "preamp",
             Self::Aural => "aural",
             Self::Reverb => "reverb",
-            Self::Maximizer => "maximizer",
+            Self::Compressor => "compressor",
             Self::Wide => "wide",
             Self::Loudness => "loudness",
         }
@@ -113,13 +114,13 @@ impl EffectConfig {
                 p.wet,
                 p.dry
             )),
-            EffectParams::Maximizer(p) => s.push_str(&format!(
-                "gb={:.6};mo={:.6};rel={:.6};tgt={:.6};la={:.6};dith={:?};wet={:.6};dry={:.6}",
-                p.gain_boost_db, p.max_output_db, p.release_ms, p.target, p.lookahead_ms, p.dither, p.wet, p.dry
+            EffectParams::Compressor(p) => s.push_str(&format!(
+                "th={:.6};ratio={:.6};knee={:.6};att={:.6};rel={:.6};mg={:.6};wet={:.6};dry={:.6}",
+                p.threshold_db, p.ratio, p.knee_db, p.attack_ms, p.release_ms, p.makeup_gain_db, p.wet, p.dry
             )),
             EffectParams::Wide(p) => s.push_str(&format!(
-                "intensity={:.6};gain={:.6};air={:.6};xover={:.1}",
-                p.intensity, p.gain, p.air, p.crossover_hz
+                "gain={:.6};air={:.6};mix={:.6};xover={:.1}",
+                p.gain, p.air, p.mix, p.crossover_hz
             )),
             EffectParams::Loudness(p) => s.push_str(&format!(
                 "phon={:.6};ref={:.6}",
@@ -137,7 +138,7 @@ pub enum EffectParams {
     Preamp(PreampParams),
     Aural(AuralParams),
     Reverb(ReverbParams),
-    Maximizer(MaximizerParams),
+    Compressor(CompressorParams),
     Wide(WideParams),
     Loudness(LoudnessParams),
 }
