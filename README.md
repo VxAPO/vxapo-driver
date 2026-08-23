@@ -11,8 +11,20 @@ VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing 
 - 标准 Windows APO COM 对象：`IAudioProcessingObject` / `IAudioProcessingObjectRT` /
   `IAudioFormat` / `IPropertyStore` 等接口实现，`dll_exports` 导出 `DllGetClassObject` /
   `DllRegisterServer`，自维护引用计数。
-- 支持 Aggregate / Child APO 链：可作为子 APO 挂到原效果器之下（安装器选择），
-  `child.rs` 负责子链委托。
+- **COM 聚合委托外壳（`aggregate.rs`，无声根因修复）**：Windows 音频引擎**强制以聚合模式
+  （`pUnkOuter` 非空）创建 APO**，而 windows-rs 0.62 `#[implement]` 生成的 IUnknown
+  自包含、不委托——引擎经外层链 `QI(IAudioProcessingObject)` 走不到 inner 会直接弃用对象。
+  实现采用 EAPO 聚合语义 + 标准 COM 多接口 offset 布局：`repr(C)` 结构体持有
+  **4 个独立 vtable 指针字段**（IAPO / RT / Config / ASE），`QI` 返回对应字段地址，
+  stub 方法用偏移还原对象基址；`AddRef` / `Release` 自维护（NonDelegating 语义）；
+  各接口方法转发到内部 `ApoObject`，复用全部 DSP 逻辑。
+- **子 APO 委托（`child.rs`，保留原效果器链）**：安装器选择保留原 APO 为子 APO 时，
+  `Initialize` 阶段 `CoCreateInstance` 创建子实例，持有三个类型化接口
+  （`IAudioProcessingObject` / `IAudioProcessingObjectRT` /
+  `IAudioProcessingObjectConfiguration`，走 windows-rs safe 调用而非手搓 vtable）；
+  延迟、重置、帧数计算、Lock/Unlock 全部委托给子 APO；GUID 来自
+  `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMix|PostMix}`；委托失败降级为无子 APO
+  不阻塞父链，`Drop` 自动释放引用。
 - 会话与格式化协商：`IsFormatSupported` / `LockForProcess` / `UnlockForProcess`，
   采样率/通道/位深变化时重建链；`lock_key` 与 `test_pipe` 支撑验证闭环。
 
@@ -70,17 +82,18 @@ VxAPO 三层（App / CLI / Driver）共享同一份 config 契约，行为必须
   因此改名/改分组不会触发 DSP 重建。
 - **延迟报告**：`latency()` 计入 wide FIR 与分块 FFT 的固定延迟；单声道直通。
 
-## 致谢 Equalizer APO
+## 设计参考与致谢
 
-VxAPO 的许多设计决策受到 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)
-的启发，包括：逐设备注册 APO 槽位的安装模型、以配置文件驱动 DSP 的思路、
-31 段 GraphicEQ 上限、事件驱动配置热重载（对齐 EAPO 的 notification thread 模式）、
-以及安装后的验证流程。**VxAPO 是独立实现，不包含 Equalizer APO 的任何代码**；
+**Equalizer APO**：VxAPO 的许多设计决策受到
+[Equalizer APO](https://sourceforge.net/projects/equalizerapo/) 的启发，包括逐设备注册
+APO 槽位的安装模型、以配置文件驱动 DSP 的思路、31 段 GraphicEQ 上限、事件驱动配置热重载
+（对齐 EAPO 的 notification thread 模式）、聚合委托语义以及安装后的验证流程。
+**VxAPO 是独立实现，不包含 Equalizer APO 的任何代码**；
 Equalizer APO 由 Jonas Thedering 开发，GPL-2.0 许可。
 
-混响算法依据 Jon Dattorro《Effect Design Part 1》公开论文实现，
-拓扑正确性与 ValleyRackFree（GPL-3.0-or-later）及 johnhw/dattoro_reverb（MIT）
-交叉核对，本仓库内为独立的 Rust 实现。
+**算法参考**：混响算法依据 Jon Dattorro《Effect Design Part 1》公开论文实现，
+拓扑正确性与 ValleyRackFree（GPL-3.0-or-later）及 johnhw/dattoro_reverb（MIT）交叉核对，
+本仓库内为独立的 Rust 实现。
 
 ## 构建
 
@@ -115,8 +128,25 @@ hot-reloaded through an event-driven directory watcher.
 - Standard Windows APO COM object: `IAudioProcessingObject` / `IAudioProcessingObjectRT` /
   `IAudioFormat` / `IPropertyStore` implementations, `DllGetClassObject` /
   `DllRegisterServer` exports, self-managed reference counting.
-- Aggregate / child APO chain support: can be attached below an existing effect
-  (selected by the installer); `child.rs` delegates to the child chain.
+- **COM aggregate delegation shell (`aggregate.rs`, the silent-no-sound fix)**:
+  the Windows audio engine **forces aggregated creation (`pUnkOuter` non-null)**, while
+  the windows-rs 0.62 `#[implement]` IUnknown is self-contained and does not delegate —
+  a `QI(IAudioProcessingObject)` through the outer chain never reaches the inner object
+  and the engine would discard it. The implementation follows EAPO aggregate semantics
+  with standard COM multi-interface offsets: a `repr(C)` struct holds **4 independent
+  vtable pointer fields** (IAPO / RT / Config / ASE), `QI` returns the address of the
+  matching field, and stub methods recover the base via offsets; `AddRef` / `Release`
+  are self-managed (NonDelegating semantics); interface methods forward to the inner
+  `ApoObject`, reusing all DSP logic.
+- **Child APO delegation (`child.rs`, preserving the original chain)**: when the
+  installer keeps the original APO as a child, `Initialize` creates it via
+  `CoCreateInstance` and holds three typed interfaces
+  (`IAudioProcessingObject` / `IAudioProcessingObjectRT` /
+  `IAudioProcessingObjectConfiguration`, called through safe windows-rs methods rather
+  than hand-rolled vtables); latency, reset, frame counts, and Lock/Unlock are all
+  delegated to the child; the GUID comes from
+  `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMix|PostMix}`; delegation failures
+  degrade to no child without blocking the parent, and `Drop` releases all references.
 - Format negotiation: `IsFormatSupported` / `LockForProcess` / `UnlockForProcess`;
   the chain is rebuilt on sample-rate/channel/bit-depth changes; `lock_key` and
   `test_pipe` support the verification loop.
@@ -184,19 +214,20 @@ The three layers (App / CLI / Driver) share one config contract and must stay al
 - **Latency**: `latency()` accounts for the fixed delay of the wide FIR and
   partitioned FFT; mono passthrough.
 
-## Acknowledgments: Equalizer APO
+## Design references & acknowledgments
 
-Many design decisions in VxAPO are inspired by
-[Equalizer APO](https://sourceforge.net/projects/equalizerapo/): the per-device APO
-slot installation model, config-file-driven DSP, the 31-band GraphicEQ limit,
-event-driven config hot reload (aligned with EAPO's notification thread), and the
-install verification workflow. **VxAPO is an independent implementation and contains
-no Equalizer APO code**; Equalizer APO is developed by Jonas Thedering and licensed
-under GPL-2.0.
+**Equalizer APO**: many design decisions in VxAPO are inspired by
+[Equalizer APO](https://sourceforge.net/projects/equalizerapo/): the per-device APO slot
+installation model, config-file-driven DSP, the 31-band GraphicEQ limit, event-driven
+config hot reload (aligned with EAPO's notification thread), aggregate delegation
+semantics, and the install verification workflow. **VxAPO is an independent
+implementation and contains no Equalizer APO code**; Equalizer APO is developed by
+Jonas Thedering and licensed under GPL-2.0.
 
-The reverb algorithm follows Jon Dattorro's public paper "Effect Design Part 1";
-its topology was cross-checked against ValleyRackFree (GPL-3.0-or-later) and
-johnhw/dattoro_reverb (MIT), with an independent Rust implementation in this repo.
+**Algorithm references**: the reverb algorithm follows Jon Dattorro's public paper
+"Effect Design Part 1"; its topology was cross-checked against ValleyRackFree
+(GPL-3.0-or-later) and johnhw/dattoro_reverb (MIT), with an independent Rust
+implementation in this repo.
 
 ## Build
 
