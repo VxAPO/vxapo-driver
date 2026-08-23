@@ -11,20 +11,17 @@ VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing 
 - 标准 Windows APO COM 对象：`IAudioProcessingObject` / `IAudioProcessingObjectRT` /
   `IAudioFormat` / `IPropertyStore` 等接口实现，`dll_exports` 导出 `DllGetClassObject` /
   `DllRegisterServer`，自维护引用计数。
-- **COM 聚合委托外壳（`aggregate.rs`，无声根因修复）**：Windows 音频引擎**强制以聚合模式
-  （`pUnkOuter` 非空）创建 APO**，而 windows-rs 0.62 `#[implement]` 生成的 IUnknown
-  自包含、不委托——引擎经外层链 `QI(IAudioProcessingObject)` 走不到 inner 会直接弃用对象。
-  实现采用 EAPO 聚合语义 + 标准 COM 多接口 offset 布局：`repr(C)` 结构体持有
-  **4 个独立 vtable 指针字段**（IAPO / RT / Config / ASE），`QI` 返回对应字段地址，
-  stub 方法用偏移还原对象基址；`AddRef` / `Release` 自维护（NonDelegating 语义）；
-  各接口方法转发到内部 `ApoObject`，复用全部 DSP 逻辑。
-- **子 APO 委托（`child.rs`，保留原效果器链）**：安装器选择保留原 APO 为子 APO 时，
-  `Initialize` 阶段 `CoCreateInstance` 创建子实例，持有三个类型化接口
-  （`IAudioProcessingObject` / `IAudioProcessingObjectRT` /
-  `IAudioProcessingObjectConfiguration`，走 windows-rs safe 调用而非手搓 vtable）；
-  延迟、重置、帧数计算、Lock/Unlock 全部委托给子 APO；GUID 来自
-  `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMix|PostMix}`；委托失败降级为无子 APO
-  不阻塞父链，`Drop` 自动释放引用。
+- **COM 聚合委托外壳（`aggregate.rs`）**：Windows 音频引擎以聚合模式（`pUnkOuter` 非空）
+  创建 APO。实现按标准 COM 多接口 offset 布局：`repr(C)` 结构体持有 4 个独立 vtable
+  指针字段（IAPO / RT / Config / ASE），`QI` 返回对应字段地址、stub 方法用偏移还原对象
+  基址；`AddRef` / `Release` 自维护（NonDelegating 语义）；各接口方法转发到内部
+  `ApoObject`，复用全部 DSP 逻辑。
+- **子 APO 委托（`child.rs`）**：安装器选择保留原 APO 为子 APO 时，`Initialize` 阶段
+  `CoCreateInstance` 创建子实例，持有三个类型化接口（`IAudioProcessingObject` /
+  `IAudioProcessingObjectRT` / `IAudioProcessingObjectConfiguration`）；延迟、重置、
+  帧数计算、Lock/Unlock 全部委托给子 APO；GUID 来自
+  `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMix|PostMix}`；委托失败降级为无子
+  APO 不阻塞父链，`Drop` 自动释放引用。
 - 会话与格式化协商：`IsFormatSupported` / `LockForProcess` / `UnlockForProcess`，
   采样率/通道/位深变化时重建链；`lock_key` 与 `test_pipe` 支撑验证闭环。
 
@@ -128,23 +125,18 @@ hot-reloaded through an event-driven directory watcher.
 - Standard Windows APO COM object: `IAudioProcessingObject` / `IAudioProcessingObjectRT` /
   `IAudioFormat` / `IPropertyStore` implementations, `DllGetClassObject` /
   `DllRegisterServer` exports, self-managed reference counting.
-- **COM aggregate delegation shell (`aggregate.rs`, the silent-no-sound fix)**:
-  the Windows audio engine **forces aggregated creation (`pUnkOuter` non-null)**, while
-  the windows-rs 0.62 `#[implement]` IUnknown is self-contained and does not delegate —
-  a `QI(IAudioProcessingObject)` through the outer chain never reaches the inner object
-  and the engine would discard it. The implementation follows EAPO aggregate semantics
-  with standard COM multi-interface offsets: a `repr(C)` struct holds **4 independent
-  vtable pointer fields** (IAPO / RT / Config / ASE), `QI` returns the address of the
-  matching field, and stub methods recover the base via offsets; `AddRef` / `Release`
-  are self-managed (NonDelegating semantics); interface methods forward to the inner
-  `ApoObject`, reusing all DSP logic.
-- **Child APO delegation (`child.rs`, preserving the original chain)**: when the
-  installer keeps the original APO as a child, `Initialize` creates it via
-  `CoCreateInstance` and holds three typed interfaces
+- **COM aggregate delegation shell (`aggregate.rs`)**: the Windows audio engine creates
+  APOs in aggregated mode (`pUnkOuter` non-null). The implementation follows standard COM
+  multi-interface offsets: a `repr(C)` struct holds 4 independent vtable pointer fields
+  (IAPO / RT / Config / ASE), `QI` returns the address of the matching field, and stub
+  methods recover the base via offsets; `AddRef` / `Release` are self-managed
+  (NonDelegating semantics); interface methods forward to the inner `ApoObject`, reusing
+  all DSP logic.
+- **Child APO delegation (`child.rs`)**: when the installer keeps the original APO as a
+  child, `Initialize` creates it via `CoCreateInstance` and holds three typed interfaces
   (`IAudioProcessingObject` / `IAudioProcessingObjectRT` /
-  `IAudioProcessingObjectConfiguration`, called through safe windows-rs methods rather
-  than hand-rolled vtables); latency, reset, frame counts, and Lock/Unlock are all
-  delegated to the child; the GUID comes from
+  `IAudioProcessingObjectConfiguration`); latency, reset, frame counts, and Lock/Unlock
+  are delegated to the child; the GUID comes from
   `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMix|PostMix}`; delegation failures
   degrade to no child without blocking the parent, and `Drop` releases all references.
 - Format negotiation: `IsFormatSupported` / `LockForProcess` / `UnlockForProcess`;
