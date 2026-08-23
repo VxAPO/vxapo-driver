@@ -100,7 +100,7 @@ impl EffectConfig {
                 p.tune_hz, p.drive, p.odd, p.even, p.wet, p.dry
             )),
             EffectParams::Reverb(p) => s.push_str(&format!(
-                "room={:.6};decay={:.6};damp={:.6};bw={:.6};dens={:.6};lat5={:.6};lat6={:.6};pd={:.6};mr={:.6};md={:.6};wet={:.6};dry={:.6}",
+                "room={:.6};decay={:.6};damp={:.6};bw={:.6};dens={:.6};lat5={:.6};lat6={:.6};pd={:.6};mr={:.6};md={:.6};lc={:.1};wet={:.6};dry={:.6}",
                 p.room_size,
                 p.decay,
                 p.damping,
@@ -111,6 +111,7 @@ impl EffectConfig {
                 p.pre_delay_ms,
                 p.motion_rate,
                 p.motion_depth,
+                p.low_cut_hz,
                 p.wet,
                 p.dry
             )),
@@ -119,8 +120,8 @@ impl EffectConfig {
                 p.threshold_db, p.ratio, p.knee_db, p.attack_ms, p.release_ms, p.makeup_gain_db, p.wet, p.dry
             )),
             EffectParams::Wide(p) => s.push_str(&format!(
-                "gain={:.6};air={:.6};mix={:.6};xover={:.1}",
-                p.gain, p.air, p.mix, p.crossover_hz
+                "gain={:.6};air={:.6};air_side={:.6};mix={:.6};xover={:.1}",
+                p.gain, p.air, p.air_side, p.mix, p.crossover_hz
             )),
             EffectParams::Loudness(p) => s.push_str(&format!(
                 "phon={:.6};ref={:.6}",

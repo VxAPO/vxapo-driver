@@ -70,6 +70,8 @@ pub struct FileEffect {
     #[serde(default)]
     pub air: Option<f32>,
     #[serde(default)]
+    pub air_side: Option<f32>,
+    #[serde(default)]
     pub mix: Option<f32>,
     #[serde(default)]
     pub gain: Option<f32>,
@@ -110,6 +112,8 @@ pub struct FileEffect {
     // 改名 motion_depth 并兼容旧键。
     #[serde(alias = "motion_depth_ms")]
     pub motion_depth: Option<f32>,
+    #[serde(default)]
+    pub low_cut_hz: Option<f32>,
     #[serde(default)]
     pub gain_boost_db: Option<f32>,
     #[serde(default)]
@@ -267,6 +271,7 @@ impl FileEffect {
                 "motion_rate",
                 "motion_depth",
                 "motion_depth_ms",
+                "low_cut_hz",
                 "wet",
                 "dry",
             ][..],
@@ -299,6 +304,7 @@ impl FileEffect {
                 "depth",
                 "crossover_hz",
                 "air",
+                "air_side",
                 "mix",
                 "gain",
             ][..],
@@ -339,6 +345,7 @@ impl FileEffect {
             ("motion_rate", self.motion_rate.is_some()),
             ("motion_depth", self.motion_depth.is_some()),
             ("motion_depth_ms", self.motion_depth.is_some()),
+            ("low_cut_hz", self.low_cut_hz.is_some()),
             ("gain_boost_db", self.gain_boost_db.is_some()),
             ("max_output_db", self.max_output_db.is_some()),
             ("release_ms", self.release_ms.is_some()),
@@ -359,6 +366,7 @@ impl FileEffect {
             ("intensity", self.intensity.is_some()),
             ("depth", self.depth.is_some()),
             ("air", self.air.is_some()),
+            ("air_side", self.air_side.is_some()),
             ("mix", self.mix.is_some()),
             ("gain", self.gain.is_some()),
             ("phon", self.phon.is_some()),
@@ -520,6 +528,10 @@ impl FileEffect {
                 Some(v) => finite_range(v, 0.0, 2.0, file, idx, "motion_depth")?,
                 None => d.motion_depth,
             },
+            low_cut_hz: match self.low_cut_hz {
+                Some(v) => finite_range(v, 20.0, 250.0, file, idx, "low_cut_hz")?,
+                None => d.low_cut_hz,
+            },
             wet: unit(self.wet, "wet")?,
             dry: unit(self.dry, "dry")?,
         })
@@ -590,6 +602,10 @@ impl FileEffect {
                         d.air
                     }
                 }
+            },
+            air_side: match self.air_side {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air_side")?,
+                None => d.air_side,
             },
             mix: match self.mix {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "mix")?,

@@ -91,6 +91,8 @@ pub struct ReverbParams {
     pub pre_delay_ms: f32,
     pub motion_rate: f32,
     pub motion_depth: f32,
+    /// 低频瞬态保护分频点（Hz，20..250；20 = 关闭，低频不保护）。
+    pub low_cut_hz: f32,
     pub wet: f32,
     pub dry: f32,
 }
@@ -108,6 +110,7 @@ impl Default for ReverbParams {
             pre_delay_ms: 0.0,
             motion_rate: 0.110871,
             motion_depth: 0.63,
+            low_cut_hz: 100.0,
             wet: 0.27,
             dry: 0.73,
         }
@@ -309,6 +312,9 @@ pub struct ReverbFilter {
 
     input_lp: OnePoleLp,
     input_hp: OnePoleHp,
+    /// 低频瞬态保护：每声道高通（分频点以下不进混响，原样直通）。
+    low_hpf_l: OnePoleHp,
+    low_hpf_r: OnePoleHp,
     tank_lp: Vec<OnePoleLp>,
     tank_hp: Vec<OnePoleHp>,
     out_dc: Vec<OnePoleHp>,
@@ -343,6 +349,8 @@ impl ReverbFilter {
             tap_r_tail: Vec::new(),
             input_lp: OnePoleLp { coeff: 0.0, state: 0.0 },
             input_hp: OnePoleHp { a: 1.0, x1: 0.0, y1: 0.0 },
+            low_hpf_l: OnePoleHp { a: 1.0, x1: 0.0, y1: 0.0 },
+            low_hpf_r: OnePoleHp { a: 1.0, x1: 0.0, y1: 0.0 },
             tank_lp: Vec::new(),
             tank_hp: Vec::new(),
             out_dc: Vec::new(),
@@ -371,6 +379,8 @@ impl ReverbFilter {
         }
         self.input_lp.clear();
         self.input_hp.clear();
+        self.low_hpf_l.clear();
+        self.low_hpf_r.clear();
         for f in &mut self.tank_lp {
             f.clear();
         }
@@ -441,6 +451,9 @@ impl Filter for ReverbFilter {
         let tank_cutoff = 60.0 + 22000.0 * (1.0 - p.damping);
         self.input_lp = OnePoleLp::new(input_cutoff, sr);
         self.input_hp = OnePoleHp::new(20.0, sr);
+        // 低频瞬态保护：分频点以下不进混响（20Hz = 关闭）。
+        self.low_hpf_l = OnePoleHp::new(p.low_cut_hz.clamp(20.0, 250.0), sr);
+        self.low_hpf_r = OnePoleHp::new(p.low_cut_hz.clamp(20.0, 250.0), sr);
         self.tank_lp = vec![OnePoleLp::new(tank_cutoff, sr); 2];
         self.tank_hp = vec![OnePoleHp::new(20.0, sr); 2];
         self.out_dc = vec![OnePoleHp::new(20.0, sr); 2];
@@ -551,7 +564,13 @@ impl Filter for ReverbFilter {
         for f in 0..frame_count {
             let in_l = samples[l][f];
             let in_r = if stereo { samples[r][f] } else { 0.0 };
-            let mix = if stereo { (in_l + in_r) * 0.5 } else { in_l };
+            // 低频瞬态保护：分频点以下逐声道直通（不进混响），
+            // 分频点以上进混响；低频始终 1× 保留（瞬态不被打散）。
+            let hp_l = self.low_hpf_l.next(in_l);
+            let hp_r = self.low_hpf_r.next(in_r);
+            let lp_l = in_l - hp_l;
+            let lp_r = in_r - hp_r;
+            let mix = if stereo { (hp_l + hp_r) * 0.5 } else { hp_l };
 
             // 输入：DC 隔离 → 带宽低通 → 预延迟 → 4 级输入扩散
             let mut x = self.input_hp.next(mix);
@@ -611,7 +630,8 @@ impl Filter for ReverbFilter {
             // 去掉论文外的 0.5 固定衰减（6dB）；湿声路径用 tanh 软限幅削峰，
             // 正常电平近似线性，极端峰值被压在 ±1 内（与 wide/aural 一致）。
             let wet_l = wet_l.tanh();
-            let out_l = p.wet * wet_l + p.dry * in_l;
+            // dry=1 时精确直通（位精确）；其余情况低频由 lp 补全 ≈1×。
+            let out_l = p.wet * wet_l + p.dry * in_l + (1.0 - p.dry) * lp_l;
             samples[l][f] = if out_l.is_finite() { out_l } else { 0.0 };
 
             if stereo {
@@ -626,7 +646,7 @@ impl Filter for ReverbFilter {
                 let wet_r = early_r * p.lat5 + tail_r * p.lat6;
                 let wet_r = self.out_dc[1].next(wet_r);
                 let wet_r = wet_r.tanh();
-                let out_r = p.wet * wet_r + p.dry * in_r;
+                let out_r = p.wet * wet_r + p.dry * in_r + (1.0 - p.dry) * lp_r;
                 samples[r][f] = if out_r.is_finite() { out_r } else { 0.0 };
             }
         }
@@ -679,6 +699,41 @@ mod tests {
                 assert_eq!(samples[ch][i], orig[ch][i]);
             }
         }
+    }
+
+    #[test]
+    fn low_cut_preserves_low_transients() {
+        // 60Hz 纯音、全湿：low_cut=200 时低频被保护直通（输出≈输入）；
+        // low_cut=20（关闭）时低频进混响被处理。
+        let run = |low_cut_hz: f32| -> f32 {
+            let mut f = ReverbFilter::new(ReverbParams {
+                low_cut_hz,
+                wet: 1.0,
+                dry: 0.0,
+                ..Default::default()
+            });
+            f.initialize(48000, &["L".into(), "R".into()]);
+            let n = 48_000usize;
+            let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            for i in 0..n {
+                let v = 0.4 * (core::f32::consts::TAU * 60.0 * i as f32 / 48000.0).sin();
+                s[0][i] = v;
+                s[1][i] = v;
+            }
+            f.process(&mut s, n);
+            s[0][24_000..].iter().fold(0.0f32, |m, &v| m.max(v.abs()))
+        };
+        let input_peak = 0.4;
+        let kept = run(200.0);
+        let wet = run(20.0);
+        assert!(
+            (kept - input_peak).abs() < 0.08,
+            "low_cut=200 must keep 60Hz intact, got {kept}"
+        );
+        assert!(
+            wet < input_peak - 0.1 || wet > input_peak + 0.1,
+            "low_cut=20 lets reverb process the low, got {wet}"
+        );
     }
 
     #[test]

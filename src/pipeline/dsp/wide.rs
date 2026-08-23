@@ -10,7 +10,8 @@
 //!    Side 增强量由 `gain` 控制（0→1×，1→+1.5×），带动态包络
 //!    （10ms 攻击 / 120ms 释放，强侧自动收增益）和 ITD 去相关
 //!    （线性相位 FIR 分频，仅 1.5kHz 以上泛音区走左 +5 / 右 +7
-//!    样本时间差；中低频增强直通保持实体感）；
+//!    样本时间差；中低频增强直通保持实体感）；侧输出再走
+//!    `air_side` 空气吸收（先高频补偿后吸收，与 mid 同曲线）；
 //! 3. 处理增量（air + 侧增强相对原始高频的差）先过一阶高通
 //!    （截止 = 分频点，6dB/oct），再 tanh 限幅，最后乘 `mix`；
 //!    原始高频与限幅增量同步延迟 1 样本叠加，保持同一时间基准；
@@ -29,6 +30,8 @@ pub struct WideParams {
     pub gain: f32,
     /// 空气吸收（0..1，中声道按物理曲线渐进吸收高频，把中置人声推远）。
     pub air: f32,
+    /// 侧通道空气吸收（0..1，作用于高频补偿后的侧输出，默认 0 = 关闭）。
+    pub air_side: f32,
     /// 干湿混合（0..1，默认 0.6）：处理增量最终渗入量。
     pub mix: f32,
     /// M/S 分频点（Hz，100..1000，默认 200；以下低频保持原样）。
@@ -41,6 +44,7 @@ impl Default for WideParams {
             gain: 0.0,
             // 与原 Wide32.c Quick preset 的默认距离对齐。
             air: 0.354331,
+            air_side: 0.0,
             mix: 0.6,
             crossover_hz: 200.0,
         }
@@ -456,6 +460,9 @@ pub struct WideFilter {
     headroom_factor: f32,
     mix: f32,
     air: AirAbsorption,
+    /// 侧通道空气吸收（L/R 各一实例；先高频补偿后吸收）。
+    side_air_l: AirAbsorption,
+    side_air_r: AirAbsorption,
     hpf_l: FirstOrderHpf,
     hpf_r: FirstOrderHpf,
     itd_l: ItdDelay,
@@ -487,6 +494,8 @@ impl WideFilter {
             headroom_factor: 1.0,
             mix: 0.6,
             air: AirAbsorption::new(0.0, 48000),
+            side_air_l: AirAbsorption::new(0.0, 48000),
+            side_air_r: AirAbsorption::new(0.0, 48000),
             hpf_l: FirstOrderHpf::new(200.0, 48000),
             hpf_r: FirstOrderHpf::new(200.0, 48000),
             itd_l: ItdDelay::new(ITD_DELAY_L),
@@ -513,7 +522,7 @@ impl Filter for WideFilter {
         }
         let stereo = self.channel_indices.len() >= 2;
         let p0 = self.params;
-        self.active = stereo && (p0.air > 0.0 || p0.gain > 0.0);
+        self.active = stereo && (p0.air > 0.0 || p0.air_side > 0.0 || p0.gain > 0.0);
         if !self.active {
             return None;
         }
@@ -521,6 +530,7 @@ impl Filter for WideFilter {
         let p = self.params;
         let gain = p.gain.clamp(0.0, 1.0);
         let air = p.air.clamp(0.0, 1.0);
+        let air_side = p.air_side.clamp(0.0, 1.0);
         let mix = p.mix.clamp(0.0, 1.0);
         let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let sr = sample_rate.max(1) as f32;
@@ -530,8 +540,10 @@ impl Filter for WideFilter {
         // headroom 只随用户 Gain 变化：Gain 越大余量越小。
         let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - gain);
         self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
-        // 空气吸收深度只由 air 参数控制（物理距离曲线）。
+        // 空气吸收深度由 air（mid）/ air_side（侧）参数控制（物理距离曲线）。
         self.air = AirAbsorption::new(air, sample_rate);
+        self.side_air_l = AirAbsorption::new(air_side, sample_rate);
+        self.side_air_r = AirAbsorption::new(air_side, sample_rate);
         // 增量安全锁：一阶高通（截止 = 分频点）+ ITD 去相关延迟线。
         self.hpf_l = FirstOrderHpf::new(xover, sample_rate);
         self.hpf_r = FirstOrderHpf::new(xover, sample_rate);
@@ -614,8 +626,9 @@ impl Filter for WideFilter {
             let (boost_lp, boost_hp) = self.side_fir.split_channel(0, boost_full);
             let side_boost_l = boost_lp + self.itd_l.process(boost_hp);
             let side_boost_r = boost_lp + self.itd_r.process(boost_hp);
-            let out_side_l = side_h + side_boost_l;
-            let out_side_r = side_h + side_boost_r;
+            // 先高频补偿（gain 增强）再侧空气吸收（与 mid 同曲线）。
+            let out_side_l = self.side_air_l.next(side_h + side_boost_l);
+            let out_side_r = self.side_air_r.next(side_h + side_boost_r);
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
             let out_mid_h = self.air.next(mid_h);
 
@@ -656,6 +669,8 @@ impl Filter for WideFilter {
     fn reset(&mut self) {
         self.fir.reset();
         self.air.clear();
+        self.side_air_l.clear();
+        self.side_air_r.clear();
         self.hpf_l.clear();
         self.hpf_r.clear();
         self.itd_l.clear();
@@ -846,6 +861,68 @@ mod tests {
         assert!(
             e_half < e_none * 0.95 && e_full < e_half * 0.95,
             "air should attenuate monotonically: none={e_none} half={e_half} full={e_full}"
+        );
+    }
+
+    #[test]
+    fn side_air_attenuates_side_only() {
+        // air_side：纯侧 8k 信号被衰减（且只影响侧、不影响 mid）；
+        // air_side=0 时侧保持原样。
+        fn side_8k_energy(air_side: f32) -> f32 {
+            let mut f = WideFilter::new(WideParams {
+                air_side,
+                gain: 0.0,
+                air: 0.0,
+                ..Default::default()
+            });
+            f.initialize(48000, &["L".into(), "R".into()]);
+            let n = 9600usize;
+            let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+            for i in 0..n {
+                let v = 0.3 * (core::f32::consts::TAU * 8000.0 * i as f32 / 48000.0).sin();
+                s[0][i] = v;
+                s[1][i] = -v;
+            }
+            f.process(&mut s, n);
+            let mut e = 0.0f32;
+            for i in 4800..n {
+                let d = (s[0][i] - s[1][i]) * 0.5;
+                e += d * d;
+            }
+            e
+        }
+        let e0 = side_8k_energy(0.0);
+        let e1 = side_8k_energy(1.0);
+        assert!(e0 > 0.0);
+        assert!(
+            e1 < e0 * 0.85,
+            "air_side should attenuate side highs: {e1} vs {e0}"
+        );
+
+        // air_side 不影响纯中心信号。
+        let mut f = WideFilter::new(WideParams {
+            air_side: 1.0,
+            air: 0.0,
+            ..Default::default()
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let n = 9600usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            let v = 0.3 * (core::f32::consts::TAU * 8000.0 * i as f32 / 48000.0).sin();
+            s[0][i] = v;
+            s[1][i] = v;
+        }
+        f.process(&mut s, n);
+        let mut e = 0.0f32;
+        for i in 4800..n {
+            let m = (s[0][i] + s[1][i]) * 0.5;
+            e += m * m;
+        }
+        // 中心无 mid air：能量应接近输入（air_side 不碰 mid）。
+        assert!(
+            e > 0.05,
+            "air_side must not affect center, energy {e}"
         );
     }
 
@@ -1157,6 +1234,7 @@ mod tests {
             let mut f = WideFilter::new(WideParams {
                 gain: 1.0,
                 air: 1.0,
+                air_side: 1.0,
                 mix: 1.0,
                 crossover_hz: xover,
             });
@@ -1183,6 +1261,7 @@ mod tests {
         let mut f = WideFilter::new(WideParams {
             gain: 2.0,
             air: -1.0,
+            air_side: 2.0,
             mix: 2.0,
             crossover_hz: 99999.0,
         });
