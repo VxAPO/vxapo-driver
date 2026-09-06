@@ -92,7 +92,8 @@ pub enum BiquadType {
 ///
 /// - `filter_type`：滤波器类型
 /// - `fc`：中心/截止频率（Hz），自动 clamp 到 `[FILTER_FREQ_MIN_HZ, 0.45*sr]`
-/// - `gain_db`：增益（dB），经 `clamp_gain_db`（仅 Peaking / LowShelf / HighShelf 有意义）
+/// - `gain_db`：增益（dB），经 `clamp_gain_db`（Peaking / LowShelf / HighShelf 用于目标电平；
+///   LowPass / HighPass 把增益乘到通带——0 dB 时保持纯滤波行为）
 /// - `q`：品质因数，自动 clamp 到 `[Q_MIN, Q_MAX]`
 /// - `sample_rate`：采样率（Hz），0 → 直通
 ///
@@ -194,18 +195,21 @@ fn compute_raw(
             (b0, b1, b2, a0, a1, a2)
         }
         BiquadType::LowPass => {
-            let b0 = (1.0 - cos_w0) / 2.0;
-            let b1 = 1.0 - cos_w0;
-            let b2 = (1.0 - cos_w0) / 2.0;
+            // gain_db 作用于“通过部分”：整体通带乘线性增益（0 dB 时恒为 1，行为不变）。
+            let lin = 10.0_f64.powf(g / 20.0);
+            let b0 = (1.0 - cos_w0) / 2.0 * lin;
+            let b1 = (1.0 - cos_w0) * lin;
+            let b2 = (1.0 - cos_w0) / 2.0 * lin;
             let a0 = 1.0 + alpha;
             let a1 = -2.0 * cos_w0;
             let a2 = 1.0 - alpha;
             (b0, b1, b2, a0, a1, a2)
         }
         BiquadType::HighPass => {
-            let b0 = (1.0 + cos_w0) / 2.0;
-            let b1 = -(1.0 + cos_w0);
-            let b2 = (1.0 + cos_w0) / 2.0;
+            let lin = 10.0_f64.powf(g / 20.0);
+            let b0 = (1.0 + cos_w0) / 2.0 * lin;
+            let b1 = -(1.0 + cos_w0) * lin;
+            let b2 = (1.0 + cos_w0) / 2.0 * lin;
             let a0 = 1.0 + alpha;
             let a1 = -2.0 * cos_w0;
             let a2 = 1.0 - alpha;
@@ -743,6 +747,35 @@ mod tests {
     fn highpass_coeffs_valid() {
         let c = compute_coeffs(BiquadType::HighPass, 1000.0, 0.0, 0.707, 48000);
         assert!(c.is_valid());
+    }
+
+    #[test]
+    fn pass_filters_gain_scales_passband() {
+        // HPF 通带在 Nyquist（z=-1）、LPF 通带在 DC（z=1）：
+        // |H| 应等于线性增益，0 dB 恒为 1（纯滤波），+6 dB ≈ 1.995。
+        fn mag_at(coeffs: &BiquadCoeffs, z: f64) -> f64 {
+            let num = coeffs.b0 as f64 + coeffs.b1 as f64 * z + coeffs.b2 as f64 * z * z;
+            let den = 1.0 + coeffs.a1 as f64 * z + coeffs.a2 as f64 * z * z;
+            (num / den).abs()
+        }
+
+        let hp0 = compute_coeffs(BiquadType::HighPass, 1000.0, 0.0, 0.707, 48000);
+        let hp6 = compute_coeffs(BiquadType::HighPass, 1000.0, 6.0, 0.707, 48000);
+        let unity = mag_at(&hp0, -1.0);
+        let ratio = mag_at(&hp6, -1.0) / unity;
+        assert!(
+            (ratio - 10f64.powf(6.0 / 20.0)).abs() < 1e-3,
+            "HPF 通带增益应为 +6 dB，实际 ratio={ratio}"
+        );
+
+        let lp0 = compute_coeffs(BiquadType::LowPass, 1000.0, 0.0, 0.707, 48000);
+        let lp6 = compute_coeffs(BiquadType::LowPass, 1000.0, 6.0, 0.707, 48000);
+        let unity_lp = mag_at(&lp0, 1.0);
+        let ratio_lp = mag_at(&lp6, 1.0) / unity_lp;
+        assert!(
+            (ratio_lp - 10f64.powf(6.0 / 20.0)).abs() < 1e-3,
+            "LPF 通带增益应为 +6 dB，实际 ratio={ratio_lp}"
+        );
     }
 
     #[test]
