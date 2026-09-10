@@ -13,4 +13,5 @@ pub mod endpoint;
 pub mod format;
 pub mod info;
 pub mod slots;
+pub mod stale;
 pub mod sysfx;
