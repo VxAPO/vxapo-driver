@@ -1,4 +1,4 @@
-﻿//! pipeline/chain.rs — Filter 链执行 + 延迟累计（规范 4.5）
+//! pipeline/chain.rs — Filter 链执行 + 延迟累计（规范 4.5）
 //!
 //! 工作在去交织空间。不拥有缓冲区，接受外部传入。
 
@@ -57,6 +57,7 @@ impl Chain {
     }
 
     /// 总延迟（采样数）。
+#[cfg(test)]
     pub fn total_latency(&self) -> u32 {
         self.total_latency
     }
@@ -77,6 +78,7 @@ impl Chain {
     ///
     /// `filters.iter().all(|f| f.is_in_place())`。调用方（process_audio）据此
     /// 决定是否可走零拷贝快路径：全链 `true` 时去交织缓冲即最终输出。
+#[cfg(test)]
     pub fn is_fully_in_place(&self) -> bool {
         self.filters.iter().all(|f| f.is_in_place())
     }
@@ -99,6 +101,7 @@ impl Chain {
     }
 
     /// 校验帧数约束（防御性检查）。
+#[cfg(test)]
     pub fn validate_frame_count(&self, frame_count: usize) -> bool {
         self.filters
             .iter()

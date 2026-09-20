@@ -1,4 +1,4 @@
-﻿//! install/device/info.rs — 设备组合查询层（规范 5.4）
+//! install/device/info.rs — 设备组合查询层（规范 5.4）
 //!
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口。
 //! 只读，不修改系统状态。
@@ -221,6 +221,7 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 }
 
 /// 检查端点的 FxProperties 键是否存在。
+#[cfg(test)]
 pub fn has_fx_properties(endpoint_key: &RegKey) -> bool {
     endpoint_key.open_sub_key(FX_PROPERTIES_KEY).is_ok()
 }

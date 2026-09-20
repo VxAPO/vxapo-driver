@@ -3,8 +3,9 @@
 //! 共享导入见父模块 install/device/slots.rs。
 
 use super::*;
-use super::read::*;
-use super::types::*;
+// `guid_to_string` 仅被 cfg(test) 下的辅助函数使用。
+#[cfg(test)]
+use crate::sys::com::prelude::guid_to_string;
 
 /// 获取原始 PreMix APO GUID（带回退）。
 ///
@@ -23,6 +24,7 @@ use super::types::*;
 ///
 /// - GUID 字符串：找到有效 GUID。
 /// - 空字符串：未找到（`NoKey` 或所有候选槽位均为空）。
+#[cfg(test)]
 pub fn get_original_pre_mix(slots: &[SlotValue; 5], mode: InstallMode) -> String {
     let primary = mode.premix_slot();
 
@@ -66,6 +68,7 @@ pub fn get_original_pre_mix(slots: &[SlotValue; 5], mode: InstallMode) -> String
 ///
 /// - GUID 字符串：找到有效 GUID。
 /// - 空字符串：未找到。
+#[cfg(test)]
 pub fn get_original_post_mix(slots: &[SlotValue; 5], mode: InstallMode) -> String {
     let primary = mode.postmix_slot();
 
@@ -173,6 +176,7 @@ pub(super) fn split_path(path: &str) -> Option<(windows::Win32::System::Registry
 /// PreMix 回退槽位：另一模式的 PreMix。
 ///
 /// LfxGfx → Sfx，SfxMfx/SfxEfx → Lfx。
+#[cfg(test)]
 pub(super) fn other_premix_slot(mode: InstallMode) -> ApoSlot {
     match mode {
         InstallMode::LfxGfx => ApoSlot::Sfx,
@@ -183,6 +187,7 @@ pub(super) fn other_premix_slot(mode: InstallMode) -> ApoSlot {
 /// PostMix 回退顺序（不含主槽位，已排除）。
 ///
 /// 涉及 GFX/MFX/EFX 三槽位。
+#[cfg(test)]
 pub(super) fn postmix_fallback_order(mode: InstallMode) -> &'static [ApoSlot] {
     match mode {
         // EFX 主 → 尝试 MFX → GFX

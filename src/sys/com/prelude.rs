@@ -1,4 +1,4 @@
-﻿//! sys/com/prelude.rs — COM 基础类型重导出 + HRESULT 常量（规范 3.1）
+//! sys/com/prelude.rs — COM 基础类型重导出 + HRESULT 常量（规范 3.1）
 //!
 //! 职责：重导出 `windows-rs` 的 COM 基础类型与 HRESULT 常量。
 //!
@@ -17,6 +17,9 @@
 //! 但该 `unsafe` 已由 `guid_to_string` 函数收窄为单一安全边界。
 //!
 //! 调用方应使用重导出的 `guid_to_string(&GUID) -> String`，而非自行调用 `StringFromGUID2`。
+// 本模块是 COM 基础类型重导出表：按设计保留完整词汇，仓内未必全部有消费者。
+#![allow(dead_code, unused_imports)]
+
 
 // ── 类型重导出 ──
 

@@ -1,4 +1,4 @@
-﻿//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（规范 4.6）
+//! pipeline/process.rs — APOProcess 调度 + 桥接函数 + 错误策略（规范 4.6）
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -13,10 +13,12 @@ use crate::utils::vx_error::Result;
 pub enum ErrorPolicy {
     /// 链处理失败时直通（仅当输入有效时安全）。
     Bypass,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 链处理失败时静音。
     Silence,
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 处理参数。
 pub struct ProcessParams {
     pub input_channels: u32,

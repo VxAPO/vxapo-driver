@@ -1,9 +1,12 @@
-﻿//! sys/com/apo_types.rs — APO 类型（规范 3.3，修正版）
+//! sys/com/apo_types.rs — APO 类型（规范 3.3，修正版）
 //!
 //! 修正：windows-rs 0.62.2 已提供 APO_REG_PROPERTIES / APO_CONNECTION_DESCRIPTOR /
 //! APO_CONNECTION_PROPERTY / APO_FLAG / APO_BUFFER_FLAGS，此处全部 re-export。
 //! 仅保留 windows-rs 缺失的自定义项：UNCOMPRESSED_AUDIO_FORMAT、AUDIO_FLOW_TYPE、
 //! REFERENCE_TIME、签名常量、比较标志、APOERR 错误码、编译期断言。
+// 本模块是 sys 层的 windows-rs 类型与 APO 错误码词汇表：按设计保留完整取值供对表，仓内未必全部有消费者。
+#![allow(dead_code, unused_imports)]
+
 
 pub use windows::core::GUID;
 pub use crate::sys::com::prelude::HRESULT;

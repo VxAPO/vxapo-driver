@@ -81,8 +81,11 @@ pub enum BiquadType {
     HighShelf,
     LowPass,
     HighPass,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     BandPass,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     Notch,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     AllPass,
 }
 
@@ -442,8 +445,10 @@ mod simd_df2t {
 /// 双二阶滤波器结构类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BiquadStructure {
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 直接形式 I（最直观，两组延迟线）。
     DirectFormI,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 直接形式 II（一组延迟线，节省内存）。
     DirectFormII,
     /// 转置直接形式 II（数值最稳定，EqualizerAPO 默认，生产推荐）。
@@ -491,16 +496,19 @@ impl BiquadFilter {
     }
 
     /// 更新系数（参数变化时立即切换；平滑过渡见 CHANGELOG 的 roadmap）。
+#[cfg(test)]
     pub fn set_coeffs(&mut self, coeffs: BiquadCoeffs) {
         self.coeffs = coeffs;
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 获取当前系数。
     pub fn coeffs(&self) -> BiquadCoeffs {
         self.coeffs
     }
 
     /// 重置状态（延迟线清零）。
+#[cfg(test)]
     pub fn reset_state(&mut self) {
         for s in self.df1_x.iter_mut() {
             *s = [0.0; 2];

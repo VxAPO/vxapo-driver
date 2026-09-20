@@ -1,4 +1,4 @@
-﻿//! sys/com/apo_interfaces.rs — APO 接口 re-export + IID 常量（规范 3.2，修正版）
+//! sys/com/apo_interfaces.rs — APO 接口 re-export + IID 常量（规范 3.2，修正版）
 //!
 //! 职责：re-export windows-rs 0.62.2 已提供的 4 个 APO 接口结构体
 //! （IAudioMediaType、IAudioProcessingObject、IAudioProcessingObjectRT、
@@ -59,23 +59,27 @@ pub const IID_IAPO_RT: GUID = IAudioProcessingObjectRT::IID;
 pub const IID_IAPO_CONFIG: GUID = IAudioProcessingObjectConfiguration::IID;
 
 /// `IAudioMediaType` IID。
+#[cfg(test)]
 pub const IID_IAUDIO_MEDIA_TYPE: GUID = IAudioMediaType::IID;
 
 // ── 3 个系统接口 IID（从 windows-rs 直接引用）────────────────────────────────
 
 // 这 3 个接口由 Windows 实现（非 APO 实现），APO 侧仅需 IID 用于 QueryInterface 查询。
 // IAudioSystemEffects 已在上面 pub use（APO 侧需实现该 marker 接口），此处不再重复引入。
-use windows::Win32::Media::Audio::Apo::{
-    IAudioProcessingObjectNotifications, IAudioSystemEffects2,
-};
+
+// 以下两个接口类型仅用于 cfg(test) 下的 IID 常量。
+#[cfg(test)]
+use windows::Win32::Media::Audio::Apo::{IAudioProcessingObjectNotifications, IAudioSystemEffects2};
 
 /// `IAudioSystemEffects` IID。
 pub const IID_IAUDIO_SYSTEM_EFFECTS: GUID = IAudioSystemEffects::IID;
 
 /// `IAudioSystemEffects2` IID。
+#[cfg(test)]
 pub const IID_IAUDIO_SYSTEM_EFFECTS2: GUID = IAudioSystemEffects2::IID;
 
 /// `IAudioProcessingObjectNotifications` IID。
+#[cfg(test)]
 pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: GUID =
     IAudioProcessingObjectNotifications::IID;
 

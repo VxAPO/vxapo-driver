@@ -4,6 +4,9 @@
 //! （`sys/com/prelude.rs`、`sys/com/apo_types.rs`、`object/vx_reg_props.rs`、`utils/vx_error.rs`）。
 //!
 //! 只含常量定义，无逻辑、无 Windows API 调用。
+// 本模块是 CLSID 与 APOERR_* 的唯一来源（规范 3.3.7）：保留错误码全集供对表，仓内未必全部有消费者。
+#![allow(dead_code, unused_imports)]
+
 
 use windows::core::{GUID, HRESULT};
 

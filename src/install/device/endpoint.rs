@@ -1,4 +1,4 @@
-﻿//! install/device/endpoint.rs — 音频端点状态查询（规范 5.1）
+//! install/device/endpoint.rs — 音频端点状态查询（规范 5.1）
 //!
 //! 查询 Windows 音频端点的设备 ID、友好名称与连接状态。只读。
 
@@ -138,6 +138,7 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
 /// 检查端点是否为活跃状态。
 ///
 /// 便捷方法，等价于读取 DeviceState 值是否为 1。
+#[cfg(test)]
 pub fn is_endpoint_active(endpoint_key: &RegKey) -> Result<bool> {
     match endpoint_key.read_dword_value("DeviceState") {
         Ok(state) => Ok(state == 1), // DEVICE_STATE_ACTIVE

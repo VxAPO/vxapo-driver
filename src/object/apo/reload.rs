@@ -4,7 +4,6 @@
 //! （start_watcher / stop_watcher）；路径解析与诊断输出仍在 config.rs。
 
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use windows::core::Result;
 
@@ -12,15 +11,12 @@ use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
 use crate::pipeline::chain::Chain;
 use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
-use crate::sys::com::apo_types::{
-    APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
-};
-use crate::sys::com::prelude::{GUID, guid_to_string};
+use crate::sys::com::prelude::GUID;
 
 use super::ApoObject_Impl;
 use super::inner::{ApoObjectInner, build_dsp_context};
-use super::config::{DEFAULT_CONFIG_PATH, CONFIG_ROOT, diag_append, resolve_config_path};
-use super::rtdump::{rt_dump_flush, rt_dump_open};
+use super::config::diag_append;
+use super::rtdump::{rt_dump_open};
 
 /// watcher 运行时状态（外部驱动模型）。
 pub(crate) struct WatcherState {

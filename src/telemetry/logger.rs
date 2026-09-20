@@ -1,4 +1,4 @@
-﻿//! telemetry/logger.rs — 无锁环形日志，实时路径零堆分配（规范 9.1）
+//! telemetry/logger.rs — 无锁环形日志，实时路径零堆分配（规范 9.1）
 
 use std::sync::OnceLock;
 
@@ -75,6 +75,7 @@ impl Logger {
     }
 
     /// 非实时：批量读取日志。
+#[cfg(test)]
     pub fn drain<F>(&self, mut f: F)
     where
         F: FnMut(LogLevel, &str),

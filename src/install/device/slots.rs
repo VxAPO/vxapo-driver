@@ -32,7 +32,7 @@
 //!
 //! 此模块只做查询，不修改任何系统状态。实际操作委托 `install/install`。
 
-use crate::sys::com::prelude::{GUID, guid_to_string};
+use crate::sys::com::prelude::GUID;
 use crate::sys::registry::RegKey;
 use crate::utils::guid::{guid_from_bytes, is_zero_guid, parse_guid_string};
 
@@ -43,7 +43,7 @@ mod read;
 mod types;
 
 pub use child::{
-    child_apo_key_exists, get_original_post_mix, get_original_pre_mix, read_child_apo_guid,
+    child_apo_key_exists, read_child_apo_guid,
     ChildApoKind, CHILD_APO_PATH_ROOT,
 };
 pub use read::{detect_install_mode, read_all_slots, read_slot_value};

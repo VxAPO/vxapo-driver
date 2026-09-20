@@ -6,7 +6,6 @@
 
 use super::*;
 use super::detect::*;
-use super::migrate::*;
 
 /// 清理一个无法匹配到活跃端点的旧 GUID 记录。
 pub fn cleanup_orphan(guid: &str) -> Result<()> {

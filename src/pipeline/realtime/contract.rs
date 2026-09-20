@@ -1,4 +1,7 @@
-﻿//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（规范 4.5）
+//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（规范 4.5）
+// 本模块是 RT-safety 契约设施（守卫/标记 trait/线程局部状态）：生产路径经宏展开引用，仓内直接消费者少。
+#![allow(dead_code, unused_imports)]
+
 
 #[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicBool, Ordering};

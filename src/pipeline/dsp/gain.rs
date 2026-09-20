@@ -10,11 +10,14 @@
 //! - 非有限目标直接忽略；
 //! - `process` 遵守 RT-safety 约束，零分配。
 
+// GAIN_DB_MAX / linear_to_db 仅被 cfg(test) 下的用例与辅助函数使用。
+#[cfg(test)]
+use crate::pipeline::dsp::math::{GAIN_DB_MAX, linear_to_db as math_linear_to_db};
+
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{
-    GAIN_DB_MAX, GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT, GAIN_SNAP_THRESHOLD,
+    GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT, GAIN_SNAP_THRESHOLD,
     MAX_GAIN_STEP_RATIO, db_to_linear as math_db_to_linear,
-    linear_to_db as math_linear_to_db,
 };
 
 // ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────
@@ -63,11 +66,13 @@ impl GainFilter {
     }
 
     /// 设置新增益（dB），触发平滑过渡。
+#[cfg(test)]
     pub fn set_gain_db(&mut self, gain_db: f32) {
         self.set_gain_linear(math_db_to_linear(gain_db));
     }
 
     /// 设置新增益（线性），触发平滑过渡。
+#[cfg(test)]
     pub fn set_gain_linear(&mut self, target: f32) {
         if !target.is_finite() {
             return; // 非有限目标：忽略，保持当前值。
@@ -80,11 +85,13 @@ impl GainFilter {
     }
 
     /// 当前增益（线性）。
+#[cfg(test)]
     pub fn current_gain_linear(&self) -> f32 {
         self.current_gain
     }
 
     /// 当前增益（dB）。
+#[cfg(test)]
     pub fn current_gain_db(&self) -> f32 {
         math_linear_to_db(self.current_gain)
     }
@@ -150,11 +157,13 @@ impl Filter for GainFilter {
 }
 
 /// dB 转线性因子（薄转发到 `math::db_to_linear`，保持既有公开 API）。
+#[cfg(test)]
 pub fn db_to_linear(db: f32) -> f32 {
     math_db_to_linear(db)
 }
 
 /// 线性因子转 dB（薄转发到 `math::linear_to_db`）。
+#[cfg(test)]
 pub fn linear_to_db(linear: f32) -> f32 {
     math_linear_to_db(linear)
 }

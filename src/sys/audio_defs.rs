@@ -1,4 +1,4 @@
-﻿//! sys/audio_defs.rs — Windows 音频基础定义（规范 3.5）
+//! sys/audio_defs.rs — Windows 音频基础定义（规范 3.5）
 //!
 //! 职责：提供通道掩码位标志常量、标准布局常量，以及通道掩码兜底/通道名映射函数。
 //!
@@ -31,28 +31,38 @@ pub const SPEAKER_BACK_LEFT: u32 = 0x10;
 /// 后右扬声器（0x20）
 pub const SPEAKER_BACK_RIGHT: u32 = 0x20;
 /// 前左中置扬声器（0x40）
+#[cfg(test)]
 pub const SPEAKER_FRONT_LEFT_OF_CENTER: u32 = 0x40;
 /// 前右中置扬声器（0x80）
+#[cfg(test)]
 pub const SPEAKER_FRONT_RIGHT_OF_CENTER: u32 = 0x80;
 /// 后中置扬声器（0x100）
+#[cfg(test)]
 pub const SPEAKER_BACK_CENTER: u32 = 0x100;
 /// 侧左扬声器（0x200）
 pub const SPEAKER_SIDE_LEFT: u32 = 0x200;
 /// 侧右扬声器（0x400）
 pub const SPEAKER_SIDE_RIGHT: u32 = 0x400;
 /// 顶部中置扬声器（0x800）
+#[cfg(test)]
 pub const SPEAKER_TOP_CENTER: u32 = 0x800;
 /// 顶部前左扬声器（0x1000）
+#[cfg(test)]
 pub const SPEAKER_TOP_FRONT_LEFT: u32 = 0x1000;
 /// 顶部前中置扬声器（0x2000）
+#[cfg(test)]
 pub const SPEAKER_TOP_FRONT_CENTER: u32 = 0x2000;
 /// 顶部前右扬声器（0x4000）
+#[cfg(test)]
 pub const SPEAKER_TOP_FRONT_RIGHT: u32 = 0x4000;
 /// 顶部后左扬声器（0x8000）
+#[cfg(test)]
 pub const SPEAKER_TOP_BACK_LEFT: u32 = 0x8000;
 /// 顶部后中置扬声器（0x10000）
+#[cfg(test)]
 pub const SPEAKER_TOP_BACK_CENTER: u32 = 0x10000;
 /// 顶部后右扬声器（0x20000）
+#[cfg(test)]
 pub const SPEAKER_TOP_BACK_RIGHT: u32 = 0x20000;
 
 // ══════════════════════════════════════════════════════════════════════════════

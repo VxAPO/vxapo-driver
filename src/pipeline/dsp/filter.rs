@@ -1,4 +1,4 @@
-﻿//! pipeline/dsp/filter.rs — Filter trait + DspContext + 通道/阶段标记（规范 4.9）
+//! pipeline/dsp/filter.rs — Filter trait + DspContext + 通道/阶段标记（规范 4.9）
 //!
 //! 职责：纯 Rust 定义，不包含任何 Windows API 依赖。
 //!
@@ -32,6 +32,7 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
     fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>>;
 
     /// 是否为 `Channel:` 类型命令（通道选择标记）。默认 false。
+#[cfg(test)]
     fn is_channel_select(&self) -> bool {
         false
     }
@@ -51,6 +52,7 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
         None
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 是否就地处理（in-place）。
     ///
     /// 默认 true：滤波器直接修改传入的 `samples` 缓冲，无需额外中间副本。
@@ -65,6 +67,7 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
         0
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 最大帧数约束。默认 None（无约束）。
     /// Some(n) 表示 process 每次最多处理 n 帧。
     fn max_frame_count(&self) -> Option<usize> {
@@ -146,6 +149,7 @@ impl Filter for ChannelScopedFilter {
 // DspContext
 // ══════════════════════════════════════════════════════════════════════════════
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 引擎统一上下文。纯数据结构，不包含任何 Windows 类型。
 ///
 /// 由调用方从 `PipelineContext` + 额外参数构造（调用方依赖 `pipeline/context.rs`）。
@@ -180,6 +184,7 @@ pub struct DspContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceType {
     Render,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     Capture,
 }
 
@@ -187,8 +192,11 @@ pub enum DeviceType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessingStage {
     None,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     PreMix,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     PostMix,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     Capture,
 }
 

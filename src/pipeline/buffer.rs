@@ -1,10 +1,12 @@
-﻿//! pipeline/buffer.rs — 缓冲区描述与状态判定（规范 4.2）
+//! pipeline/buffer.rs — 缓冲区描述与状态判定（规范 4.2）
 
 use crate::sys::com::apo_types::{APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID};
 
 /// 静音阈值（-200 dBFS 以下）。
+#[cfg(test)]
 const SILENCE_THRESHOLD: f32 = 1e-10;
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 缓冲区信息——封装 APO_CONNECTION_PROPERTY 的字段。
 pub(crate) struct BufferInfo {
     pub ptr: *mut f32,
@@ -14,6 +16,7 @@ pub(crate) struct BufferInfo {
 }
 
 impl BufferInfo {
+#[cfg(test)]
     pub fn new(ptr: *mut f32, valid_frames: usize, flags: APO_BUFFER_FLAGS, channels: usize) -> Self {
         Self { ptr, valid_frames, flags, channels }
     }
@@ -36,10 +39,12 @@ impl BufferInfo {
         }
     }
 
+#[cfg(test)]
     pub fn is_valid(&self) -> bool {
         self.flags == BUFFER_VALID
     }
 
+#[cfg(test)]
     pub fn is_silent(&self) -> bool {
         self.flags == BUFFER_SILENT
     }
@@ -48,6 +53,7 @@ impl BufferInfo {
         self.valid_frames * self.channels
     }
 
+#[cfg(test)]
     pub fn bytes(&self) -> usize {
         self.total_samples() * std::mem::size_of::<f32>()
     }
@@ -101,23 +107,21 @@ pub(crate) fn evaluate_buffer(flags: APO_BUFFER_FLAGS, allow_silent_buffer: bool
 }
 
 /// 检查去交织平面缓冲区中所有采样是否为静音。
+#[cfg(test)]
 pub(crate) fn is_silent(samples: &[Vec<f32>], frame_count: usize) -> bool {
     samples.iter().all(|ch| ch[..frame_count].iter().all(|&v| v.abs() <= SILENCE_THRESHOLD))
 }
 
 /// 将去交织平面缓冲区所有通道清零。
+#[cfg(test)]
 pub(crate) fn zero_buffers(buffers: &mut [Vec<f32>], frame_count: usize) {
     for ch in buffers.iter_mut() {
         ch[..frame_count].fill(0.0);
     }
 }
 
-/// 将单个通道清零。
-pub(crate) fn zero_channel(channel: &mut [f32], frame_count: usize) {
-    channel[..frame_count].fill(0.0);
-}
-
 /// 将源缓冲区内容复制到目标缓冲区（避免隐式堆分配）。
+#[cfg(test)]
 pub(crate) fn copy_buffers(src: &[Vec<f32>], dst: &mut [Vec<f32>], frame_count: usize) {
     let n = src.len().min(dst.len());
     for i in 0..n {
@@ -125,36 +129,7 @@ pub(crate) fn copy_buffers(src: &[Vec<f32>], dst: &mut [Vec<f32>], frame_count: 
     }
 }
 
-/// 调试摘要（非实时路径）。
-#[derive(Debug, Clone)]
-pub(crate) struct BufferSummary {
-    pub channels: usize,
-    pub frame_count: usize,
-    pub is_silent: bool,
-    pub peak_level: f32,
-    pub rms_level: f32,
-}
 
-/// 生成缓冲区摘要（非实时路径）。
-pub(crate) fn summarize(buffers: &[Vec<f32>], frame_count: usize) -> BufferSummary {
-    let mut peak = 0.0f32;
-    let mut sum_sq = 0.0f32;
-    let mut total = 0usize;
-    for ch in buffers {
-        for &v in &ch[..frame_count] {
-            peak = peak.max(v.abs());
-            sum_sq += v * v;
-            total += 1;
-        }
-    }
-    BufferSummary {
-        channels: buffers.len(),
-        frame_count,
-        is_silent: is_silent(buffers, frame_count),
-        peak_level: peak,
-        rms_level: if total > 0 { (sum_sq / total as f32).sqrt() } else { 0.0 },
-    }
-}
 
 #[cfg(test)]
 mod tests {

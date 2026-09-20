@@ -1,6 +1,7 @@
-﻿//! pipeline/interleave.rs — 通道数据搬运（规范 4.4）
+//! pipeline/interleave.rs — 通道数据搬运（规范 4.4）
 
 /// 交织格式 → 去交织平面缓冲区（分配新 Vec<Vec<f32>>）。非实时路径用。
+#[cfg(test)]
 pub fn deinterleave(input: &[f32], channels: usize, frames: usize) -> Vec<Vec<f32>> {
     let mut output = vec![vec![0.0f32; frames]; channels];
     deinterleave_into(input, &mut output, channels, frames);
@@ -8,6 +9,7 @@ pub fn deinterleave(input: &[f32], channels: usize, frames: usize) -> Vec<Vec<f3
 }
 
 /// 去交织平面缓冲区 → 交织格式（分配新 Vec<f32>）。非实时路径用。
+#[cfg(test)]
 pub fn interleave(channels: &[Vec<f32>], frames: usize) -> Vec<f32> {
     let ch_count = channels.len();
     let mut output = vec![0.0f32; ch_count * frames];
@@ -25,6 +27,7 @@ pub fn deinterleave_into(input: &[f32], output: &mut [Vec<f32>], channels: usize
 }
 
 /// 已分配的去交织缓冲区 → 交织格式（零分配，写入 output）。
+#[cfg(test)]
 pub fn interleave_from(input: &[Vec<f32>], output: &mut [f32], channels: usize, frames: usize) {
     for f in 0..frames {
         for ch in 0..channels {

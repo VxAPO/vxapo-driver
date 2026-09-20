@@ -1,4 +1,4 @@
-﻿//! sys/registry.rs — 注册表模块（规范 3.4，按 windows-rs 0.62.2 真实 API）
+//! sys/registry.rs — 注册表模块（规范 3.4，按 windows-rs 0.62.2 真实 API）
 
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::WIN32_ERROR;
@@ -549,10 +549,12 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
 }
 
 /// 检查注册表键是否存在。
+#[cfg(test)]
 pub fn key_exists(root: HKEY, sub_key: &str) -> Result<bool> {
     Ok(RegKey::open(root, sub_key).is_ok())
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 检查注册表值是否存在。
 pub fn value_exists(root: HKEY, sub_key: &str, name: &str) -> Result<bool> {
     let key = match RegKey::open(root, sub_key) {

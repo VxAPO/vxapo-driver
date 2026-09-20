@@ -4,6 +4,7 @@
 
 use super::*;
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 顶层 TOML 文件模型。
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileModel {
@@ -22,6 +23,7 @@ pub(super) fn default_version() -> u32 {
     1
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// APP 元数据（driver 忽略）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Meta {
@@ -31,6 +33,7 @@ pub struct Meta {
     pub schema: Option<u32>,
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 单个效果器文件表示（参数平铺；`name`/`group` 仅供 APP）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileEffect {

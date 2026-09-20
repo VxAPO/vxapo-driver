@@ -1,4 +1,4 @@
-﻿//! object/vx_reg_props.rs — APO 注册属性定义
+//! object/vx_reg_props.rs — APO 注册属性定义
 //!
 //! VxAPO 自身的 CLSID 定义与 APO 注册属性。
 //! 系统级接口 IID 请见 `sys/com/apo_interfaces.rs`。
@@ -107,6 +107,7 @@ const _: () = {
 // 查询辅助
 // ══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(test)]
 pub fn props_for_clsid(clsid: &GUID) -> Option<&'static APO_REG_PROPERTIES> {
     if *clsid == CLSID_VXAPO_PRE_MIX {
         Some(&REG_PROPS_PRE_MIX)
@@ -121,6 +122,7 @@ pub fn is_vxapo_clsid(clsid: &GUID) -> bool {
     *clsid == CLSID_VXAPO_PRE_MIX || *clsid == CLSID_VXAPO_POST_MIX
 }
 
+#[cfg(test)]
 pub fn supported_clsids() -> &'static [GUID] {
     &[CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX]
 }
@@ -253,6 +255,7 @@ mod tests {
     }
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 单个 CLSID 的注册信息（规范 7.5）。
 #[derive(Debug)]
 pub struct ClsidEntry {
@@ -281,6 +284,7 @@ impl ClsidEntry {
     pub fn audio_engine_path(&self) -> String {
         format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
     }
+#[cfg(test)]
     pub fn registration_entries(&self, dll_path: &str) -> Vec<(&str, String, String)> {
         vec![
             ("Default", String::new(), dll_path.to_owned()),

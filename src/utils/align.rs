@@ -4,6 +4,9 @@
 //! 缓冲区在初始化阶段分配，实时线程直接使用已分配内存，无堆分配开销。
 //!
 //! 此模块为纯工具函数，不依赖 Windows API。
+// 本模块是对齐缓冲设施：当前仅内部构造路径与单测使用，保留完整 API。
+#![allow(dead_code, unused_imports)]
+
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::ptr::NonNull;

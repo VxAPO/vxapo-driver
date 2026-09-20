@@ -1,4 +1,4 @@
-﻿//! install/audiodg.rs — DisableProtectedAudioDG 检查与修复（规范 5.6）
+//! install/audiodg.rs — DisableProtectedAudioDG 检查与修复（规范 5.6）
 //!
 //! 保护模式阻止第三方 APO 加载。通过注册表
 //! `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio` 下的
@@ -43,6 +43,7 @@ pub(crate) fn is_disabled() -> Result<bool> {
 /// 检查是否允许第三方 APO 加载。
 ///
 /// `is_disabled()` 的语义别名——返回 `true` 表示可以加载。
+#[cfg(test)]
 pub(crate) fn is_third_party_allowed() -> Result<bool> {
     is_disabled()
 }
@@ -59,6 +60,7 @@ pub(crate) fn disable() -> Result<()> {
 /// 删除 DisableProtectedAudioDG 值（恢复 Windows 默认保护行为）。
 ///
 /// 值不存在不算错误。
+#[cfg(test)]
 pub(crate) fn restore() -> Result<()> {
     let key = match RegKey::open(HKEY_LOCAL_MACHINE, AUDIO_KEY_PATH) {
         Ok(k) => k,
@@ -171,6 +173,7 @@ pub fn stop_audio_service() -> Result<()> {
 /// 3. StartServiceW 启动 AudioSrv
 ///
 /// 失败不阻塞安装（best-effort，仅日志——注册表已写入，服务下次重启自然生效）。
+#[cfg(test)]
 pub(crate) fn restart_audio_service() -> Result<()> {
     use windows::Win32::System::Services::{
         OpenSCManagerW, OpenServiceW, ControlService, StartServiceW, QueryServiceStatus,

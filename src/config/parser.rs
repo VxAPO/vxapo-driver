@@ -31,6 +31,7 @@ impl ConfigParser {
     }
 
     /// 解析配置文件（丢弃 spec）。
+#[cfg(test)]
     pub fn parse_file(
         &self,
         path: &str,
@@ -67,6 +68,7 @@ impl ConfigParser {
     }
 
     /// 解析配置字符串（丢弃 spec）。
+#[cfg(test)]
     pub fn parse_string(
         &self,
         content: &str,
@@ -77,6 +79,7 @@ impl ConfigParser {
     }
 
     /// 解析行列表（兼容入口：按换行拼接后走 TOML 解析）。
+#[cfg(test)]
     pub fn parse_lines(
         &self,
         lines: &[String],

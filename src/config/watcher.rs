@@ -1,4 +1,4 @@
-﻿//! config/watcher.rs — 配置文件变更监控（规范 6.2，事件驱动）
+//! config/watcher.rs — 配置文件变更监控（规范 6.2，事件驱动）
 //!
 //! **职责**：监控配置目录变更（Win32 事件驱动，对齐 EAPO `notificationThread`）。
 //! 不再使用轮询模式（旧 2000ms 轮询延迟高、浪费 CPU）。
@@ -15,14 +15,21 @@
 //! （new 注释的"启动 watcher 线程"为模板残留—— API 明确 2 参、
 //!   线程由 object 层驱动，见 `object 7.1.9`。）
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+// Path 仅被 cfg(test) 下的 watch_dir() 使用。
+#[cfg(test)]
+use std::path::Path;
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
     FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
 };
-use windows::Win32::System::Threading::{SetEvent, WaitForMultipleObjects};
+use windows::Win32::System::Threading::WaitForMultipleObjects;
+// SetEvent 仅被 cfg(test) 下的用例使用。
+#[cfg(test)]
+use windows::Win32::System::Threading::SetEvent;
 
 /// 去重窗口：编辑器「写临时文件 + rename」的多次通知在此窗口内合并。
 const DEDUP_WINDOW_MS: u32 = 10;
@@ -32,6 +39,9 @@ const DEDUP_WINDOW_MS: u32 = 10;
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// 监控到的变更事件类型。
+///
+/// 生产路径经 wait_and_handle 返回该类型；构造目前只有单测覆盖，故整体保留。
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchEvent {
     /// 监控目录内发生变更（**目录级通知**——`FindFirstChangeNotificationW`
@@ -59,6 +69,7 @@ pub struct ConfigWatcher {
     shutdown_event: HANDLE,
     /// 目录变更通知句柄（FindFirstChangeNotificationW）。
     notify_handle: HANDLE,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 上次注册表哈希（poll_registry 用）。
     last_registry_hash: Option<u64>,
 }
@@ -101,6 +112,7 @@ impl ConfigWatcher {
     }
 
     /// 监控目录。
+#[cfg(test)]
     pub fn watch_dir(&self) -> &Path {
         &self.watch_dir
     }
@@ -156,6 +168,7 @@ impl ConfigWatcher {
     }
 
     /// 检查注册表变更（哈希比对，低频；与目录监控并行）。
+#[cfg(test)]
     pub fn poll_registry(&mut self, current_hash: u64) -> Option<WatchEvent> {
         if let Some(last) = self.last_registry_hash {
             if last != current_hash {
@@ -173,6 +186,7 @@ impl ConfigWatcher {
     ///
     /// 调用方（apo.rs UnlockForProcess）随后 join 自己的 watcher 线程。
     /// 重复调用幂等（句柄关闭后置位无副作用）。
+#[cfg(test)]
     pub fn shutdown(&mut self) {
         // Safety: shutdown_event 由 APO 实例持有且有效；SetEvent 置位唤醒等待线程。
         let _ = unsafe { SetEvent(self.shutdown_event) };

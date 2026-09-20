@@ -25,7 +25,7 @@ use crate::pipeline::dsp::wide::WideParams;
 mod convert;
 mod types;
 
-pub use types::{FileEffect, FileModel, FilePeqBand, Meta};
+pub use types::FileModel;
 
 #[cfg(test)]
 mod tests;

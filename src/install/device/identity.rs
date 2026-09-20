@@ -82,6 +82,7 @@ pub struct EndpointIdentity {
 
 impl EndpointIdentity {
     /// 是否完全没有身份信息（三个来源都缺）。
+#[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.instance_id.is_empty()
             && self.hardware_ids.is_empty()
@@ -262,6 +263,7 @@ pub fn write_identity_values(
 }
 
 /// 读取记录键已落盘的身份（键不存在时返回默认值）。
+#[cfg(test)]
 pub fn read_stored_identity(device_guid: &str, child_apo_root: &str) -> EndpointIdentity {
     let key_path = format!("{child_apo_root}\\{device_guid}");
     let Ok(key) = RegKey::open(HKEY_LOCAL_MACHINE, &key_path) else {

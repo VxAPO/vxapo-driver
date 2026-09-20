@@ -1,4 +1,4 @@
-﻿//! object/apo/child.rs — 子 APO 管理
+//! object/apo/child.rs — 子 APO 管理
 //!
 //! 子 APO COM 生命周期管理：
 //! - `CoCreateInstance` 创建子 APO 实例
@@ -91,6 +91,7 @@ impl ChildApo {
         Ok(Self { iapo, iapo_rt, iapo_cfg })
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 是否有效（所有接口引用非空）。
     ///
     /// 类型化接口的 null 语义：`cast` 成功即接口引用有效；此谓词保留
@@ -111,6 +112,7 @@ impl ChildApo {
         unsafe { self.iapo.GetLatency() }.unwrap_or(0)
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 重置子 APO（`Reset`）。
     ///
     /// 用于 Unlock 失败后的重置防御（下次 Lock 前调用）。
@@ -121,6 +123,7 @@ impl ChildApo {
             .unwrap_or_else(|e| e.into())
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 获取子 APO 注册属性（`GetRegistrationProperties`）。
     ///
     /// # Safety
@@ -143,6 +146,7 @@ impl ChildApo {
         }
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     /// 初始化子 APO（`Initialize`，同传父 APOInit 数据，EAPO 180-215 对齐）。
     ///
     /// # Safety
@@ -173,6 +177,7 @@ impl ChildApo {
     /// # Safety
     ///
     /// `pp_supported` 必须有效（COM 输出指针）。
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub unsafe fn is_input_format_supported(
         &self,
         p_opposite: Option<&IAudioMediaType>,
@@ -191,6 +196,7 @@ impl ChildApo {
     /// # Safety
     ///
     /// `pp_supported` 必须有效（COM 输出指针）。
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub unsafe fn is_output_format_supported(
         &self,
         p_opposite: Option<&IAudioMediaType>,
@@ -206,6 +212,7 @@ impl ChildApo {
     ///
     /// # Safety
     /// `pp_supported` 必须是有效的 COM 输出指针；`call` 由调用方保证只调用格式协商接口。
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     unsafe fn resolve_supported<F>(
         &self,
         p_opposite: Option<&IAudioMediaType>,
@@ -235,6 +242,7 @@ impl ChildApo {
     }
 
     /// 获取输入通道数（`GetInputChannelCount`）。
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn get_input_channel_count(&self, p_count: *mut u32) -> HRESULT {
         if p_count.is_null() {
             return E_POINTER;
@@ -256,6 +264,7 @@ impl ChildApo {
     }
 
     /// 子 APO 计算输出帧数（`CalcOutputFrames`）。
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn calc_output_frames(&self, input_frames: u32) -> u32 {
         unsafe { self.iapo_rt.CalcOutputFrames(input_frames) }
     }

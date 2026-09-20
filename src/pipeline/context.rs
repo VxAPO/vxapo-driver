@@ -1,4 +1,4 @@
-﻿//! pipeline/context.rs — PipelineContext（规范 4.1）
+//! pipeline/context.rs — PipelineContext（规范 4.1）
 //!
 //! 职责：运行时上下文。存放 LockForProcess 时确定的静态格式信息，APOProcess 期间只读。
 
@@ -28,6 +28,7 @@ impl PipelineContext {
     }
 
     /// 每帧字节数（32-bit float × 通道数）。
+#[cfg(test)]
     pub fn bytes_per_frame(&self) -> usize {
         self.input_channels.max(self.output_channels) as usize * 4
     }

@@ -77,6 +77,7 @@ pub fn raised_cosine(counter: u32, length: u32) -> f32 {
 /// 所有指针必须有效且指向至少 `frame_count` 个 `f32` 元素。
 /// 调用方保证不发生越界访问。
 #[inline]
+#[cfg(test)]
 pub unsafe fn mix_buffers(
     old_samples: *const f32,
     new_samples: *const f32,
@@ -100,6 +101,7 @@ pub unsafe fn mix_buffers(
 /// # 实时安全
 ///
 /// 纯数值计算，无分配。
+#[cfg(test)]
 pub fn mix_plane_buffers(
     old_buffers: &[Vec<f32>],
     new_buffers: &[Vec<f32>],
@@ -182,6 +184,7 @@ impl SmoothingProvider {
     }
 
     /// 是否正在过渡中。
+#[cfg(test)]
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -197,6 +200,7 @@ impl SmoothingProvider {
     }
 
     /// 进度百分比（0.0..=1.0）。
+#[cfg(test)]
     pub fn progress(&self) -> f32 {
         if self.length == 0 {
             return 1.0;
@@ -205,12 +209,14 @@ impl SmoothingProvider {
     }
 
     /// 重置到空闲状态。
+#[cfg(test)]
     pub fn reset(&mut self) {
         self.counter = 0;
         self.active = false;
     }
 
     /// 更改过渡长度（配置变更时可能需要调整）。
+#[cfg(test)]
     pub fn set_length(&mut self, length: u32) {
         self.length = length;
     }
@@ -226,6 +232,7 @@ pub fn default_smoothing_length(sample_rate: u32) -> u32 {
 }
 
 /// 根据采样率计算短过渡帧数（约 10ms）。
+#[cfg(test)]
 pub fn short_smoothing_length(sample_rate: u32) -> u32 {
     sample_rate / 100 // 10ms
 }

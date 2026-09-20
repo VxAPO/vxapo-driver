@@ -43,6 +43,7 @@ impl<T: Copy + Default> RingBuffer<T> {
     }
 
     /// 弹出元素。空时返回 None。
+#[cfg(test)]
     pub fn pop(&self) -> Option<T> {
         let read = self.read_pos.load(Ordering::Relaxed);
         let write = self.write_pos.load(Ordering::Acquire);
@@ -54,16 +55,19 @@ impl<T: Copy + Default> RingBuffer<T> {
         Some(value)
     }
 
+#[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.read_pos.load(Ordering::Acquire) == self.write_pos.load(Ordering::Acquire)
     }
 
+#[cfg(test)]
     pub fn is_full(&self) -> bool {
         let write = self.write_pos.load(Ordering::Relaxed);
         let read = self.read_pos.load(Ordering::Acquire);
         write.wrapping_sub(read) >= self.capacity
     }
 
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn capacity(&self) -> usize {
         self.capacity
     }

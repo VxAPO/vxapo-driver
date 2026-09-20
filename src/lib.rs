@@ -23,12 +23,6 @@
 // Windows COM 接口沿用 PascalCase / SCREAMING_SNAKE_CASE 命名
 #![allow(non_camel_case_types, non_snake_case)]
 
-// 内部模块收窄为 crate 私有（对外只经下方 facade）后，一批内部条目在仓内暂时没有
-// 消费者：各层按设计保留的完整 API、windows-rs 类型 re-export 表、只被单测使用的辅助
-// 函数。它们的处置（删除 / 收紧为 #[cfg(test)]）随对应文件的拆分逐项进行，此处暂不
-// 逐条告警。
-#![allow(dead_code, unused_imports)]
-
 // ======================== 模块声明（crate 内部） ========================
 
 pub(crate) mod config;

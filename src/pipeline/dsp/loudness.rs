@@ -1,4 +1,4 @@
-﻿//! pipeline/dsp/loudness.rs — ISO 226 等响曲线
+//! pipeline/dsp/loudness.rs — ISO 226 等响曲线
 //!
 //! 实现 `LoudnessCorrection:` 命令。
 //!
@@ -70,6 +70,7 @@ impl LoudnessFilter {
     }
 
     /// 当前开关状态。
+#[cfg(test)]
     pub fn enabled(&self) -> bool {
         self.enabled
     }
