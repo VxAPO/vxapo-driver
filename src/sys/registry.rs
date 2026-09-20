@@ -1,6 +1,6 @@
 ﻿//! sys/registry.rs — 注册表模块（规范 3.4，按 windows-rs 0.62.2 真实 API）
 
-use windows::core::{HSTRING, PCWSTR, Result};
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::System::Registry::{
     HKEY, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW,
@@ -8,6 +8,23 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS, REG_BINARY, REG_DWORD,
     REG_MULTI_SZ, REG_OPEN_CREATE_OPTIONS, REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
 };
+
+use crate::utils::vx_error::{Result, VxApoError};
+
+/// Windows 错误码（`WIN32_ERROR`）→ `VxApoError::Registry`。
+///
+/// 本模块是注册表语义的唯一来源：把 Windows 错误在这里就归类为 `Registry`，
+/// 上层调用点无需再依赖「windows 错误一律映射 Registry」的隐式转换。
+fn win32_err(err: WIN32_ERROR) -> VxApoError {
+    err_from_hr(windows::core::HRESULT(
+        (0x8007_0000u32 | (err.0 & 0xFFFF)) as i32,
+    ))
+}
+
+/// HRESULT → `VxApoError::Registry`（保留系统错误文本，便于排障）。
+fn err_from_hr(hr: windows::core::HRESULT) -> VxApoError {
+    VxApoError::Registry(windows::core::Error::from_hresult(hr).to_string())
+}
 
 const SAM_READ: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0002_0019); // KEY_READ = STANDARD_RIGHTS_READ | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY
 const SAM_ALL: REG_SAM_FLAGS = REG_SAM_FLAGS(0x000F_003F); // KEY_ALL_ACCESS
@@ -20,9 +37,7 @@ fn win32_ok(err: WIN32_ERROR) -> Result<()> {
     if err.0 == 0 {
         Ok(())
     } else {
-        Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-            (0x8007_0000u32 | (err.0 & 0xFFFF)) as i32,
-        )))
+        Err(win32_err(err))
     }
 }
 
@@ -155,7 +170,7 @@ impl RegKey {
                     RegValue::Dword(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
                 } else {
                     // 数据损坏不可静默（审查 #6）：截断为 0 会掩盖注册表问题。
-                    return Err(windows::core::Error::from_hresult(
+                    return Err(err_from_hr(
                         windows::core::HRESULT(0x8007_000Du32 as i32),
                     ));
                 }
@@ -166,7 +181,7 @@ impl RegKey {
                         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
                     ]))
                 } else {
-                    return Err(windows::core::Error::from_hresult(
+                    return Err(err_from_hr(
                         windows::core::HRESULT(0x8007_000Du32 as i32),
                     ));
                 }
@@ -182,7 +197,7 @@ impl RegKey {
     pub fn read_sz_value(&self, name: &str) -> Result<String> {
         match self.read_value(name)? {
             RegValue::Sz(s) => Ok(s),
-            _ => Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            _ => Err(err_from_hr(windows::core::HRESULT(
                 0x8000_000Du32 as i32,
             ))),
         }
@@ -197,7 +212,7 @@ impl RegKey {
     pub fn read_dword_value(&self, name: &str) -> Result<u32> {
         match self.read_value(name)? {
             RegValue::Dword(d) => Ok(d),
-            _ => Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            _ => Err(err_from_hr(windows::core::HRESULT(
                 0x8000_000Du32 as i32,
             ))),
         }
@@ -207,7 +222,7 @@ impl RegKey {
     pub fn read_binary_value(&self, name: &str) -> Result<Vec<u8>> {
         match self.read_value(name)? {
             RegValue::Binary(b) => Ok(b),
-            _ => Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            _ => Err(err_from_hr(windows::core::HRESULT(
                 0x8000_000Du32 as i32,
             ))),
         }
@@ -217,7 +232,7 @@ impl RegKey {
     pub fn read_multi_value(&self, name: &str) -> Result<Vec<String>> {
         match self.read_value(name)? {
             RegValue::MultiSz(v) => Ok(v),
-            _ => Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            _ => Err(err_from_hr(windows::core::HRESULT(
                 0x8000_000Du32 as i32,
             ))),
         }
@@ -349,7 +364,7 @@ impl RegKey {
                 Ok(crate::sys::com::prelude::guid_to_string(&guid))
             }
             RegValue::Sz(s) => Ok(s),
-            _ => Err(windows::core::Error::from_hresult(
+            _ => Err(err_from_hr(
                 windows::core::HRESULT(0x8000_000Du32 as i32),
             )),
         }
@@ -525,7 +540,7 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
         "HKU" | "HKEY_USERS" => HKEY_USERS,
         "HKCC" | "HKEY_CURRENT_CONFIG" => HKEY_CURRENT_CONFIG,
         _ => {
-            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            return Err(err_from_hr(windows::core::HRESULT(
                 0x8007_001Bu32 as i32,
             )))
         }
@@ -594,7 +609,7 @@ pub fn save_to_file(root: HKEY, sub_key: &str, path: &str) -> Result<()> {
     bytes.append(&mut utf16);
     std::fs::write(path, bytes).map_err(|e| {
         let code = e.raw_os_error().unwrap_or(5) as u32 & 0xFFFF;
-        windows::core::Error::from_hresult(windows::core::HRESULT(
+        err_from_hr(windows::core::HRESULT(
             (0x8007_0000u32 | code) as i32,
         ))
     })?;

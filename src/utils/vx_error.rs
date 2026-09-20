@@ -68,11 +68,10 @@ const E_UNEXPECTED: windows_core::HRESULT = windows_core::HRESULT(0x8000_FFFFu32
 
 // ── VxApoError → HRESULT 映射（供 COM 方法返回）────────────────────────────
 
-impl From<windows_core::Error> for VxApoError {
-    fn from(err: windows_core::Error) -> Self {
-        VxApoError::Registry(err.to_string())
-    }
-}
+// 注意：本模块**不**提供 `From<windows_core::Error>` 的隐式归一——历史上它把服务 /
+// COM / 文件错误也一律标成「注册表错误」，掩盖真实故障层。现在：
+// - 注册表语义在 `sys/registry.rs` 内部归类为 `Registry`（该层是唯一来源）；
+// - 其余 Windows API 调用点按语义显式构造（`Internal` / `Io` 等）。
 
 impl From<VxApoError> for windows_core::HRESULT {
     fn from(err: VxApoError) -> Self {

@@ -230,7 +230,7 @@ pub fn register_apo_with_path(dll_path: &str) -> HRESULT {
     let entries = vx_reg_props::registration_order();
 
     for (i, entry) in entries.iter().enumerate() {
-        if let Err(_hr) = register_com_class(entry, dll_path) {
+        if register_com_class(entry, dll_path).is_err() {
             // 注册失败，按逆序回滚已注册的条目
             for j in (0..i).rev() {
                 let _ = unregister_com_class(&entries[j]);
@@ -295,7 +295,7 @@ fn get_dll_path() -> Option<String> {
 ///
 /// 写入 `HKCR\CLSID\{GUID}`（(Default）=友好名)与 `InprocServer32`
 /// （(Default）=DLL 路径 + ThreadingModel="Both")，经 `sys/registry`。
-/// 失败返回具体 HRESULT，由 `DllRegisterServer` 统一回滚。
+/// 失败由 `DllRegisterServer` 统一回滚（错误为注册表错误的文本描述）。
 ///
 /// **CLSID 父键(Default) 友好名（对齐 EAPO）**：EAPO 的 CLSID 注册树
 /// 在父键有(Default)="EqualizerAPO Pre-Mix Class"；VxAPO 之前只写 InprocServer32
@@ -303,23 +303,22 @@ fn get_dll_path() -> Option<String> {
 fn register_com_class(
     entry: &vx_reg_props::ClsidEntry,
     dll_path: &str,
-) -> Result<(), HRESULT> {
+) -> crate::utils::vx_error::Result<()> {
     // CLSID 父键(Default) = 友好名（EAPO 对齐）。
-    let clsid_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &entry.clsid_key_path())
-        .map_err(|e| e.code())?;
-    clsid_key.write_sz("", &entry.friendly_name).map_err(|e| e.code())?;
+    let clsid_key =
+        crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &entry.clsid_key_path())?;
+    clsid_key.write_sz("", &entry.friendly_name)?;
     drop(clsid_key);
 
     // InprocServer32 键（KEY_ALL_ACCESS；键已存在时覆盖写入 → 幂等）
     let inproc_path = entry.inproc_server_path();
-    let key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &inproc_path)
-        .map_err(|e| e.code())?;
+    let key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &inproc_path)?;
 
     // 写(Default) = DLL 路径
-    key.write_sz("", dll_path).map_err(|e| e.code())?;
+    key.write_sz("", dll_path)?;
 
     // 写 ThreadingModel = "Both"
-    key.write_sz("ThreadingModel", "Both").map_err(|e| e.code())?;
+    key.write_sz("ThreadingModel", "Both")?;
 
     // ---- AudioEngine APO 注册键 ----
     // Windows 引擎读端点槽位 CLSID 后，从
@@ -327,23 +326,21 @@ fn register_com_class(
     // 缺失该键 → 引擎静默跳过（DLL 不加载、无事件日志），必须补齐。
     // 结构对齐 EAPO 注册树（EqualizerAPO.cpp CRegAPOProperties）。
     let ae_path = entry.audio_engine_path();
-    let ae_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &ae_path)
-        .map_err(|e| e.code())?;
-    ae_key.write_sz("FriendlyName", &entry.friendly_name).map_err(|e| e.code())?;
-    ae_key.write_sz("Copyright", "VxAPO Project").map_err(|e| e.code())?;
-    ae_key.write_dword("Flags", AE_FLAGS).map_err(|e| e.code())?;
-    ae_key.write_dword("NumAPOInterfaces", AE_NUM_INTERFACES).map_err(|e| e.code())?;
-    ae_key.write_sz("APOInterface0", AE_INTERFACE0)
-        .map_err(|e| e.code())?;
-    ae_key.write_dword("MaxInstances", AE_MAX_INSTANCES).map_err(|e| e.code())?;
+    let ae_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &ae_path)?;
+    ae_key.write_sz("FriendlyName", &entry.friendly_name)?;
+    ae_key.write_sz("Copyright", "VxAPO Project")?;
+    ae_key.write_dword("Flags", AE_FLAGS)?;
+    ae_key.write_dword("NumAPOInterfaces", AE_NUM_INTERFACES)?;
+    ae_key.write_sz("APOInterface0", AE_INTERFACE0)?;
+    ae_key.write_dword("MaxInstances", AE_MAX_INSTANCES)?;
     // 完整 11 字段对齐 EAPO：字段不全 → 引擎只 LoadLibrary 不实例化 APO → 无声。
     // Major/Minor + Min/Max In/Out 6 字段。
-    ae_key.write_dword("MajorVersion", AE_VERSION_MAJOR).map_err(|e| e.code())?;
-    ae_key.write_dword("MinorVersion", AE_VERSION_MINOR).map_err(|e| e.code())?;
-    ae_key.write_dword("MinInputConnections", AE_CONNECTION_MIN).map_err(|e| e.code())?;
-    ae_key.write_dword("MaxInputConnections", AE_CONNECTION_MAX).map_err(|e| e.code())?;
-    ae_key.write_dword("MinOutputConnections", AE_CONNECTION_MIN).map_err(|e| e.code())?;
-    ae_key.write_dword("MaxOutputConnections", AE_CONNECTION_MAX).map_err(|e| e.code())?;
+    ae_key.write_dword("MajorVersion", AE_VERSION_MAJOR)?;
+    ae_key.write_dword("MinorVersion", AE_VERSION_MINOR)?;
+    ae_key.write_dword("MinInputConnections", AE_CONNECTION_MIN)?;
+    ae_key.write_dword("MaxInputConnections", AE_CONNECTION_MAX)?;
+    ae_key.write_dword("MinOutputConnections", AE_CONNECTION_MIN)?;
+    ae_key.write_dword("MaxOutputConnections", AE_CONNECTION_MAX)?;
     drop(ae_key);
 
     Ok(())
@@ -352,16 +349,15 @@ fn register_com_class(
 /// 注销单个 CLSID 的 COM 类。
 ///
 /// 先删 `InprocServer32` 子键，再删 `CLSID\{GUID}` 父键；键不存在视为成功（幂等）。
-fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT> {
+fn unregister_com_class(
+    entry: &vx_reg_props::ClsidEntry,
+) -> crate::utils::vx_error::Result<()> {
     // 删除 InprocServer32 子键（幂等）
-    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())
-        .map_err(|e| e.code())?;
+    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())?;
     // 删除 AudioEngine APO 注册键（与注册对称；键不存在视为成功）
-    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.audio_engine_path())
-        .map_err(|e| e.code())?;
+    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.audio_engine_path())?;
     // 删除 CLSID 父键（幂等）
-    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.clsid_key_path())
-        .map_err(|e| e.code())?;
+    crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.clsid_key_path())?;
     Ok(())
 }
 
