@@ -18,26 +18,10 @@ use crate::sys::com::apo_interfaces::IID_IAPO;
 use crate::sys::com::apo_types::{APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, APO_FLAG_FRAMESPERSECOND_MUST_MATCH, APO_FLAG_INPLACE, APO_REG_PROPERTIES};
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CLSID 常量
+// CLSID 常量（定义在 sys/consts.rs，单一来源）
 // ══════════════════════════════════════════════════════════════════════════════
-// 由 PowerShell `[guid]::NewGuid()` 生成，**定死不改动**。
-// 备份见 .clinerules/07-VxAPO_GUID.md。
-// PRE_MIX = 41C34613-D391-459D-A039-72B2B15A1A1D
-// POST_MIX = B4A97313-ABC0-45ED-9C33-428B20D39428
 
-pub const CLSID_VXAPO_PRE_MIX: GUID = GUID::from_values(
-    0x41C34613,
-    0xD391,
-    0x459D,
-    [0xA0, 0x39, 0x72, 0xB2, 0xB1, 0x5A, 0x1A, 0x1D],
-);
-
-pub const CLSID_VXAPO_POST_MIX: GUID = GUID::from_values(
-    0xB4A97313,
-    0xABC0,
-    0x45ED,
-    [0x9C, 0x33, 0x42, 0x8B, 0x20, 0xD3, 0x94, 0x28],
-);
+pub use crate::sys::consts::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // APO 名称和版权

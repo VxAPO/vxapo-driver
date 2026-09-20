@@ -60,14 +60,8 @@ pub fn check_hresult(hr: windows_core::HRESULT) -> Result<()> {
     }
 }
 
-// ── APO 专用 HRESULT 错误码（规范 3.3.7）──────────────────────────────
-// 注：这些常量在规范中定义于 sys/com/apo_types.rs，但 utils/ 层禁止依赖 sys/。
-// 因此此处内联常量值，保持 utils 独立性（值同规范，两处保持一致）。
-
-/// 0x887D_0001
-pub(crate) const APOERR_ALREADY_INITIALIZED: u32 = 0x887D_0001;
-/// 0x887D_0003
-pub(crate) const APOERR_FORMAT_NOT_SUPPORTED: u32 = 0x887D_0003;
+// ── APO 专用 HRESULT 错误码（单一来源 sys/consts.rs）──────────────────
+pub(crate) use crate::sys::consts::{APOERR_ALREADY_INITIALIZED, APOERR_FORMAT_NOT_SUPPORTED};
 
 const E_FAIL: windows_core::HRESULT = windows_core::HRESULT(0x8000_4005u32 as i32);
 const E_UNEXPECTED: windows_core::HRESULT = windows_core::HRESULT(0x8000_FFFFu32 as i32);
@@ -85,15 +79,11 @@ impl From<VxApoError> for windows_core::HRESULT {
         match err {
             VxApoError::Registry(_) => E_FAIL,
             VxApoError::Config(_) => E_FAIL,
-            VxApoError::Format(_) => {
-                windows_core::HRESULT(APOERR_FORMAT_NOT_SUPPORTED as i32)
-            }
+            VxApoError::Format(_) => APOERR_FORMAT_NOT_SUPPORTED,
             VxApoError::Io(_) => E_FAIL,
             VxApoError::Internal(_) => E_UNEXPECTED,
             VxApoError::RtSafety(_) => E_FAIL,
-            VxApoError::State(_) => {
-                windows_core::HRESULT(APOERR_ALREADY_INITIALIZED as i32)
-            }
+            VxApoError::State(_) => APOERR_ALREADY_INITIALIZED,
             VxApoError::DeviceNotFound(_) => E_FAIL,
         }
     }
