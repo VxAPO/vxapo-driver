@@ -4,10 +4,10 @@
 
 [中文](#vxapo-driver) · [English](#vxapo-driver-english) · [项目总览](../vxapo-docs/overview/zh/项目概览.md)
 
-在 Windows 音频引擎（`audiodg`）内实现逐端点的实时音频处理。VxAPO Driver 以标准 APO
-（Audio Processing Object）形式注册并被引擎加载，按端点读取
-`C:\ProgramData\VxAPO\{GUID}\config.toml`，逐帧处理音频流。配置是只读输入：写入路径
-仅存在于 CLI（提权）与 App，DLL 不修改任何文件。
+VxAPO Driver 在 Windows 音频引擎（`audiodg`）内做逐端点的实时音频处理。它以标准 APO
+（Audio Processing Object）形式注册，引擎随后加载它。它按端点读取
+`C:\ProgramData\VxAPO\{GUID}\config.toml`，再逐帧处理音频流。配置是只读输入：只有 CLI
+（提权）与 App 会写文件，DLL 从不修改任何文件。
 
 阅读顺序：实现要点 → 与 Equalizer APO 的差异 → 架构 → 实时契约 → 配置 → 效果器与支持面 →
 性能 → 上手 → 三端契约 → 测试与排障 → 参考。
@@ -15,7 +15,7 @@
 ## 1 · 实现要点
 
 本项目围绕一个问题展开：**驱动级实时音频处理能否完整用 Rust 实现，同时遵守既有
-COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置：
+COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置。
 
 | 做法 | 说明 | 可核验位置 |
 |---|---|---|
@@ -28,11 +28,12 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置：
 
 ## 2 · 与 Equalizer APO 的差异
 
-两者面向同一问题（系统级、逐端点、脚本可驱动的音频处理），实现路线不同。下表只列差异：
+两者解决同一个问题：系统级、逐端点、脚本可驱动的音频处理。两者的实现路线不同。下表只列
+差异。
 
 | 面 | Equalizer APO | VxAPO |
 |---|---|---|
-| 配置载体 | `config.txt` 逐行命令语法（`GraphicEQ:` 等） | v9.11 起每端点一份 TOML；旧命令体系整体移除，`vxapo-cli config convert` 做一次性转换 |
+| 配置载体 | `config.txt` 逐行命令语法（`GraphicEQ:` 等） | 每端点一份 TOML；旧命令体系整体移除，`vxapo-cli config convert` 做一次性转换 |
 | 语法错误处理 | 无冒号行**静默跳过**（`FilterEngine.cpp` 329-330：`pos == -1` 时整行不解析、不报错） | 无冒号 / 多冒号一律 `SyntaxError`，整体失败且不产出 spec（有意更严格） |
 | 安装模式探测 | `load()` 396-413（C41-C44）三档自动探测 LfxGfx / SfxMfx / SfxEfx | 移植为 `slots::detect_install_mode`，判定改为「VxAPO CLSID 成对」（EDIFIER 实证：按任意 GUID 占槽会误判 SfxMfx） |
 | 子 APO 注册表 | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO`（`RegistryHelper.h` 33）、`childApoPath`（`DeviceAPOInfo.cpp` 43）、值名 `PreMixChild` / `PostMixChild`（`DeviceAPOInfo.cpp` 558-563） | 机制相同但**路径隔离**：`HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`；禁止读写 EAPO 路径，否则污染其安装信息区 |
@@ -44,45 +45,50 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置：
 | 设备状态判定 | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` 同判定 |
 | 许可 | GPL-2.0（© Jonas Thedering） | GPL-3.0-or-later，独立实现，不含 EAPO 代码 |
 
-EAPO 侧行为记录见 `vxapo-docs/driver/zh/配置与DSP设计.md` §5「EqualizerAPO 行为参考」与
-`模块引用规范/` 各模块规范（`Equalizer 行为文档` 已随 v9.11 移除）。当前保留的可对照机制
-为四项：子 APO 创建与委托、安装模式探测、槽位备份与恢复、安装后自检。
+EAPO 侧行为记录见 `vxapo-docs/driver/zh/配置与DSP设计.md` §5「EqualizerAPO 行为参考」，
+各模块规范里也重复了细节，见 `模块引用规范/`。`Equalizer 行为文档` 本身已移除。
+当前保留四项可对照机制：子 APO 创建与委托、安装模式探测、槽位备份与恢复、安装后自检。
 
 ## 3 · 架构
 
-driver 内部按实时性划分为两条路径：
+driver 内部按实时性划分为两条路径。
 
 | 路径 | 进入时机 | 模块 |
 |---|---|---|
 | 实时路径 | 每帧（`APOProcess`） | `pipeline/realtime/`（`RtSafe` / `RtCopy` 契约、编译期见证、无锁环形缓冲）、`pipeline/dsp/`（效果器链，7 个效果器见 §6） |
 | 控制路径 | 初始化、热重载、诊断 | `object/apo/`（APO 对象、聚合外壳、子 APO、协商、热重载、RT 转储）、`config/`（TOML → 链模型、校验、目录监控）、`install/`（枚举、槽位、安装事务、残留迁移）、`sys/`（COM、注册表、音频格式常量）、`telemetry/`（日志、panic 记录）、`utils/`（环形缓冲、对齐、GUID、错误类型） |
 
-实时路径只依赖 `pipeline/`；`install/` 与 `sys/` 仅在初始化与安装阶段进入。模块树、
+实时路径只依赖 `pipeline/`。`install/` 与 `sys/` 只在初始化与安装阶段进入。模块树、
 依赖规则与三条数据流（安装 / 配置加载 / 实时处理）见
 [`../vxapo-docs/driver/zh/架构与模块规范.md`](../vxapo-docs/driver/zh/架构与模块规范.md)。
 
 ## 4 · 实时安全契约（`src/pipeline/realtime/`）
 
-实时性以类型系统表达，而非依赖约定：
+实时性由类型系统表达，不依赖约定：
 
-- `unsafe trait RtSafe` / `RtCopy` 规定实现者的所有 `&self` / `&mut self` 方法不得分配、
-  不得加锁、不得 I/O、不得 panic；DSP 滤波器全部满足该约束。
-- `RealtimeContext` 为零尺寸见证类型，无字段、无用户可达构造函数，由 RT harness 按引用
-  传递；其出现在调用栈中即表示「此配置服务于实时路径」，把运行时断言前移为编译期约束。
-- 非规格化值防护：RT 入口设置硬件 FTZ/DAZ（`math.rs`），输出端以 `is_finite` 兜底。
-- 处理链零分配：`buffer` / `interleave` / `ring` 在初始化阶段预分配，逐帧复用。
-- 发布构建 `panic = "abort"`，RT 路径内不存在可触发 unwind 的调用。
+- `unsafe trait RtSafe` / `RtCopy` 规定：实现者的每个 `&self` / `&mut self` 方法都不得分配
+  内存、不得加锁、不得做 I/O、不得 panic。全部 DSP 滤波器满足这条约束。
+- `RealtimeContext` 是零尺寸见证类型。它没有字段，也没有用户可达的构造函数，RT harness
+  按引用传递它。它出现在调用栈上，就表示「这份配置服务于实时路径」。这样，运行时断言
+  前移为编译期约束。
+- 非规格化值防护：RT 入口设置硬件 FTZ/DAZ（`math.rs`）。输出端用 `is_finite` 兜底。
+- 处理链零分配：`buffer` / `interleave` / `ring` 在初始化阶段预分配。链随后逐帧复用它们。
+- 发布构建启用 `panic = "abort"`。RT 路径上不存在可触发 unwind 的调用。
 
 ## 5 · 配置模型与热重载（`src/config/`）
 
-- 模型转换：TOML `FileModel` → DSP `ChainModel`（`version` / `enabled` / `[meta]` /
-  `[[effects]]`）；`name` / `group` 等 UI 元数据在转换时丢弃，不进入 DSP 指纹。
-- 校验与限幅：声道名、参数范围、PEQ 段数（单块 1–31，全局合计 ≤ 31）在 config 层完成；
-  越界值仅在内存中 clamp，不回写文件。
-- 热重载：`FindFirstChangeNotificationW` 目录监控（10 ms 去抖，合并编辑器「临时文件 +
-  rename」模式）→ 128 KB 内容闸门 → 重新解析 → 与 `active_spec` 指纹逐项比对；内容未变
-  则幂等跳过，变更则经双链过渡（`transition.rs`）切换，避免爆音。
-- 总开关 `enabled = false`：整链直通，文件内容保留但不再参与校验。
+- 模型转换：TOML `FileModel` 转成 DSP `ChainModel`（`version` / `enabled` / `[meta]` /
+  `[[effects]]`）。转换时丢弃 `name` / `group` 等 UI 元数据，因此改名不会改动 DSP 指纹。
+- 校验与限幅：config 层校验声道名、参数范围与 PEQ 段数。段数上限按块计，单块 1–31。**声道未
+  声明**的块共享 31 段预算，**声明声道**的块按声道各自 31 段（`L 20 + R 20` 合法）。越界值只在
+  内存中 clamp，不回写文件。
+- PEQ 块合并：相邻、同声道且均启用的 PEQ 块合并为单条 FIR。31 段各自级联等于 N 条独立
+  1024–8192 抽头卷积，实时成本随段数线性增长（384 kHz / 31 段实测 17 ms，超出 10 ms 预算）。
+  合并后频响相同（dB 求和），相位为单一最小相位，成本回到单条 FIR。
+- 热重载：`FindFirstChangeNotificationW` 监控目录（10 ms 去抖，合并编辑器「临时文件 +
+  rename」模式）。随后依次是 128 KB 内容闸门、重新解析、与 `active_spec` 指纹逐项比对。
+  内容未变时链幂等跳过。内容变更时链经双链过渡（`transition.rs`）切换，避免爆音。
+- 总开关 `enabled = false`：整链直通。文件内容保留，但不再参与校验。
 
 ## 6 · 效果器与支持面
 
@@ -96,7 +102,7 @@ driver 内部按实时性划分为两条路径：
 | `wide` | 线性相位 FIR 分频（Kaiser，抽头随采样率与分频点缩放）→ 低频直通、高频 M/S；中置走空气吸收（4k–5.5k 高架 + 10k–16k 二阶 Bessel 低通，按 f² 物理曲线）；侧通道动态增益（10 ms 攻击 / 120 ms 释放）+ 双路全通 / ITD 去相关（限 1.5 kHz 以上泛音区）；增量 tanh 限幅后按 `mix` 渗入 |
 | `loudness` | 等响度补偿：按目标 / 参考 phon 以 1/3 倍频程 GraphicEq **近似** ISO 226 等响曲线（简化实现，非完整查表；完整查表与曲线拟合见 `CHANGELOG.md` 的 roadmap） |
 
-支持面（逐行注明实现位置，便于复核）：
+支持面如下，每行注明实现位置以便复核。
 
 | 项 | 范围 | 实现位置 |
 |---|---|---|
@@ -110,16 +116,16 @@ driver 内部按实时性划分为两条路径：
 ## 7 · 性能
 
 - **PEQ 初始化启用 SIMD 点积（AVX2 + FMA）**：1024 抽头直通链由标量 **3.2 ms / 480 帧**
-  降至 **0.1 ms**，消除初始化期实时欠载导致的杂音（提交 `c89c959`）。
-- **RT 路径零分配**：`buffer` / `interleave` / `ring` 初始化期预分配、逐帧复用；`process`
-  内无堆分配、无加锁、无 I/O、无 panic。
-- **FIR 自适应**：`fc ≥ 200 Hz` 段按（频段指纹, 采样率）在进程内缓存最小相位 FIR
-  （1024–8192 抽头；≤ 2048 直接卷积，> 2048 分块 FFT）。
-- **热重载幂等**：内容未变时按 `spec()` 指纹跳过，不重建 DSP 链。
+  降至 **0.1 ms**。这消除了初始化期实时欠载造成的杂音（提交 `c89c959`）。
+- **RT 路径零分配**：`buffer` / `interleave` / `ring` 在初始化期预分配，链逐帧复用它们。
+  `process` 不做堆分配、不加锁、不做 I/O、不 panic。
+- **FIR 自适应**：`fc ≥ 200 Hz` 的段按（频段指纹, 采样率）在进程内缓存最小相位 FIR。
+  抽头数 1024–8192：≤ 2048 走直接卷积，> 2048 走分块 FFT。
+- **热重载幂等**：内容未变时链按 `spec()` 指纹跳过，不重建 DSP 链。
 
 ## 8 · 快速上手
 
-前提：Windows 8.1+ 与 Rust（MSVC）工具链。driver 不单独安装，由 CLI 或 App 部署。
+前提：Windows 8.1+ 与 Rust（MSVC）工具链。driver 不单独安装：CLI 或 App 负责部署它。
 
 ```bash
 # 构建驱动 DLL
@@ -135,23 +141,23 @@ vxapo-cli uninstall -d 0
 ```
 
 - 配置目录：`C:\ProgramData\VxAPO\{端点 GUID}\config.toml`（不存在时使用默认链）。
-- 完整命令见 [`../vxapo-cli`](../vxapo-cli) 与 [`../vxapo-app`](../vxapo-app)；
-  driver 不提供命令行入口。
+- 完整命令见 [`../vxapo-cli`](../vxapo-cli) 与 [`../vxapo-app`](../vxapo-app)。driver 不提供
+  命令行入口。
 
 ## 9 · 三端契约对齐
 
-App / CLI / Driver 共享同一份配置契约，行为必须一致：
+App / CLI / Driver 共享同一份配置契约，三者的行为必须一致：
 
-- **配置契约**：`version = 1`、顶层 `enabled`、`[meta]`、`[[effects]]`；PEQ 块固定写
-  `crossover_hz = 200`；`channels` 声明作用声道（缺省 = 全部）。
+- **配置契约**：`version = 1`、顶层 `enabled`、`[meta]`、`[[effects]]`。PEQ 块固定写
+  `crossover_hz = 200`。`channels` 声明作用声道，缺省为全部声道。
 - **类型兼容**：driver 自动映射旧类型名——`maximizer` / `leveler` → `compressor`、
-  `auralenhancer` → `aural`、`loudnesscorrection` → `loudness`；App 只写当前名。
-- **数值边界**：增益 `[-120, +48]` dB，滤波深切地板 -60 dB，拒绝 NaN/inf；限幅仅在内存
-  中执行，写回侧限幅由 App 负责，DLL 不写文件。
-- **段数上限**：31 段（沿用 GraphicEQ 上限），App 的 `applyPreset` / `addBand` 与 driver
-  校验一致。
-- **指纹与热重载**：`spec()` 指纹不含 `name` / `group`，因此改名 / 改分组不触发 DSP 重建。
-- **延迟上报**：`latency()` 计入 wide FIR 与分块 FFT 的固定延迟；单声道直通。
+  `auralenhancer` → `aural`、`loudnesscorrection` → `loudness`。App 只写当前名。
+- **数值边界**：增益 `[-120, +48]` dB，滤波深切地板 -60 dB，拒绝 NaN/inf。限幅只在内存
+  中执行，写回侧的限幅由 App 负责，DLL 不写文件。
+- **段数上限**：每块 1–31 段（沿用 GraphicEQ 上限）。声道未声明时整设备 31 段。声明声道时每个
+  声道 31 段。App 的 `applyPreset` / `addBand` 按同一口径校验。
+- **指纹与热重载**：`spec()` 指纹不含 `name` / `group`，因此改名或改分组不触发 DSP 重建。
+- **延迟上报**：`latency()` 计入 wide FIR 与分块 FFT 的固定延迟。单声道直通。
 
 ## 10 · 测试与排障
 
@@ -162,11 +168,9 @@ cargo test              # 491 个测试，覆盖 57 个源文件
 cargo build --tests     # 构建测试目标（预期 0 告警）
 ```
 
-- 部分用例写入 `HKCU\SOFTWARE\VxAPO`（注册表往返），需具备写权限；不触碰 `HKLM` 与真实
-  端点槽位。
+- 部分用例写入 `HKCU\SOFTWARE\VxAPO`（注册表往返），因此需要写权限。它们不触碰 `HKLM` 与
+  真实端点槽位。
 - `install/device/*` 的枚举用例在无设备或无权限环境下仍返回 `Ok`（可能为空列表）。
-
-排障路径：
 
 | 现象 | 排查方式 |
 |---|---|
@@ -178,15 +182,15 @@ cargo build --tests     # 构建测试目标（预期 0 告警）
 
 ## 11 · 参考与致谢
 
-**Equalizer APO**：逐设备注册 APO 槽位的安装模型、以配置文件驱动 DSP 的思路、31 段
-GraphicEQ 上限、事件驱动配置热重载（对齐其 notification thread 模式）、聚合委托语义与
-安装后验证流程，均参考
-[Equalizer APO](https://sourceforge.net/projects/equalizerapo/) 的公开实践。
-**VxAPO 为独立实现，不含 Equalizer APO 任何代码**；Equalizer APO 由 Jonas Thedering
+**Equalizer APO**：本项目的以下做法参考了
+[Equalizer APO](https://sourceforge.net/projects/equalizerapo/) 的公开实践：逐设备注册
+APO 槽位的安装模型、以配置文件驱动 DSP 的思路、31 段 GraphicEQ 上限、事件驱动的配置热重载
+（对齐其 notification thread 模式）、聚合委托语义、安装后验证流程。
+**VxAPO 是独立实现，不含 Equalizer APO 任何代码**。Equalizer APO 由 Jonas Thedering
 开发，GPL-2.0 许可。
 
-**算法参考**：混响算法依据 Jon Dattorro《Effect Design Part 1》公开论文实现；拓扑正确性
-与 ValleyRackFree（GPL-3.0-or-later）及 johnhw/dattoro_reverb（MIT）交叉核对，本仓库为
+**算法参考**：混响算法依据 Jon Dattorro《Effect Design Part 1》公开论文实现。拓扑正确性
+已与 ValleyRackFree（GPL-3.0-or-later）及 johnhw/dattoro_reverb（MIT）交叉核对。本仓库是
 独立的 Rust 实现。
 
 ## 文档与许可
@@ -208,8 +212,8 @@ GraphicEQ 上限、事件驱动配置热重载（对齐其 notification thread �
 Per-endpoint real-time audio processing inside the Windows audio engine (`audiodg`).
 VxAPO Driver registers and is loaded as a standard APO (Audio Processing Object), reads
 `C:\ProgramData\VxAPO\{GUID}\config.toml` per endpoint, and processes audio frame by frame.
-Configuration is a read-only input: the only write paths are the CLI (elevated) and the App;
-the DLL never modifies files.
+Configuration is a read-only input. Only the CLI (elevated) and the App write files, and the
+DLL never modifies them.
 
 Reading order: implementation notes → differences from Equalizer APO → architecture →
 real-time contracts → configuration → effects and support surface → performance →
@@ -219,7 +223,7 @@ getting started → cross-component contracts → testing and troubleshooting �
 
 The project answers one question: **can driver-level real-time audio processing be written
 entirely in Rust while respecting the existing COM/APO contracts instead of bypassing
-them.** This section lists the practices and where each can be checked:
+them.** This section lists the practices and where each can be checked.
 
 | Practice | What it means | Where to check |
 |---|---|---|
@@ -233,11 +237,11 @@ them.** This section lists the practices and where each can be checked:
 ## 2 · Differences from Equalizer APO
 
 Both projects address system-wide, per-endpoint, script-driven audio processing, along
-different routes. Only the **differences** are listed:
+different routes. Only the **differences** are listed.
 
 | Aspect | Equalizer APO | VxAPO |
 |---|---|---|
-| Config carrier | `config.txt` line-command syntax (`GraphicEQ:` etc.) | One TOML per endpoint since v9.11; the old command set was removed entirely, with `vxapo-cli config convert` for one-time migration |
+| Config carrier | `config.txt` line-command syntax (`GraphicEQ:` etc.) | One TOML per endpoint; the old command set was removed entirely, with `vxapo-cli config convert` for one-time migration |
 | Syntax errors | Lines without a colon are **silently skipped** (`FilterEngine.cpp` 329-330: nothing parsed and no error when `pos == -1`) | Missing or extra colons raise `SyntaxError`, fail the whole file and produce no spec (intentionally stricter) |
 | Install mode detection | `load()` 396-413 (C41-C44) auto-detects LfxGfx / SfxMfx / SfxEfx | Ported as `slots::detect_install_mode`, with the decision changed to "paired VxAPO CLSIDs" (EDIFIER evidence: arbitrary GUIDs in slots misdetect as SfxMfx) |
 | Child APO registry | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO` (`RegistryHelper.h` 33), `childApoPath` (`DeviceAPOInfo.cpp` 43), value names `PreMixChild` / `PostMixChild` (`DeviceAPOInfo.cpp` 558-563) | Same mechanism but with an **isolated path**: `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`; reading or writing EAPO's path is prohibited (it would corrupt EAPO's install record) |
@@ -249,56 +253,65 @@ different routes. Only the **differences** are listed:
 | Device state | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` with the same checks |
 | License | GPL-2.0 (© Jonas Thedering) | GPL-3.0-or-later, independent implementation, no EAPO code |
 
-The EAPO-side behaviour is recorded in `vxapo-docs/driver/zh/配置与DSP设计.md` §5
-("EqualizerAPO 行为参考") and in the per-module specs under `模块引用规范/` (the
-`Equalizer 行为文档` document itself was removed with v9.11). Four comparable mechanisms
-remain: child APO creation and delegation, install mode detection, slot backup and restore,
-and post-install self-check.
+`vxapo-docs/driver/zh/配置与DSP设计.md` §5 ("EqualizerAPO 行为参考") records the EAPO-side
+behaviour, and the per-module specs under `模块引用规范/` repeat the details. The
+`Equalizer 行为文档` document itself has been removed. Four comparable mechanisms remain: child APO
+creation and delegation, install mode detection, slot backup and restore, and post-install
+self-check.
 
 ## 3 · Architecture
 
-Inside the driver, code is split by real-time eligibility:
+Inside the driver, code is split by real-time eligibility.
 
 | Path | Entered | Modules |
 |---|---|---|
 | Real-time | every frame (`APOProcess`) | `pipeline/realtime/` (`RtSafe` / `RtCopy` contracts, compile-time witness, lock-free ring buffer), `pipeline/dsp/` (effect chain; the 7 effects are listed in §6) |
 | Control | initialization, hot reload, diagnostics | `object/apo/` (APO object, aggregate shell, child APO, negotiation, hot reload, RT dump), `config/` (TOML → chain model, validation, directory watcher), `install/` (enumeration, slots, install transaction, stale migration), `sys/` (COM, registry, audio-format constants), `telemetry/` (logging, panic records), `utils/` (ring buffer, alignment, GUID, error types) |
 
-The real-time path depends only on `pipeline/`; `install/` and `sys/` are entered during
+The real-time path depends only on `pipeline/`. The driver enters `install/` and `sys/` during
 initialization and installation only. Module tree, dependency rules and the three data flows
 (install / config load / real-time processing) are in
 [`../vxapo-docs/driver/zh/架构与模块规范.md`](../vxapo-docs/driver/zh/架构与模块规范.md).
 
 ## 4 · Real-time contracts (`src/pipeline/realtime/`)
 
-Real-time safety is expressed in the type system rather than by convention:
+The type system expresses real-time safety. It does not depend on convention:
 
 - `unsafe trait RtSafe` / `RtCopy` require that every `&self` / `&mut self` method of an
-  implementor performs no allocation, acquires no lock, performs no I/O and does not panic;
-  all DSP filters satisfy this.
-- `RealtimeContext` is a zero-sized witness with no fields and no user-reachable constructor,
-  passed by reference along the RT harness stack. Its presence on the call path means "this
-  configuration serves the real-time path", moving runtime assertions to compile time.
-- Denormal protection: hardware FTZ/DAZ is set at the RT entry (`math.rs`), with an
-  `is_finite` guard on the output side.
-- Zero-allocation chain: `buffer` / `interleave` / `ring` are pre-allocated during
-  initialization and reused every frame.
-- Release builds use `panic = "abort"`, so no unwinding call can occur on the RT path.
+  implementor allocates no memory, acquires no lock, performs no I/O and does not panic.
+  Every DSP filter satisfies this constraint.
+- `RealtimeContext` is a zero-sized witness. It has no fields and no user-reachable
+  constructor, and the RT harness passes it by reference. Its presence on the call path
+  means "this configuration serves the real-time path". It moves runtime assertions to
+  compile time.
+- Denormal protection: the RT entry sets hardware FTZ/DAZ (`math.rs`). The output side
+  keeps an `is_finite` guard.
+- Zero-allocation chain: `buffer` / `interleave` / `ring` allocate during initialization.
+  The chain reuses them every frame.
+- Release builds use `panic = "abort"`. No unwinding call can occur on the RT path.
 
 ## 5 · Configuration model and hot reload (`src/config/`)
 
 - Model conversion: TOML `FileModel` → DSP `ChainModel` (`version` / `enabled` / `[meta]` /
-  `[[effects]]`); UI metadata such as `name` / `group` is dropped and never enters the DSP
-  fingerprint.
-- Validation and clamping: channel names, parameter ranges and PEQ band counts (1–31 per
-  block, ≤ 31 total) are validated in the config layer; out-of-range values are clamped in
-  memory only and never written back.
-- Hot reload: `FindFirstChangeNotificationW` watch (10 ms dedup, merging the editor's
-  "temp file + rename" pattern) → 128 KB content gate → re-parse → per-item comparison
-  against the `active_spec` fingerprint. Unchanged content is skipped; changes switch over
-  through a dual-chain transition (`transition.rs`) to avoid clicks.
-- Master switch `enabled = false`: whole-chain passthrough, file content preserved but
-  excluded from validation.
+  `[[effects]]`). The parser drops UI metadata such as `name` / `group`, so the DSP
+  fingerprint never changes with a rename.
+- Validation and clamping: the config layer validates channel names, parameter ranges and
+  PEQ band counts. The cap applies per block: 1–31 bands. Blocks **without** a declared
+  channel share one 31-band budget. Blocks **with** a declared channel get 31 bands each
+  (`L 20 + R 20` is valid). The layer clamps out-of-range values in memory only and never
+  writes them back.
+- PEQ block merge: adjacent, enabled PEQ blocks on the same channel merge into a single FIR.
+  Cascading 31 bands separately gives N independent 1024–8192-tap convolutions, and the
+  real-time cost grows with the band count (17 ms measured at 384 kHz with 31 bands, above a
+  10 ms budget). After the merge the response is identical (a dB sum) and the phase is a
+  single minimum-phase response, so the cost returns to one FIR.
+- Hot reload: `FindFirstChangeNotificationW` watches the directory (10 ms dedup, which
+  merges the editor's "temp file + rename" pattern). A 128 KB content gate, a re-parse and
+  a per-item comparison against the `active_spec` fingerprint follow. The chain skips
+  unchanged content. Changed content switches over through a dual-chain transition
+  (`transition.rs`) to avoid clicks.
+- Master switch `enabled = false`: the whole chain passes audio through. The file content
+  stays, but validation ignores it.
 
 ## 6 · Effects and support surface
 
@@ -312,7 +325,7 @@ Real-time safety is expressed in the type system rather than by convention:
 | `wide` | Linear-phase FIR crossover (Kaiser; taps scale with sample rate and crossover frequency) → low band bypassed, high band into M/S; center channel through air absorption (4k–5.5k shelf + 10k–16k 2nd-order Bessel low-pass, following the f² physical curve); dynamic side gain (10 ms attack / 120 ms release) plus dual allpass / ITD decorrelation (1.5 kHz+ region only); tanh-limited delta mixed in by `mix` |
 | `loudness` | Loudness compensation: 1/3-octave GraphicEq **approximating** the ISO 226 equal-loudness curves by target/reference phon (simplified, no full table lookup; full lookup and curve fitting are tracked in the `CHANGELOG.md` roadmap) |
 
-Support surface (implementation location noted per row for verification):
+The support surface follows. Each row names the implementation location.
 
 | Item | Range | Where implemented |
 |---|---|---|
@@ -329,18 +342,18 @@ Support surface (implementation location noted per row for verification):
   pass-through chain dropped from **3.2 ms / 480 frames** (scalar) to **0.1 ms**, removing
   the audible artefact caused by real-time underruns during initialization (commit
   `c89c959`).
-- **Zero-allocation RT path**: buffers / interleave / ring are pre-allocated at init and
-  reused per frame; `process` performs no heap allocation, locking, I/O or panics.
+- **Zero-allocation RT path**: buffers / interleave / ring are pre-allocated at init. The chain
+  reuses them per frame. `process` performs no heap allocation, locking, I/O or panics.
 - **Adaptive FIR**: bands with `fc ≥ 200 Hz` generate min-phase FIRs cached in-process per
-  (band fingerprint, sample rate) — 1024–8192 taps; direct convolution up to 2048,
-  partitioned FFT above.
+  (band fingerprint, sample rate). Taps number 1024–8192: direct convolution up to 2048,
+  partitioned FFT above that.
 - **Idempotent hot reload**: unchanged content is skipped by `spec()` fingerprint, so the
   DSP chain is not rebuilt.
 
 ## 8 · Getting started
 
 Prerequisites: Windows 8.1+ and a Rust (MSVC) toolchain. The driver is not installed on its
-own; the CLI or App deploys it.
+own. The CLI or App deploys it.
 
 ```bash
 # Build the driver DLL
@@ -359,26 +372,26 @@ vxapo-cli uninstall -d 0
 - Config directory: `C:\ProgramData\VxAPO\{endpoint GUID}\config.toml` (a default chain is
   used when absent).
 - Full command reference: [`../vxapo-cli`](../vxapo-cli) and
-  [`../vxapo-app`](../vxapo-app); the driver has no CLI entry point.
+  [`../vxapo-app`](../vxapo-app). The driver has no CLI entry point.
 
 ## 9 · Cross-component contract alignment
 
 App, CLI and Driver share one configuration contract and must stay consistent:
 
-- **Config contract**: `version = 1`, top-level `enabled`, `[meta]`, `[[effects]]`; PEQ
-  blocks always carry `crossover_hz = 200`; `channels` declares the scope (default = all).
+- **Config contract**: `version = 1`, top-level `enabled`, `[meta]`, `[[effects]]`. PEQ
+  blocks always carry `crossover_hz = 200`. `channels` declares the scope (default = all).
 - **Type compatibility**: the driver maps legacy names automatically — `maximizer` /
-  `leveler` → `compressor`, `auralenhancer` → `aural`, `loudnesscorrection` → `loudness`;
-  the App writes current names only.
-- **Numeric bounds**: gain `[-120, +48]` dB, filter deep-cut floor -60 dB, NaN/inf rejected;
-  clamping is in-memory only, write-side clamping is the App's responsibility, and the DLL
-  never writes files.
-- **Band limit**: 31 (inherited from GraphicEQ); the App's `applyPreset` / `addBand` and the
-  driver's validation enforce the same limit.
+  `leveler` → `compressor`, `auralenhancer` → `aural`, `loudnesscorrection` → `loudness`.
+  The App writes current names only.
+- **Numeric bounds**: gain `[-120, +48]` dB, filter deep-cut floor -60 dB, NaN/inf rejected.
+  The driver clamps in memory only, the App clamps on write, and the DLL never writes files.
+- **Band limit**: 1–31 bands per block (inherited from GraphicEQ). With no declared channel,
+  the device limit is 31 bands. With declared channels, each channel gets 31 bands. The App's
+  `applyPreset` / `addBand` check the same scope.
 - **Fingerprint and hot reload**: `spec()` fingerprints exclude `name` / `group`, so renaming
   or regrouping does not rebuild the DSP chain.
 - **Latency reporting**: `latency()` accounts for the fixed delay of the wide FIR and
-  partitioned FFT; mono passthrough.
+  partitioned FFT. Mono passes through.
 
 ## 10 · Testing and troubleshooting
 
@@ -389,12 +402,10 @@ cargo test              # 491 tests across 57 source files
 cargo build --tests     # build test targets (expect zero warnings)
 ```
 
-- Some cases write `HKCU\SOFTWARE\VxAPO` (registry round trips) and need write access; they
+- Some cases write `HKCU\SOFTWARE\VxAPO` (registry round trips) and need write access. They
   do not touch `HKLM` or real endpoint slots.
 - Enumeration cases under `install/device/*` still return `Ok` (possibly an empty list)
   without devices or permissions.
-
-Troubleshooting paths:
 
 | Symptom | What to check |
 |---|---|
@@ -411,15 +422,15 @@ Troubleshooting paths:
 pattern), aggregate delegation semantics and the post-install verification workflow all
 reference the public practice of
 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/).
-**VxAPO is an independent implementation and contains no Equalizer APO code**; Equalizer APO
-is developed by Jonas Thedering and licensed under GPL-2.0.
+**VxAPO is an independent implementation and contains no Equalizer APO code**. Jonas
+Thedering develops Equalizer APO under GPL-2.0.
 
 **Algorithm references**: the reverb follows Jon Dattorro's public paper "Effect Design
-Part 1"; its topology was cross-checked against ValleyRackFree (GPL-3.0-or-later) and
+Part 1". Its topology came from cross-checks against ValleyRackFree (GPL-3.0-or-later) and
 johnhw/dattoro_reverb (MIT). The implementation in this repository is independent Rust.
 
 ## Documentation and license
 
-- Project documentation: [`../vxapo-docs`](../vxapo-docs); module reference under
+- Project documentation: [`../vxapo-docs`](../vxapo-docs). Module reference:
   [`../vxapo-docs/driver`](../vxapo-docs/driver).
 - License: GPL-3.0-or-later.
