@@ -56,6 +56,8 @@ pub use crate::install::device::stale::{
 };
 // object：per-device 配置路径（cli 与 driver 共用同一路径布局）
 pub use crate::object::apo::config::device_config_path;
+// pipeline/dsp：效果器参数表（UI 契约单一来源，cli `effects schema` 透传）
+pub use crate::pipeline::dsp::specs::{effect_param_specs, EffectParamSpec, EffectSpec};
 // install/selector：安装/卸载/迁移编排
 pub use crate::install::selector::operation::{
     install_endpoint, migrate_install, uninstall_endpoint, write_install_config, InstallConfig,

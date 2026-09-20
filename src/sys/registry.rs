@@ -548,6 +548,7 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
     Ok((root, rest))
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 检查注册表键是否存在。
 #[cfg(test)]
 pub fn key_exists(root: HKEY, sub_key: &str) -> Result<bool> {

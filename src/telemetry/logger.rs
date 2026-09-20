@@ -15,6 +15,7 @@ pub enum LogLevel {
     Info,
     Warning,
     Error,
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     RtViolation,
 }
 

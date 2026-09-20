@@ -285,6 +285,7 @@ impl ClsidEntry {
         format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
     }
 #[cfg(test)]
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn registration_entries(&self, dll_path: &str) -> Vec<(&str, String, String)> {
         vec![
             ("Default", String::new(), dll_path.to_owned()),

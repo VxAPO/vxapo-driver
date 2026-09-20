@@ -17,6 +17,7 @@ pub(crate) struct BufferInfo {
 
 impl BufferInfo {
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn new(ptr: *mut f32, valid_frames: usize, flags: APO_BUFFER_FLAGS, channels: usize) -> Self {
         Self { ptr, valid_frames, flags, channels }
     }
@@ -40,11 +41,13 @@ impl BufferInfo {
     }
 
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_valid(&self) -> bool {
         self.flags == BUFFER_VALID
     }
 
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_silent(&self) -> bool {
         self.flags == BUFFER_SILENT
     }
@@ -54,6 +57,7 @@ impl BufferInfo {
     }
 
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn bytes(&self) -> usize {
         self.total_samples() * std::mem::size_of::<f32>()
     }

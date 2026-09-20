@@ -29,6 +29,7 @@ impl PipelineContext {
 
     /// 每帧字节数（32-bit float × 通道数）。
 #[cfg(test)]
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn bytes_per_frame(&self) -> usize {
         self.input_channels.max(self.output_channels) as usize * 4
     }

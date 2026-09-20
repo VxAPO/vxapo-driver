@@ -32,6 +32,7 @@ impl ConfigParser {
 
     /// 解析配置文件（丢弃 spec）。
 #[cfg(test)]
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn parse_file(
         &self,
         path: &str,

@@ -17,5 +17,6 @@ pub mod math;
 pub mod model;
 pub mod peq_hybrid;
 pub mod reverb;
+pub mod specs;
 pub mod transition;
 pub mod wide;

@@ -84,6 +84,7 @@ impl StateCell {
 
     /// release：任意状态 → Created，返回旧状态。DLL 卸载终态复位用。
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn release(&self) -> ApoState {
         let old = self.state.swap(ApoState::Created as u8, Ordering::AcqRel);
         state_from_u8(old)
@@ -91,14 +92,17 @@ impl StateCell {
 
     // ── 语义化便捷转换（失败即 TransitionError） ──
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn initialize(&self) -> std::result::Result<(), TransitionError> {
         self.transition(ApoState::Created, ApoState::Initialized)
     }
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn lock(&self) -> std::result::Result<(), TransitionError> {
         self.transition(ApoState::Initialized, ApoState::Locked)
     }
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn unlock(&self) -> std::result::Result<(), TransitionError> {
         self.transition(ApoState::Locked, ApoState::Initialized)
     }

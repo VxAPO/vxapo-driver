@@ -40,6 +40,7 @@ pub(crate) fn is_disabled() -> Result<bool> {
     }
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 检查是否允许第三方 APO 加载。
 ///
 /// `is_disabled()` 的语义别名——返回 `true` 表示可以加载。
@@ -57,6 +58,7 @@ pub(crate) fn disable() -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 删除 DisableProtectedAudioDG 值（恢复 Windows 默认保护行为）。
 ///
 /// 值不存在不算错误。
@@ -158,6 +160,7 @@ pub fn stop_audio_service() -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 重启 Windows 音频服务（AudioSrv）——EAPO 安装收尾对齐（Setup.nsi / DeviceSelector /i）。
 ///
 /// **为什么必须**（实证根因）：EAPO 安装器装完调用

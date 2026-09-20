@@ -92,6 +92,7 @@ impl GainFilter {
 
     /// 当前增益（dB）。
 #[cfg(test)]
+    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn current_gain_db(&self) -> f32 {
         math_linear_to_db(self.current_gain)
     }

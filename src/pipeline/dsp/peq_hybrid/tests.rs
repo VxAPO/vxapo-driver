@@ -404,8 +404,7 @@ fn sine_waveform_preserved_chunked_real_config() {
 #[test]
 fn sine_waveform_preserved_per_band_blocks_cascaded() {
     use crate::pipeline::chain::Chain;
-    use crate::pipeline::dsp::filter::Filter;
-
+    
     let bands = vec![
         PeqBand { fc: 1500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
         PeqBand { fc: 2000.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },

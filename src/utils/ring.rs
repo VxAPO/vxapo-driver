@@ -56,11 +56,13 @@ impl<T: Copy + Default> RingBuffer<T> {
     }
 
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_empty(&self) -> bool {
         self.read_pos.load(Ordering::Acquire) == self.write_pos.load(Ordering::Acquire)
     }
 
 #[cfg(test)]
+    #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_full(&self) -> bool {
         let write = self.write_pos.load(Ordering::Relaxed);
         let read = self.read_pos.load(Ordering::Acquire);

@@ -135,6 +135,7 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
     }))
 }
 
+#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
 /// 检查端点是否为活跃状态。
 ///
 /// 便捷方法，等价于读取 DeviceState 值是否为 1。
