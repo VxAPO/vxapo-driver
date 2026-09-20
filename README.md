@@ -25,29 +25,59 @@ APO（Audio Processing Object）COM DLL，按音频端点加载各自的 `config
 > 设计上受益于 Equalizer APO 的公开实践（逐设备槽位安装、配置文件驱动 DSP、31 段上限、
 > 热重载的 notification 思路），细节见文末「设计参考与致谢」。
 
+## 这个项目证明了什么
+
+不是"设想用 Rust 重写音频栈"，而是一条**已经跑通的完整链路**：从注册表里的 COM 类，
+到 `audiodg` 进程内的实时处理，到装进真设备、真的出声。
+
+| 命题 | 证据（可自行核对） |
+|---|---|
+| **Rust 能按 Windows 的规矩接管音频链路**，而不是绕开它 | 以标准 APO 形式注册（`HKLM\…\AudioEngine\AudioProcessingObjects\{CLSID}`），由 `audiodg` 在**聚合模式**（`pUnkOuter` 非空）下加载；实现 `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`，导出 `DllGetClassObject` / `DllRegisterServer`，自维护 `DllCanUnloadNow` 的实例/锁计数 |
+| **真机上真的出声**，不是 mock 出来的 | 真机闭环：`install --verify` → 停/启音频服务 → `CoCreateInstance` + `GetMixFormat` + `Initialize` 建图 → `test_pipe` 回环。本机枚举覆盖 7 台端点（含 4 台采集），并在耳机（Octave）端点跑完装/卸全流程——严格对称（槽位 `41C34613…`/`B4A97313…` → `NoValue` → 复原，`childApoKeyExists` 同向翻转），结束后设备配置**逐字节未变** |
+| **用 windows-rs 的抽象，不是把 Rust 当 C** | APO 接口直接取自 windows-rs 0.62 的 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 用 `#[implement]` 宏生成 vtable 与 COM 引用计数。`unsafe` 集中在 **27 个文件**、**FFI 边界**（`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27…），配 **126 处 SAFETY 说明** |
+| **Rust 的抽象能落到驱动层** | 编译期 RT 契约：`unsafe trait RtSafe` / `RtCopy` 把"禁分配、禁锁、禁 I/O、禁 panic"写成类型约束，`RealtimeContext` 是零尺寸编译期见证——源码原话："**编译期能解决的问题，绝不拖到运行时**"；子 APO 与 COM 引用靠 RAII（`Drop`）释放；错误统一 `Result` + `thiserror`；处理链零分配 |
+| **长期可维护** | 491 例测试 / 57 个源文件；`cargo build` 与 `cargo build --tests` 均 **0 告警**；热重载按指纹幂等跳过；旧 GUID 残留的分层匹配、迁移与 ACL 自修复 |
+
+> 唯一必须手写 vtable 偏移的地方是 **COM 聚合外壳**（`object/apo/aggregate.rs`）——
+> Windows 引擎要求多接口按固定 offset 布局；该处逐条注明 SAFETY 与布局依据，
+> 其余 COM 全部走 windows-rs 的声明式接口与 `#[implement]`。
+
 ## 架构
 
+**链路**（谁在什么时候进入画面）：
+
 ```text
-vxapo-app (React / Tauri)
-    │  config.toml · CLI --json
-    ▼
-vxapo-cli ───────────────────────────▶ vxapo-driver (install layer)
-    │  config.toml                          │  HKLM 槽位 / CLSID 绑定 / 子 APO
-    ▼                                       ▼
-Windows audiodg.exe ────加载────▶ vxapo_driver.dll (APO)
-                                        │
-      ┌─────────────────────────────────┴─────────────────────────────────┐
-      │ sys/        COM 接口 · 注册表 · 音频格式/APO 常量                   │
-      │ object/     APO 对象 · 聚合委托 · 子 APO · 协商 · 热重载 · RT 转储   │
-      │ config/     TOML → 链模型 · 校验/限幅 · 目录监控                    │
-      │ pipeline/   RT 契约 + DSP 链（realtime/ 零分配 · dsp/ 7 个效果器）   │
-      │ install/    端点枚举 · 槽位选择 · 安装事务 · 残留迁移/清理           │
-      │ telemetry/  日志 · panic 记录                                      │
-      │ utils/      环形缓冲 · 对齐 · GUID · 错误类型                       │
-      └───────────────────────────────────────────────────────────────────┘
+  ┌─────────────┐
+  │  vxapo-app  │  Tauri 2 + React 3 · 参数视图 / 语义视图
+  └──────┬──────┘
+         │  提权子进程 · config.toml
+  ┌──────▼──────┐
+  │  vxapo-cli  │  设备枚举 · 安装/卸载 · 配置 · 快照 · 诊断
+  └──────┬──────┘
+         │  HKLM 槽位 · CLSID 绑定 · 子 APO 记录
+  ┌──────▼──────────────┐
+  │  Windows audiodg    │  音频引擎（实时线程）
+  │   └ vxapo_driver.dll│  以标准 APO 形式被加载，逐帧处理
+  └─────────────────────┘
 ```
 
-实时路径（`process`）只依赖 `pipeline/`；`install/` 与 `sys/` 只在初始化/安装阶段进入。
+**driver 内部两条路径**（右侧为职责）：
+
+```text
+  实时路径  每帧 · 禁分配 / 禁锁 / 禁 I/O / 禁 panic
+  ├─ pipeline/realtime/   RtSafe · RtCopy 契约 + 编译期见证
+  └─ pipeline/dsp/        peq · preamp · aural · reverb · compressor · wide · loudness
+
+  控制路径  初始化 / 热重载 / 诊断 · 可分配可加锁
+  ├─ object/apo/          进程 · 聚合外壳 · 子 APO · 协商 · 热重载 · RT 转储
+  ├─ config/              TOML → 链模型 · 校验限幅 · 目录监控
+  ├─ install/             端点枚举 · 槽位选择 · 安装事务 · 残留迁移/修复
+  ├─ sys/                 COM · 注册表 · 音频格式 / APO 常量
+  ├─ telemetry/           日志 · panic 记录
+  └─ utils/               环形缓冲 · 对齐 · GUID · 错误类型
+```
+
+实时路径只依赖 `pipeline/`；`install/` 与 `sys/` 只在初始化/安装阶段进入。
 模块职责与依赖方向详见 `../vxapo-docs/driver`。
 
 ## 功能与实现
@@ -268,33 +298,64 @@ trade-offs. The table states facts and differences only:
 > installation, config-file-driven DSP, the 31-band limit, notification-based hot reload) —
 > see "Design references & acknowledgments".
 
+## What this project demonstrates
+
+It is not "a plan to rewrite the audio stack in Rust" — it is a **working end-to-end chain**:
+from a COM class in the registry, into real-time processing inside `audiodg`, onto real
+devices that actually play audio.
+
+| Claim | Evidence (verifiable) |
+|---|---|
+| **Rust can take over the Windows audio chain on Windows' own terms**, not around them | Registered as a standard APO (`HKLM\…\AudioEngine\AudioProcessingObjects\{CLSID}`) and loaded by `audiodg` in **aggregated mode** (`pUnkOuter` non-null); implements `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`, exports `DllGetClassObject` / `DllRegisterServer`, self-manages `DllCanUnloadNow` instance/lock counts |
+| **It really plays audio on real hardware** — nothing mocked | Real-machine loop: `install --verify` → stop/start audio service → `CoCreateInstance` + `GetMixFormat` + `Initialize` (graph build) → `test_pipe` round trip. Enumeration covered 7 endpoints (4 capture) on this machine, and a full install/uninstall cycle was run on the headphones (Octave) endpoint — strictly symmetric (slots `41C34613…`/`B4A97313…` → `NoValue` → restored, `childApoKeyExists` flips both ways), with the device config **byte-identical** afterwards |
+| **It uses windows-rs abstractions — it does not use Rust as C** | APO interfaces come straight from windows-rs 0.62 `Win32::Media::Audio::Apo` (incl. `*_Impl` traits); `ClassFactory` uses the `#[implement]` macro to generate vtables and COM reference counting. `unsafe` is concentrated in **27 files** at the **FFI boundary** (`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27…), with **126 SAFETY notes** |
+| **Rust abstractions reach down to driver level** | Compile-time RT contracts: `unsafe trait RtSafe` / `RtCopy` turn "no allocation, no locking, no I/O, no panics" into type constraints, with a zero-sized `RealtimeContext` witness — in the source's own words: "**anything the compiler can settle never goes to runtime**". Child APO and COM references are released via RAII (`Drop`); errors are uniform `Result` + `thiserror`; the processing chain is zero-allocation |
+| **Maintainable over time** | 491 tests across 57 source files; `cargo build` and `cargo build --tests` both report **zero warnings**; hot reload skips no-op changes by fingerprint; stale-GUID layering, migration and ACL self-repair are implemented |
+
+> The only place that hand-writes vtable offsets is the **COM aggregate shell**
+> (`object/apo/aggregate.rs`) — the Windows engine requires multi-interface fixed-offset
+> layout there. Every such site documents its SAFETY and layout rationale; all other COM
+> work goes through windows-rs declarative interfaces and `#[implement]`.
+
 ## Architecture
 
+**The chain** (who enters when):
+
 ```text
-vxapo-app (React / Tauri)
-    │  config.toml · CLI --json
-    ▼
-vxapo-cli ───────────────────────────▶ vxapo-driver (install layer)
-    │  config.toml                          │  HKLM slots / CLSID binding / child APO
-    ▼                                       ▼
-Windows audiodg.exe ────loads────▶ vxapo_driver.dll (APO)
-                                        │
-      ┌─────────────────────────────────┴─────────────────────────────────┐
-      │ sys/        COM interfaces · registry · audio format/APO consts    │
-      │ object/     APO object · aggregate · child APO · negotiation ·     │
-      │             hot reload · RT dump                                   │
-      │ config/     TOML → chain model · validation/clamping · watcher     │
-      │ pipeline/   RT contracts + DSP chain (realtime/ zero-alloc ·       │
-      │             dsp/ 7 effects)                                       │
-      │ install/    endpoint enumeration · slot selection · transaction ·  │
-      │             stale migration/cleanup                                │
-      │ telemetry/  logging · panic records                                │
-      │ utils/      ring buffer · alignment · GUID · error types           │
-      └───────────────────────────────────────────────────────────────────┘
+  ┌─────────────┐
+  │  vxapo-app  │  Tauri 2 + React 3 · parameter / semantic views
+  └──────┬──────┘
+         │  elevated subprocess · config.toml
+  ┌──────▼──────┐
+  │  vxapo-cli  │  enumeration · install/uninstall · config · snapshots · diagnostics
+  └──────┬──────┘
+         │  HKLM slots · CLSID binding · child APO records
+  ┌──────▼──────────────┐
+  │  Windows audiodg    │  audio engine (real-time thread)
+  │   └ vxapo_driver.dll│  loaded as a standard APO, processes every frame
+  └─────────────────────┘
 ```
 
-The real-time path (`process`) depends only on `pipeline/`; `install/` and `sys/` are entered
-at initialization/installation time only. Module responsibilities and dependency direction:
+**The two paths inside the driver** (right column: responsibilities):
+
+```text
+  Real-time path   every frame · no alloc / no locks / no I/O / no panics
+  ├─ pipeline/realtime/   RtSafe · RtCopy contracts + compile-time witness
+  └─ pipeline/dsp/        peq · preamp · aural · reverb · compressor · wide · loudness
+
+  Control path   init / hot reload / diagnostics · allocation and locks allowed
+  ├─ object/apo/          process · aggregate shell · child APO · negotiation ·
+  │                       hot reload · RT dump
+  ├─ config/              TOML → chain model · validation/clamping · watcher
+  ├─ install/             enumeration · slot selection · install transaction ·
+  │                       stale migration/repair
+  ├─ sys/                 COM · registry · audio-format / APO constants
+  ├─ telemetry/           logging · panic records
+  └─ utils/               ring buffer · alignment · GUID · error types
+```
+
+The real-time path depends only on `pipeline/`; `install/` and `sys/` are entered at
+initialization/installation time only. Module responsibilities and dependency direction:
 `../vxapo-docs/driver`.
 
 ## Features & implementation
