@@ -16,7 +16,60 @@ use crate::pipeline::dsp::biquad::{compute_coeffs, BiquadType};
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
 use crate::pipeline::dsp::math::warn_rate_limited;
-use crate::pipeline::dsp::model::{CROSSOVER_HZ, PeqBand, PeqBandType, PeqParams};
+use crate::pipeline::dsp::model::CROSSOVER_HZ;
+
+// ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────
+
+/// 混合式 PEQ 参数。
+#[derive(Debug, Clone)]
+pub struct PeqParams {
+    pub crossover_hz: f32,
+    pub bands: Vec<PeqBand>,
+}
+
+/// PEQ 段滤波器类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeqBandType {
+    #[default]
+    Peaking,
+    LowShelf,
+    HighShelf,
+    LowPass,
+    HighPass,
+}
+
+impl PeqBandType {
+    /// TOML 字符串 → 类型（缺省/未知回 `Peaking` 由 config 层决定是否报错）。
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "peaking" | "peak" | "peq" => Some(Self::Peaking),
+            "low_shelf" | "lowshelf" | "low-shelf" => Some(Self::LowShelf),
+            "high_shelf" | "highshelf" | "high-shelf" => Some(Self::HighShelf),
+            "low_pass" | "lowpass" | "low-pass" => Some(Self::LowPass),
+            "high_pass" | "highpass" | "high-pass" => Some(Self::HighPass),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Peaking => "peaking",
+            Self::LowShelf => "low_shelf",
+            Self::HighShelf => "high_shelf",
+            Self::LowPass => "low_pass",
+            Self::HighPass => "high_pass",
+        }
+    }
+}
+
+/// 单段滤波器（默认 peaking）。
+#[derive(Debug, Clone, Copy)]
+pub struct PeqBand {
+    pub fc: f32,
+    pub gain_db: f32,
+    pub q: f32,
+    pub kind: PeqBandType,
+}
 
 /// FIR 长度下限（@44.1k/48k）。
 const FIR_MIN_LEN: usize = 1024;

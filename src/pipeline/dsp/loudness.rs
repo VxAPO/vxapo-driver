@@ -17,6 +17,15 @@ use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::biquad::{BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
 use crate::pipeline::dsp::math::clamp_gain_db;
 
+// ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────
+
+/// 等响校正。
+#[derive(Debug, Clone, Copy)]
+pub struct LoudnessParams {
+    pub phon: f32,
+    pub reference_phon: f32,
+}
+
 /// 等响曲线滤波器。
 #[derive(Debug)]
 pub struct LoudnessFilter {

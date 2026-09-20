@@ -3,11 +3,18 @@
 //! config 层把 TOML 反序列化的 FileModel 转换到这里（丢弃 `name` / `group` /
 //! `meta` 等 APP 元数据，校验范围/段数/声道名），`factory` 按此构造 Filter。
 //! 依赖方向：config → dsp，dsp 层不引用 config。
+//!
+//! 各效果器的参数类型随其实现文件（gain / loudness / peq_hybrid / aural /
+//! reverb / compressor / wide），本模块只做聚合 re-export，外部路径
+//! `dsp::model::*Params` 保持不变。
 
-use crate::pipeline::dsp::aural::AuralParams;
-use crate::pipeline::dsp::compressor::CompressorParams;
-use crate::pipeline::dsp::reverb::ReverbParams;
-use crate::pipeline::dsp::wide::WideParams;
+pub use crate::pipeline::dsp::aural::AuralParams;
+pub use crate::pipeline::dsp::compressor::CompressorParams;
+pub use crate::pipeline::dsp::gain::PreampParams;
+pub use crate::pipeline::dsp::loudness::LoudnessParams;
+pub use crate::pipeline::dsp::peq_hybrid::{PeqBand, PeqBandType, PeqParams};
+pub use crate::pipeline::dsp::reverb::ReverbParams;
+pub use crate::pipeline::dsp::wide::WideParams;
 
 /// 分频点（Hz）：`Fc < CROSSOVER_HZ` 归 IIR，`Fc >= CROSSOVER_HZ` 归 FIR。
 pub const CROSSOVER_HZ: f32 = 200.0;
@@ -142,68 +149,4 @@ pub enum EffectParams {
     Compressor(CompressorParams),
     Wide(WideParams),
     Loudness(LoudnessParams),
-}
-
-/// 混合式 PEQ 参数。
-#[derive(Debug, Clone)]
-pub struct PeqParams {
-    pub crossover_hz: f32,
-    pub bands: Vec<PeqBand>,
-}
-
-/// PEQ 段滤波器类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PeqBandType {
-    #[default]
-    Peaking,
-    LowShelf,
-    HighShelf,
-    LowPass,
-    HighPass,
-}
-
-impl PeqBandType {
-    /// TOML 字符串 → 类型（缺省/未知回 `Peaking` 由 config 层决定是否报错）。
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "peaking" | "peak" | "peq" => Some(Self::Peaking),
-            "low_shelf" | "lowshelf" | "low-shelf" => Some(Self::LowShelf),
-            "high_shelf" | "highshelf" | "high-shelf" => Some(Self::HighShelf),
-            "low_pass" | "lowpass" | "low-pass" => Some(Self::LowPass),
-            "high_pass" | "highpass" | "high-pass" => Some(Self::HighPass),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Peaking => "peaking",
-            Self::LowShelf => "low_shelf",
-            Self::HighShelf => "high_shelf",
-            Self::LowPass => "low_pass",
-            Self::HighPass => "high_pass",
-        }
-    }
-}
-
-/// 单段滤波器（默认 peaking）。
-#[derive(Debug, Clone, Copy)]
-pub struct PeqBand {
-    pub fc: f32,
-    pub gain_db: f32,
-    pub q: f32,
-    pub kind: PeqBandType,
-}
-
-/// 全局增益。
-#[derive(Debug, Clone, Copy)]
-pub struct PreampParams {
-    pub gain_db: f32,
-}
-
-/// 等响校正。
-#[derive(Debug, Clone, Copy)]
-pub struct LoudnessParams {
-    pub phon: f32,
-    pub reference_phon: f32,
 }

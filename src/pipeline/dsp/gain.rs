@@ -17,6 +17,14 @@ use crate::pipeline::dsp::math::{
     linear_to_db as math_linear_to_db,
 };
 
+// ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────
+
+/// 全局增益。
+#[derive(Debug, Clone, Copy)]
+pub struct PreampParams {
+    pub gain_db: f32,
+}
+
 /// 增益滤波器。
 ///
 /// 支持：
