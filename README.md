@@ -255,7 +255,7 @@ different routes. Only the **differences** are listed.
 
 `vxapo-docs/driver/zh/配置与DSP设计.md` §5 ("EqualizerAPO 行为参考") records the EAPO-side
 behaviour, and the per-module specs under `模块引用规范/` repeat the details. The
-`Equalizer 行为文档` document itself has been removed. Four comparable mechanisms remain: child APO
+`Equalizer 行为文档` document no longer exists. Four comparable mechanisms remain: child APO
 creation and delegation, install mode detection, slot backup and restore, and post-install
 self-check.
 
