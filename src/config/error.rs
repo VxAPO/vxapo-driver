@@ -3,39 +3,31 @@
 /// 配置解析错误类型。
 ///
 /// `ConditionFalse` 不作为错误返回——条件不满足时跳过行即可，不影响解析流程。
-#[derive(Debug, Clone)]
+/// 变体名与 Display 文案为对外错误信息契约，调整需同步 CLI/App 文案。
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigError {
     /// 文件 I/O 错误。
+    #[error("I/O error reading {path}: {message}")]
     IoError { path: String, message: String },
     /// 命令语法错误（含文件名和行号）。
+    #[error("Syntax error in {file}:{line}: {message}")]
     SyntaxError { file: String, line: usize, message: String },
     /// TOML 反序列化失败。
+    #[error("TOML error in {file}: {message}")]
     TomlError { file: String, message: String },
     /// FileModel → ChainModel 转换/校验失败。
+    #[error("Config model error in {file}: {message}")]
     ModelError { file: String, message: String },
     /// AbortFile 终止（Device: 命令设置）。
+    #[error("Parse aborted by Device: AbortFile")]
     AbortFile,
 }
 
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IoError { path, message } => write!(f, "I/O error reading {path}: {message}"),
-            Self::SyntaxError { file, line, message } => {
-                write!(f, "Syntax error in {file}:{line}: {message}")
-            }
-            Self::TomlError { file, message } => {
-                write!(f, "TOML error in {file}: {message}")
-            }
-            Self::ModelError { file, message } => {
-                write!(f, "Config model error in {file}: {message}")
-            }
-            Self::AbortFile => write!(f, "Parse aborted by Device: AbortFile"),
-        }
+impl From<ConfigError> for crate::utils::vx_error::VxApoError {
+    fn from(err: ConfigError) -> Self {
+        crate::utils::vx_error::VxApoError::config(err.to_string())
     }
 }
-
-impl std::error::Error for ConfigError {}
 
 #[cfg(test)]
 mod tests {
@@ -74,5 +66,16 @@ mod tests {
     fn error_trait_impl() {
         let err: Box<dyn std::error::Error> = Box::new(ConfigError::AbortFile);
         assert!(err.to_string().contains("AbortFile"));
+    }
+
+    #[test]
+    fn converts_to_vxapo_error_as_config() {
+        let err = ConfigError::ModelError {
+            file: "config.toml".into(),
+            message: "bad value".into(),
+        };
+        let vx: crate::utils::vx_error::VxApoError = err.into();
+        assert!(matches!(vx, crate::utils::vx_error::VxApoError::Config(_)));
+        assert!(vx.to_string().contains("bad value"));
     }
 }
