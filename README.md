@@ -63,6 +63,19 @@ VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing 
 - 注册表写入走统一事务层（driver 是唯一写入口），安装后可通过 `verify`
   （CoCreateInstance + 格式协商）闭环验证。
 
+### 模块划分（2026-09 重构后）
+
+- `object/apo/`：`process.rs`（RT 处理）、`config.rs`（配置路径解析 + `diag.log` 输出）、
+  `reload.rs`（热重载编排 + watcher）、`rtdump.rs`（RT 转储诊断）、`negotiate.rs`、`state.rs`。
+- `pipeline/dsp/specs.rs`：**效果器参数表**（每个参数的范围/步进/精确默认值/单位，默认值
+  运行时取自各 `*Params::default()`），同时供 cli `effects schema` 与 App 参数 UI 生成使用。
+- `install/selector/operation/`：`execute.rs`（安装/卸载/迁移执行 + 事务回滚）、
+  `capx.rs`（CAPX 设备默认效果接管）、`helpers.rs`（注册表写入辅助）。
+- `install/device/`：`stale/`（旧 GUID 残留：分层匹配 / ACL / 迁移）、
+  `slots/`（槽位与子 APO 读写）。
+- `config/model/` 按子模块拆分；`utils/ring.rs` 为环形缓冲（telemetry 不再依赖 pipeline）。
+- `CHANGELOG.md` 记录版本与阶段变更；两种构建（`cargo build` / `cargo build --tests`）均为 **0 告警**。
+
 ## 与 App / CLI 的行为对齐
 
 VxAPO 三层（App / CLI / Driver）共享同一份 config 契约，行为必须一致：
@@ -185,6 +198,23 @@ hot-reloaded through an event-driven directory watcher.
 - Registry writes go through a unified transaction layer (the driver is the single
   write path); installs can be closed-loop verified via `verify`
   (CoCreateInstance + format negotiation).
+
+### Module layout (after the 2026-09 refactor)
+
+- `object/apo/`: `process.rs` (RT processing), `config.rs` (config path resolution +
+  `diag.log` output), `reload.rs` (hot-reload orchestration + watcher), `rtdump.rs` (RT dump
+  diagnostics), `negotiate.rs`, `state.rs`.
+- `pipeline/dsp/specs.rs`: the **effect parameter table** (range / step / precise default /
+  unit per parameter; defaults are read from each `*Params::default()` at runtime). It feeds
+  both the CLI `effects schema` and the app's parameter UI generation.
+- `install/selector/operation/`: `execute.rs` (install/uninstall/migrate + transactional
+  rollback), `capx.rs` (CAPX default-effect takeover), `helpers.rs` (registry write helpers).
+- `install/device/`: `stale/` (stale-GUID layering / ACL / migration), `slots/` (slots and
+  child APO I/O).
+- `config/model/` split into submodules; `utils/ring.rs` holds the ring buffer (telemetry no
+  longer depends on `pipeline`).
+- `CHANGELOG.md` tracks versions and phase changes; both build modes (`cargo build` /
+  `cargo build --tests`) report **zero warnings**.
 
 ## Alignment with the App / CLI
 
