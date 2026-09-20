@@ -1,4 +1,4 @@
-//! dsp/filters/biquad.rs — 双二阶滤波器基础实现
+//! pipeline/dsp/biquad.rs — 双二阶滤波器基础实现
 //!
 //! 提供三种经典双二阶结构：
 //! - Direct Form I（直接形式 I）
@@ -490,7 +490,7 @@ impl BiquadFilter {
         }
     }
 
-    /// 更新系数（用于参数变化时的平滑过渡，Phase 8+）。
+    /// 更新系数（参数变化时立即切换；平滑过渡见 CHANGELOG 的 roadmap）。
     pub fn set_coeffs(&mut self, coeffs: BiquadCoeffs) {
         self.coeffs = coeffs;
     }
@@ -824,8 +824,8 @@ mod tests {
 
     #[test]
     fn extreme_cut_uses_stable_floor_not_bypass() {
-        // -1000 dB → clamp 到 -120 dB → 极点贴单位圆不稳定 → 回退 -60 dB 稳定深切。
-        // 不再整段直通（修复「拉低 -120 dB 跟没拉一样」）。
+        // -1000 dB → clamp 到 -120 dB → 极点贴单位圆不稳定 → 回退 -60 dB 稳定深切，
+        // 而非整段直通（直通会让极端衰减看起来“没生效”）。
         let c = compute_coeffs(BiquadType::Peaking, 1000.0, -1000.0, 1.0, 48000);
         assert_ne!(c, BiquadCoeffs::BYPASS);
         assert!(c.is_valid());

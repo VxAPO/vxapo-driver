@@ -69,7 +69,7 @@ use super::inner::{ApoObjectInner, build_dsp_context};
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
 pub(crate) const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.toml";
 
-/// per-device 配置根目录（方案 A， 确认）。
+/// per-device 配置根目录（每设备一个 `{GUID}` 子目录）。
 pub(crate) const CONFIG_ROOT: &str = r"C:\ProgramData\VxAPO";
 
 /// 单实例共用子目录名（无设备 GUID 兜底，object 7.1.8）。
@@ -119,7 +119,7 @@ pub(crate) fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID>
     }
 }
 
-/// 确定 per-device 配置路径（object 7.1.8，方案 A）：
+/// 确定 per-device 配置路径（object 7.1.8）：
 /// `C:\ProgramData\VxAPO\{GUID}\config.toml`；无 GUID / 解析失败 → `_default` 兜底。
 /// 目录自动创建；config.toml 缺失时写默认 passthrough（空配置 → 链为空即 passthrough）。
 pub(crate) fn resolve_config_path(init: Option<&APOInitSystemEffects>) -> String {
@@ -157,7 +157,7 @@ pub(crate) fn resolve_config_path_from(
     path.display().to_string()
 }
 
-/// watcher 运行时状态（， 外部驱动模型）。
+/// watcher 运行时状态（外部驱动模型）。
 pub(crate) struct WatcherState {
     pub thread: Option<std::thread::JoinHandle<()>>,
     pub shutdown_event: Option<windows::Win32::Foundation::HANDLE>,
@@ -169,14 +169,14 @@ impl Default for WatcherState {
     }
 }
 
-/// 启动配置监控线程（object 7.1.9， 外部驱动模型）。
+/// 启动配置监控线程（object 7.1.9，外部驱动模型）。
 ///
 /// 流程：CreateEventW(shutdown_event) → ConfigWatcher::new(watch_dir, shutdown_event)
 /// → spawn 线程循环 `wait_and_handle` → `hot_reload_impl`（DirectoryChanged → 重载）。
 /// 失败降级（watcher 未启动，仅日志）——不阻塞锁定（配置热重载失效但音频链路正常）。
 ///
 /// `#[implement]` 只暴露 `&self`（gen.rs：不向安全代码暴露所有权实例）——因此用
-/// `Arc<Mutex<WatcherState>>` 内部可变性（方案 A）；spawn 线程 clone `config_path`/
+/// `Arc<Mutex<WatcherState>>` 内部可变性；spawn 线程 clone `config_path`/
 /// `mutex` 的 Arc 移入（'static），线程内调 `hot_reload_impl`（无需持有 apo）。
 pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     use windows::Win32::Foundation::CloseHandle;
@@ -413,7 +413,7 @@ impl Drop for ReloadingClear<'_> {
     }
 }
 
-/// 运行期诊断日志（，仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
+/// 运行期诊断日志（仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
 /// 记录 Lock/热重载的关键事件，供设备切换/热重载失效问题定位；失败静默。
 pub(crate) fn diag_append(line: &str) {
     use std::io::Write;

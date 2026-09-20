@@ -383,7 +383,7 @@ pub(crate) fn lock_for_process(
     apo.latency_samples.store(0, Ordering::SeqCst);
     apo.latency_frames_atomic.store(0, Ordering::SeqCst);
 
-    // Step 6b（，object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父）。
+    // Step 6b（object 7.1.9）：子 APO LockForProcess 委托（失败不阻塞父）。
     // 对齐 EAPO 341-347：childCfg->LockForProcess 结果仅 Trace 不 return。
     if let Some(child) = apo
         .child_apo
@@ -973,7 +973,7 @@ impl ApoObject {
         inner_ref.temp_buffers = tbufs;
     }
 
-    /// RT 入口 panic 兜底（，debug `panic="unwind"` 测试态防御路径）。
+    /// RT 入口 panic 兜底（debug `panic="unwind"` 测试态防御路径）。
     ///
     /// 捕获到 panic 后：输出缓冲清零 + `BUFFER_SILENT` + `stats.error_count++` + 日志
     /// （RT 零分配）。release（`panic="abort"`）下 `catch_unwind` 为编译移除的空操作，

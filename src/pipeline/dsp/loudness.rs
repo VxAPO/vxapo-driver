@@ -1,4 +1,4 @@
-﻿//! dsp/filters/loudness.rs — ISO 226 等响曲线
+﻿//! pipeline/dsp/loudness.rs — ISO 226 等响曲线
 //!
 //! 实现 `LoudnessCorrection:` 命令。
 //!
@@ -10,8 +10,8 @@
 //! 2. 用多段 biquad（GraphicEq）拟合等响曲线
 //! 3. `process` 时通过 biquad 级联执行 EQ 调整
 //!
-//! 当前为占位实现，直接使用 GraphicEq 内部。
-//! Phase 8+ 补全 ISO 226 查表 + 曲线拟合。
+//! 当前为简化实现：以 1/3 倍频程 GraphicEq 近似 ISO 226 等响曲线；
+//! 完整查表与曲线拟合见 CHANGELOG 的 roadmap。
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::biquad::{BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
@@ -81,9 +81,8 @@ impl Filter for LoudnessFilter {
             return None;
         }
 
-        // 简化 ISO 226 曲线拟合：
-        // 低频 boost/cut + 高频微调
-        // 完整 ISO 226 查表在 Phase 8+ 补全
+        // 简化 ISO 226 曲线拟合：低频 boost/cut + 高频微调
+        // （完整查表见 CHANGELOG 的 roadmap）
         for (_i, &freq) in ISO_FREQUENCIES.iter().enumerate() {
             let gain = iso_226_approx(freq, diff);
             if gain.abs() > 0.05 {

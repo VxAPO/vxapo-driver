@@ -1,8 +1,9 @@
-﻿//! pipeline/dsp/filter.rs — Filter trait + FilterCreateResult + FilterFactory + DspContext + ConfigLoader（规范 4.9）
+﻿//! pipeline/dsp/filter.rs — Filter trait + DspContext + 通道/阶段标记（规范 4.9）
 //!
 //! 职责：纯 Rust 定义，不包含任何 Windows API 依赖。
 //!
-//! 导出给：`pipeline/dsp/*.rs`、`pipeline/dsp/factory.rs`、`config/commands/*.rs`。
+//! 导出给：`pipeline/dsp/*.rs`、`pipeline/chain.rs`、`config/parser.rs`、
+//! `object/apo/{process,inner}.rs`。
 
 use std::collections::HashMap;
 use std::marker::PhantomData;

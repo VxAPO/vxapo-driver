@@ -96,7 +96,7 @@ impl DeviceInfo {
         self.installed_version == INSTALL_VERSION_LEGACY
     }
 
-    /// 设备是否已禁用（，EAPO isDisabled 借鉴）。
+    /// 设备是否已禁用（借鉴 EAPO isDisabled）。
     ///
     /// 由 `EndpointInfo::state == EndpointState::Disabled` 推导，零新增 I/O。
     pub fn is_disabled(&self) -> bool {
@@ -106,7 +106,7 @@ impl DeviceInfo {
         )
     }
 
-    /// 设备是否已拔除（，EAPO isUnplugged 借鉴）。
+    /// 设备是否已拔除（借鉴 EAPO isUnplugged）。
     ///
     /// 由 `EndpointInfo::state == EndpointState::NotPresent` 推导，零新增 I/O。
     pub fn is_unplugged(&self) -> bool {

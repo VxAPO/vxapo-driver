@@ -1,4 +1,4 @@
-﻿//! host/instance/factory.rs — COM ClassFactory 实现
+﻿//! object/factory.rs — COM ClassFactory 实现
 //!
 //! 职责：
 //! 1. 管理 `LOCK_COUNT` 原子计数，跟踪客户端显式锁定
@@ -30,7 +30,7 @@ pub fn lock_increment() -> u32 {
 }
 
 pub fn lock_decrement() -> u32 {
-    // 零值保护（，对齐 ref_count.rs CAS 模式）：LockServer(false) 的多余调用
+    // 零值保护（对齐 ref_count.rs CAS 模式）：LockServer(false) 的多余调用
     // 不得把计数下溢成 u32::MAX——否则 DllCanUnloadNow 永久返回 S_FALSE。
     let mut prev = LOCK_COUNT.load(Ordering::SeqCst);
     loop {
@@ -81,9 +81,9 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // ── Step 2: 输出指针初始化 ─────────────────────────
         unsafe { *ppvobject = std::ptr::null_mut() };
 
-        // ── Step 3: 聚合支持（无声根因修复）────────────
+        // ── Step 3: 聚合支持 ────────────────────────
         // EAPO `EqualizerAPO(IUnknown* pUnkOuter)` 明确支持聚合（引擎以 pUnkOuter 非空
-        // 创建 APO）——之前拒绝聚合 → 引擎静默放弃 → 无声（探针实证 punkouter_null=false）。
+        // 创建 APO）；拒绝聚合 → 引擎静默放弃 → 无声。
         //
         // COM 聚合规范：CreateInstance 聚合时必须返回 **inner 的 IUnknown**（引擎外壳
         // 通过它 QI 非委托接口），并非返回 outer 指针（返回 outer/不建 inner = 空壳）。

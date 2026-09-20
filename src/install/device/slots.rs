@@ -1,4 +1,4 @@
-﻿//! install/device/slots.rs — APO 槽位管理（， 规范 5.3）
+﻿//! install/device/slots.rs — APO 槽位管理（规范 5.3）
 //!
 //! 管理 Windows 音频端点 FxProperties 注册表键下的 5 个 APO GUID 槽位，
 //! 提供安装模式选择与原始 APO GUID 回退查询。
@@ -419,12 +419,12 @@ pub fn get_original_post_mix(slots: &[SlotValue; 5], mode: InstallMode) -> Strin
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// VxAPO 独立安装信息区（， 子 APO GUID 来源）
+// VxAPO 独立安装信息区（子 APO GUID 来源）
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// VxAPO 独立安装信息区键路径（install 5.3，全量判定依据）。
 ///
-/// **路径隔离（，指示）**：禁止读写 EAPO 的
+/// **路径隔离**：禁止读写 EAPO 的
 /// `HKLM\SOFTWARE\EqualizerAPO\Child APOs`（EAPO childApoPath，RegistryHelper.h 33）——
 /// VxAPO 用独立的 `HKLM\SOFTWARE\VxAPO` 根，避免污染 EAPO 安装信息区。
 pub const CHILD_APO_PATH_ROOT: &str = r"HKLM\SOFTWARE\VxAPO\Child APOs";

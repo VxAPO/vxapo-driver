@@ -22,7 +22,7 @@ pub use windows::Win32::Media::Audio::Apo::{
     APO_REG_PROPERTIES,
     APO_CONNECTION_DESCRIPTOR,
     APO_CONNECTION_PROPERTY,
-    // APOInitSystemEffects：Initialize 初始化数据（， per-device 配置路径）。
+    // APOInitSystemEffects：Initialize 初始化数据（per-device 配置路径）。
     // 实测字段：{ APOInit: APOInitBaseStruct, pAPOEndpointProperties,
     //   pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>,
     //   pReserved, pDeviceCollection }——端点 GUID 经 pAPOSystemEffectsProperties

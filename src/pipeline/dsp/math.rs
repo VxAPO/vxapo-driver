@@ -56,7 +56,7 @@ pub const PHON_MAX: f32 = 120.0;
 pub const MAX_GRAPHIC_EQ_BANDS: usize = 31;
 /// Copy 临时缓冲预分配上限（RT 安全）。
 pub const MAX_FRAME_COUNT: usize = 8192;
-/// 分块卷积块大小（Phase 8，M3）。
+/// 分块卷积块大小（长 FIR 分块处理用）。
 pub const CONVOLUTION_PARTITION_SIZE: usize = 128;
 
 // ══════════════════════════════════════════════════════════════════════════════

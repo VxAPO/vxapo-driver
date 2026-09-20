@@ -1,4 +1,4 @@
-﻿//! host/installation/exports.rs — 四个 COM DLL 导出函数 + DllMain
+﻿//! object/dll_exports.rs — 四个 COM DLL 导出函数 + DllMain
 //!
 //! 导出函数：
 //! - `DllRegisterServer`：注册 COM 类与 APO
@@ -20,7 +20,8 @@
 //! 所有 COM 初始化与 APO 对象构造延迟到 `DllGetClassObject` 或
 //! `CreateInstance` 被首次调用时执行。
 //!
-//! 注册表写入委托 `sys/registry/write.rs`，安装流程委托 `host/installation/install.rs`。
+//! 注册表写入委托 `sys/registry.rs`；设备绑定（MMDevices/FxProperties 槽位）由
+//! `install/selector/operation.rs` 负责，本模块不触碰。
 
 use std::ffi::c_void;
 use std::sync::atomic::AtomicPtr;
@@ -106,7 +107,7 @@ pub unsafe extern "system" fn DllMain(
 /// 创建指定 CLSID 的 ClassFactory。
 ///
 /// COM 运行时（`CoCreateInstance` 内部）调用此函数获取工厂。
-/// Phase 4：使用 `#[implement]` COM 智能指针，自动管理引用计数。
+/// 使用 `#[implement]` COM 智能指针，自动管理引用计数。
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllGetClassObject(
@@ -141,8 +142,8 @@ pub unsafe extern "system" fn DllGetClassObject(
     };
 
     // ── QueryInterface 获取请求的接口 ──────────────────────
-    // windows-interface 0.59.3 跨模块方法不可见，使用原始 vtable 调用 QI。
-    // Phase 5: 升级 windows-rs 后可移除 vtable 直调，改用 factory.query(&riid, ppv)。
+    // windows-interface 0.59.3 跨模块方法不可见，使用原始 vtable 调用 QI
+    // （升级 windows-rs 后可改为 factory.query(&riid, ppv)，见 CHANGELOG）。
     let raw_ptr: *mut c_void = unsafe { std::mem::transmute_copy(&factory) };
     let vtbl = unsafe { *(raw_ptr as *const *const usize) };
     type QIFn = unsafe extern "system" fn(
@@ -320,12 +321,11 @@ fn register_com_class(
     // 写 ThreadingModel = "Both"
     key.write_sz("ThreadingModel", "Both").map_err(|e| e.code())?;
 
-    // ---- AudioEngine APO 注册键（根因修复）----
+    // ---- AudioEngine APO 注册键 ----
     // Windows 引擎读端点槽位 CLSID 后，从
     // `HKCR\AudioEngine\AudioProcessingObjects\{CLSID}` 取 APO 属性（Flags/接口数等）。
-    // 缺失该键 → 引擎静默跳过（DLL 不加载、无事件日志）——ProcMon 实证：
-    // VxAPO 曾 NAME NOT FOUND（拒载），EAPO 同键 SUCCESS（能加载）。
-    // 结构对齐 EAPO 注册树（EqualizerAPO.cpp CRegAPOProperties，reg query 实证）。
+    // 缺失该键 → 引擎静默跳过（DLL 不加载、无事件日志），必须补齐。
+    // 结构对齐 EAPO 注册树（EqualizerAPO.cpp CRegAPOProperties）。
     let ae_path = entry.audio_engine_path();
     let ae_key = crate::sys::registry::RegKey::create(HKEY_CLASSES_ROOT, &ae_path)
         .map_err(|e| e.code())?;
@@ -336,8 +336,8 @@ fn register_com_class(
     ae_key.write_sz("APOInterface0", AE_INTERFACE0)
         .map_err(|e| e.code())?;
     ae_key.write_dword("MaxInstances", AE_MAX_INSTANCES).map_err(|e| e.code())?;
-    // 完整 11 字段对齐 EAPO（22:35 手动补写才发现缺失；字段不全 → 引擎
-    // 只 LoadLibrary 不实例化 APO → 无声）。Major/Minor + Min/Max In/Out 6 字段。
+    // 完整 11 字段对齐 EAPO：字段不全 → 引擎只 LoadLibrary 不实例化 APO → 无声。
+    // Major/Minor + Min/Max In/Out 6 字段。
     ae_key.write_dword("MajorVersion", AE_VERSION_MAJOR).map_err(|e| e.code())?;
     ae_key.write_dword("MinorVersion", AE_VERSION_MINOR).map_err(|e| e.code())?;
     ae_key.write_dword("MinInputConnections", AE_CONNECTION_MIN).map_err(|e| e.code())?;
@@ -356,7 +356,7 @@ fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> Result<(), HRESULT>
     // 删除 InprocServer32 子键（幂等）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())
         .map_err(|e| e.code())?;
-    // 删除 AudioEngine APO 注册键（根因修复，与注册对称；键不存在视为成功）
+    // 删除 AudioEngine APO 注册键（与注册对称；键不存在视为成功）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.audio_engine_path())
         .map_err(|e| e.code())?;
     // 删除 CLSID 父键（幂等）
@@ -377,8 +377,8 @@ mod tests {
 
     /// 释放 COM 接口指针（通过 vtable 调用 Release）。
     ///
-    /// Phase 4：使用 `#[implement]` COM 智能指针，通过 vtable 释放。
-    /// Phase 5: windows-rs 方法可见后可改用 `.release()`。
+    /// `#[implement]` COM 智能指针在 windows-interface 0.59.3 下方法不可见，
+    /// 故走原始 vtable（可见后改用 `.release()`，见 CHANGELOG）。
     ///
     /// # Safety
     ///
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(hr, S_OK);
         assert!(!ppv.is_null());
 
-        // Phase 4：通过 vtable 调用 Release 释放
+        // 通过 vtable 调用 Release 释放
         unsafe { release_com_ptr(ppv); }
     }
 
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(hr, S_OK);
         assert!(!ppv.is_null());
 
-        // Phase 4：通过 vtable 调用 Release 释放
+        // 通过 vtable 调用 Release 释放
         unsafe { release_com_ptr(ppv); }
     }
 
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(hr, S_OK);
         assert!(!ppv.is_null());
 
-        // 2. 释放工厂 — Phase 4 已用 #[implement] COM 智能指针
+        // 2. 释放工厂（#[implement] COM 智能指针）
         unsafe { release_com_ptr(ppv); }
 
         // 3. 确认可卸载

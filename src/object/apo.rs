@@ -49,13 +49,13 @@ pub struct ApoObject {
     pub(crate) latency_samples: AtomicU32,
     pub(crate) latency_frames_atomic: AtomicU32,
     pub(crate) process_stats: ProcessStatistics,
-    /// 配置文件路径（Initialize 确定，per-device `Documents\VxAPO\{GUID}\config.toml`）。
+    /// 配置文件路径（Initialize 确定，per-device `C:\ProgramData\VxAPO\{GUID}\config.toml`）。
     /// Arc<Mutex>：spawn 线程可 clone（hot_reload 独立访问）。
     pub(crate) config_path: Arc<Mutex<String>>,
-    /// watcher 运行时状态（， 外部驱动模型）：Lock 末尾启动 / Unlock 停止。
+    /// watcher 运行时状态（外部驱动模型）：Lock 末尾启动 / Unlock 停止。
     /// Arc<Mutex>：&self 可写（#[implement] 无 &mut Foo）；spawn 可 clone 移入线程。
     watcher_state: Arc<Mutex<WatcherState>>,
-    /// 子 APO（，object 7.1.3）：Initialize 创建，失败降级 None。
+    /// 子 APO（object 7.1.3）：Initialize 创建，失败降级 None。
     /// Arc<Mutex>：&self 可写 + 控制线程（Initialize/Lock/Unlock）持有；
     /// RT 路径 APOProcess 锁 inner 前短锁读取（引擎保证不重叠，无实际阻塞）。
     /// 语义等价规范 7.1.3 的字段（Arc Mutex WatcherState 先例）。

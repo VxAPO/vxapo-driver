@@ -1,4 +1,4 @@
-//! object/apo/aggregate.rs — COM 聚合委托外壳（无声根因修复）
+//! object/apo/aggregate.rs — COM 聚合委托外壳
 //!
 //! Windows 音频引擎**强制用聚合模式（pUnkOuter 非空）创建 APO**（探针实证 punkouter_null=false）。
 //! windows-rs 0.62 `#[implement]` 生成的 IUnknown 自包含、**不委托**——引擎聚合创建后
@@ -6,9 +6,9 @@
 //!
 //! 本文件实现 EAPO 聚合语义 + 多接口 offset 布局（EqualizerAPO.cpp / .h）：
 //! - EAPO 用 C++ 多重继承：NonDelegatingQI 对 IAPO/RT/Config/ASE 返回**各自不同 this 偏移**
-//! - 我们的初版把所有接口返回同一 this（首字段=IAPO vtable）→ 引擎 QI(RT) 拿到的指针
-//!   vtable 错位（RT.APOProcess 错到 IAPO.GetLatency）→ 引擎判 vtable 无效 → 弃用+零方法
-//! - 修复：NApo 布局改为 **4 个独立 vtable 指针字段**，QI 返回对应字段地址（标准 COM
+//! - 多接口必须返回各自不同的 this：同一 this 会让引擎 QI(RT) 拿到错位 vtable
+//!   （RT.APOProcess 错到 IAPO.GetLatency）→ 引擎判 vtable 无效 → 弃用+零方法
+//! - NApo 布局为 **4 个独立 vtable 指针字段**，QI 返回对应字段地址（标准 COM
 //!   多接口偏移），stub 方法用 offset 从接口指针还原 NApo 基址
 //! - AddRef/Release **自维护**（NonDelegating 语义，EAPO:541-555）
 //! - 接口方法：转发到内部 `ApoObject`（复用全部 DSP 逻辑）
@@ -90,7 +90,7 @@ const OFF_ASE: usize = 24;
 /// CreateInstance 返回此视图——引擎 QI(IAPO) 走此视图的 NonDelegatingQI。
 const OFF_ND_UNKNOWN: usize = 32;
 
-// 编译期护栏（，审查 #11）：偏移常量按 x64（8 字节指针）硬编码，
+// 编译期护栏：偏移常量按 x64（8 字节指针）硬编码，
 // 32 位构建直接编译失败，不得带错误布局进入链接/运行。
 const _: () = assert!(core::mem::size_of::<*const ()>() == 8);
 

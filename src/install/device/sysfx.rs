@@ -127,9 +127,9 @@ pub fn find_msfx_entries(
     }
 
     // 快速路径：DeviceClasses 实例键名 = `##?#{归一化设备ID}#{KS类GUID}`
-    // （USB 等标准设备实证，大小写不敏感）。直接构造候选路径，把「首次切换到
-    // 新端点时 Initialize 的数百次注册表打开」降为几次——修复切换设备后
-    // 首秒音频断续慢速（自愈全树扫描阻塞音频服务控制线程）。
+    // （USB 等标准设备，大小写不敏感）。直接构造候选路径，把「首次切换到
+    // 新端点时 Initialize 的数百次注册表打开」降为几次——全树自愈扫描会阻塞
+    // 音频服务控制线程，导致切换设备后首秒音频断续。
     for class_guid in [KS_RENDER_CLASS, KS_AUDIO_CLASS] {
         let candidates = [
             format!("{DEVICE_CLASSES_ROOT}\\{class_guid}\\##?#{normalized}#{class_guid}"),

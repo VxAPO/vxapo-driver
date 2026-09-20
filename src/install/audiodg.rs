@@ -93,15 +93,13 @@ pub fn ensure_can_load() -> Result<()> {
 
 /// 停止 Windows 音频服务（只停不启，uninstall 前置用）。
 ///
-/// **关于"必须先停服才能改 MMDevices"的更正（2026-09-16 实测）**：写/删端点
-/// `FxProperties` 值只需要句柄具备 `KEY_SET_VALUE`（`RegKey::open_for_write` 即是），
-/// 与 audiodg 是否持有点端无关——在活动音频流上删除槽位值同样成功。历史上出现的
-/// 0x80070005 来自旧实现用 `SAM_ALL`（含 CreateSubKey 位，ACL 未授予）或只读句柄
-/// 打开该键，不是音频栈加锁。
+/// 写/删端点 `FxProperties` 值只需要句柄具备 `KEY_SET_VALUE`（`RegKey::open_for_write`
+/// 即是），与 audiodg 是否持有点端无关——在活动音频流上删除槽位值同样成功；
+/// ACCESS_DENIED 的成因是句柄权限不足（`SAM_ALL` 含未授予的 CreateSubKey 位、
+/// 或只读句柄打开），不是音频栈加锁。
 ///
 /// 停服真正有用的是**让变更生效**：引擎会缓存端点的 APO 链，只改注册表不会立刻
-/// 重载（实测：活动流上删掉 VxAPO 槽位值后，新起的流仍加载旧 APO），需要端点/服务
-/// 重建后才生效。
+/// 重载（新起的流仍加载旧 APO），需要端点/服务重建后才生效。
 /// 与 `restart_audio_service` 共用停服逻辑，但**不开起**（uninstall 删槽位后由
 /// CLI 层调 `restart_audio_service` 恢复）。
 pub fn stop_audio_service() -> Result<()> {
@@ -300,8 +298,8 @@ pub fn ensure_audio_service_running() -> Result<()> {
 ///
 /// 用途：停服/`taskkill` 之后确认模块映像已释放——audiodg 不退出时
 /// `vxapo_driver.dll` 仍被占用，紧随其后的重装/换 DLL 会覆盖失败。
-/// **注意**：槽位值的写/删不需要这步（只需 `KEY_SET_VALUE` 句柄，
-/// 2026-09-16 实测活动流上删值同样成功）；这里只解决文件/模块占用。
+/// **注意**：槽位值的写/删不需要这步（只需 `KEY_SET_VALUE` 句柄，活动流上删值
+/// 同样成功）；这里只解决文件/模块占用。
 ///
 /// 实现：Toolhelp 快照取 `audiodg.exe` 的 PID → `OpenProcess(SYNCHRONIZE)` →
 /// `WaitForSingleObject`（内核事件等待，进程一退出立即返回），预算耗尽即收手。

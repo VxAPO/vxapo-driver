@@ -6,8 +6,7 @@
 //! - `windows::Win32::Media::KernelStreaming::SPEAKER_*`（re-export 优先，缺失位自定义补齐）
 //!
 //! 导出给：`install/device/format.rs`（`default_channel_mask` 兜底）、
-//! `config/parser.rs`、`config/commands/channel.rs`（`get_channel_names`）、
-//! `object/apo.rs`（`get_channel_names`）。
+//! `config/parser.rs`、`object/apo/{process,inner}.rs`（`get_channel_names`）。
 //!
 //! 职责边界：只包含 Windows SDK 语义的静态定义与纯函数。
 //! 不包含任何 VxAPO 业务逻辑，不感知运行时状态。

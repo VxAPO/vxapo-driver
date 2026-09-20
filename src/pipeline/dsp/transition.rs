@@ -1,4 +1,4 @@
-//! dsp/transition.rs — 过渡混合
+//! pipeline/dsp/transition.rs — 过渡混合
 //!
 //! 配置热重载时，旧配置（`current_chain`）与新配置（`next_chain`）之间
 //! 需要平滑过渡，避免音频断裂（pop/click）。

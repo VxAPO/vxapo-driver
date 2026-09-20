@@ -1,7 +1,5 @@
 //! install/selector/operation.rs — 设备 APO 安装/卸载执行 + 事务回滚（规范 5.5.2）
 //!
-//! 原 `install.rs` + `rollback.rs` 合并至此。
-//!
 //! 职责：
 //! - `install_endpoint`： 完整 7 步安装，Transaction 保护，失败自动回滚
 //! - `uninstall_endpoint`：卸载（恢复原始 GUID，清理配置）
@@ -63,7 +61,7 @@ pub struct InstallConfig {
     pub use_original_apo_postmix: bool,
     /// 是否允许静音缓冲区快速路径。
     pub allow_silent_buffer: bool,
-    /// 是否启用 autoAdjust（，独立于 allow_silent_buffer）。
+    /// 是否启用 autoAdjust（独立于 allow_silent_buffer）。
     ///
     /// 默认 false（VxAPO 无自动校正实现，保守默认关）。
     pub auto_adjust: bool,
@@ -370,8 +368,8 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     };
 
     // 全流程前置：确认已安装后才停音频服务。停服**不是删值的前提**（写/删
-    // `FxProperties` 值只需 `KEY_SET_VALUE` 句柄；2026-09-16 实测：音频播放中、
-    // DLL 已被 audiodg 加载、audiodg 持有点端时删槽位值同样成功）。真正的理由：
+    // `FxProperties` 值只需 `KEY_SET_VALUE` 句柄，音频播放中、DLL 已被 audiodg
+    // 加载、audiodg 持有点端时删槽位值同样成功）。真正的理由：
     // ① 释放 DLL 模块映像（audiodg 不退出则 vxapo_driver.dll 仍被占用，随后的
     //    重装/换 DLL 覆盖会失败；NSIS installer-hooks 亦为此停服务）；
     // ② 让本流程末尾的端点重启（pnputil /restart-device）立刻生效——引擎会缓存
@@ -386,10 +384,10 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // （实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
     // read_slot_value 直接在 fx_key 上读槽位值（REG_SZ/REG_BINARY 兼容）。
     //
-    // 【2026-09-16 更正】删值失败**不是**"端点被占用/被锁"：写/删 `FxProperties`
-    // 值只需要句柄具备 `KEY_SET_VALUE`（`open_for_write` 即是），在活动音频流上
-    // 同样成功。历史 0x80070005 来自旧实现用 `SAM_ALL`（含 CreateSubKey 位，ACL
-    // 未授予）或只读句柄打开该键——「第一次删信息区成功但槽位值残留」即由此而来。
+    // 删值失败**不是**"端点被占用/被锁"：写/删 `FxProperties` 值只需要句柄具备
+    // `KEY_SET_VALUE`（`open_for_write` 即是），在活动音频流上同样成功。
+    // ACCESS_DENIED 的成因是句柄权限不足（`SAM_ALL` 含未授予的 CreateSubKey 位、
+    // 或只读句柄打开）——「第一次删信息区成功但槽位值残留」即由此而来。
     // 仍不静默吞错：权限/句柄异常必须暴露给调用方，但失败语义是"写入被拒"，
     // 与音频服务是否运行无关。
 

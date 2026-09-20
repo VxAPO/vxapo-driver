@@ -1,4 +1,4 @@
-﻿//! host/instance/apo_child.rs — 子 APO 管理
+﻿//! object/apo/child.rs — 子 APO 管理
 //!
 //! 子 APO COM 生命周期管理：
 //! - `CoCreateInstance` 创建子 APO 实例
@@ -6,15 +6,14 @@
 //! - 延迟、重置、帧数计算、锁定/解锁委托给子 APO
 //! - `Drop` 自动释放所有 COM 接口引用
 //!
-//! 子 APO 由 `init.rs` 在 `Initialize` 时创建（，失败降级为无子 APO），
-//! 存储在 `ApoObject.child_apo` 中，供 apo_rt.rs（RT）和 apo_conf.rs（配置）委托调用。
+//! 子 APO 由 `init.rs` 在 `Initialize` 时创建（失败降级为无子 APO），
+//! 存储在 `ApoObject.child_apo` 中，供 process.rs（RT）和 config.rs（配置）委托调用。
 //!
-//! ：
-//! - **类型化接口持有**（windows-rs `IAudioProcessingObject` 等）——替代早期裸 vtable 手动调用
-//!   （原实现用 `vtbl_method` + `transmute` 手动索引 vtable；windows-rs 0.62.2 提供
-//!   三个接口的 safe 调用方法，对齐类型化方案）
+//! 实现要点：
+//! - **类型化接口持有**（windows-rs `IAudioProcessingObject` 等）：windows-rs 0.62.2
+//!   为三个接口提供 safe 调用方法，无需裸 vtable 手动索引
 //! - **子 APO GUID 来源** = 端点 GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`
-//! （独立安装信息区， 路径隔离；`install/device/slots` 提供读取）
+//! （独立安装信息区，路径隔离；`install/device/slots` 提供读取）
 //! - **格式协商参数（执行端建议采纳）**：`is_input/output_format_supported` 输入参数
 //!   `Option<&IAudioMediaType>`（p_opposite 可 None=无对端；p_requested 由父转发非空）——
 //!   可空借用语义用安全引用表达，与 windows-rs `#[interface]` 可空接口参数风格一致；

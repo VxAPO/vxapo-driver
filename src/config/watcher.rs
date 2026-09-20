@@ -1,4 +1,4 @@
-﻿//! config/watcher.rs — 配置文件变更监控（规范 6.2，/ 事件驱动）
+﻿//! config/watcher.rs — 配置文件变更监控（规范 6.2，事件驱动）
 //!
 //! **职责**：监控配置目录变更（Win32 事件驱动，对齐 EAPO `notificationThread`）。
 //! 不再使用轮询模式（旧 2000ms 轮询延迟高、浪费 CPU）。

@@ -9,7 +9,8 @@
 //! - `windows::Win32::Media::Audio::Apo`（4 个 APO 接口结构体 + 3 个系统接口结构体）
 //! - `windows::core::{Interface, IUnknown}`（取 ::IID、接口根基）
 //!
-//! 导出给：`object/apo.rs`、`object/child.rs`、`object/factory.rs`。
+//! 导出给：`object/apo.rs`、`object/apo/{aggregate,child,negotiate,process}.rs`、
+//! `object/factory.rs`、`object/vx_reg_props.rs`、`pipeline/format.rs`。
 //!
 //! 禁止：不包含任何实现逻辑。
 
@@ -79,7 +80,7 @@ pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: GUID =
     IAudioProcessingObjectNotifications::IID;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// AEC 接口预留（，feature-gated）
+// AEC 接口预留（feature-gated）
 // ══════════════════════════════════════════════════════════════════════════════
 //
 // Windows 11 AEC（声学回声消除）APO 未来若支持，在此预留接口 re-export 与 IID 常量。

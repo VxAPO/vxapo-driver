@@ -7,9 +7,9 @@
 //! 本模块以「设备实例 ID」为稳定身份，把旧记录匹配到当前活跃端点，
 //! 并在用户确认后迁移配置/快照/子 APO 备份、修复新 GUID 安装状态。
 //!
-//! **匹配分层（2026-09-16 修复）**：Windows 大版本更新会重排端点 GUID 并
-//! **整体删除**老端点键，此时「老端点键读实例 ID」这条旧路径失效（实测两条
-//! 记录退化为 unmatched，App 只剩清理出口）。现按优先级分层匹配：
+//! **匹配分层**：Windows 大版本更新会重排端点 GUID 并**整体删除**老端点键，
+//! 此时「老端点键读实例 ID」这条路径失效，记录会退化为 unmatched。现按优先级
+//! 分层匹配：
 //!
 //! 1. `endpoint_history`：老 GUID 出现在活跃端点的端点历史属性里
 //!    （`identity::PKEY_ENDPOINT_HISTORY`），或活跃 GUID 出现在记录已落盘的
@@ -345,8 +345,7 @@ pub fn migrate_install(
         };
         write_install_config(new_guid, &target.name, "", &config)?;
         // 槽位改写要**重启端点**才生效：引擎缓存端点 APO 链，只改注册表不会
-        // 立刻重载（2026-09-16 实测：活动流上删掉 VxAPO 槽位值后，新起的流
-        // 仍加载旧 APO，直到端点/服务重建）。
+        // 立刻重载（新起的流仍加载旧 APO，直到端点/服务重建）。
         // 注意：写/删 FxProperties 值本身**不需要**停服（只需 KEY_SET_VALUE 句柄，
         // `open_for_write` 即是）——停服在这里没有「解锁」作用，故不再停服。
         let repair_endpoint_path = find_endpoint_path(new_guid)?;

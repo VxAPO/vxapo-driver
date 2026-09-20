@@ -1,4 +1,4 @@
-//! dsp/filters/gain.rs — 增益滤波器（含内部平滑插值）
+//! pipeline/dsp/gain.rs — 增益滤波器（含内部平滑插值）
 //!
 //! 实现 `Preamp:` 命令。
 //!

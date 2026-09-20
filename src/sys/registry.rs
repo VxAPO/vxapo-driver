@@ -387,8 +387,7 @@ impl RegKey {
 
     /// 写入 REG_QWORD。
     ///
-    /// 新增（配套 .reg 导出 QWORD 修复）：此前只读不写，QWORD 备份/
-    /// 导出无法 round-trip 验证。
+    /// 读侧 `read_value` 已支持 QWORD，写侧补齐后可 round-trip（.reg 导出/备份需要）。
     pub fn write_qword(&self, name: &str, value: u64) -> Result<()> {
         let name = HSTRING::from(name);
         let data = value.to_le_bytes();
@@ -635,8 +634,7 @@ fn dump_key_recursive(
                         display_name, d
                     )),
                     RegValue::Qword(q) => {
-                        // .reg 的 QWORD 类型为 hex(b)：8 字节完整小端序（修复：
-                        // 旧实现只导出低 2 字节，恢复必然损坏）。
+                        // .reg 的 QWORD 类型为 hex(b)：8 字节完整小端序。
                         let bytes = q.to_le_bytes();
                         let hex: Vec<String> = bytes.iter().map(|x| format!("{:02x}", x)).collect();
                         content.push_str(&format!(
@@ -655,8 +653,7 @@ fn dump_key_recursive(
                     }
                     RegValue::MultiSz(v) => {
                         // .reg 的 REG_MULTI_SZ 为 hex(7)：每项 UTF-16LE hex + 00,00
-                        // 终止，列表末尾再补 00,00 双终止（修复：旧实现写
-                        // 转义文本 + 字面 \0，生成的 .reg 无效）。
+                        // 终止，列表末尾再补 00,00 双终止（写转义文本的 .reg 无效）。
                         let mut hex: Vec<String> = Vec::new();
                         for item in v {
                             for u in item.encode_utf16() {
@@ -771,8 +768,8 @@ mod tests {
     fn reg_export_qword_multi_sz_roundtrip() {
         const EXPORT_KEY: &str = r"SOFTWARE\VxAPO_Test_Registry_Export";
 
-        // 回归：.reg 导出中 QWORD 为 8 字节小端 hex(b)，MULTI_SZ 为
-        // UTF-16LE hex(7) + 双终止；旧实现分别只导低 2 字节/写转义文本。
+        // .reg 导出格式：QWORD 为 8 字节小端 hex(b)，MULTI_SZ 为
+        // UTF-16LE hex(7) + 双终止。
         let _ = delete_tree(TEST_ROOT, EXPORT_KEY);
         let key = RegKey::create(TEST_ROOT, EXPORT_KEY).unwrap();
         key.write_dword("Dword", 0x01020304).unwrap();

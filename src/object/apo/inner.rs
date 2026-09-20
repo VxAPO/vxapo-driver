@@ -23,7 +23,7 @@ pub struct ApoObjectInner {
     pub pending_reload: bool,
     /// 阻塞式重载标志：同一过渡周期内至多触发一次重载。
     pub reloading: bool,
-    /// 生效配置指纹（， 配置变更检测）——当前生效链的 filter_spec 有序序列。
+    /// 生效配置指纹（配置变更检测）——当前生效链的 filter_spec 有序序列。
     pub active_spec: Vec<String>,
     /// 上次成功 Lock 的(config_path, mtime, size, 采样率, 通道) 键
     /// （修订：同键 Relock 直接复用现有链、保留滤波器状态，避免端点重协商时的

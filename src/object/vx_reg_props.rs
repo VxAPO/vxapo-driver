@@ -1,7 +1,7 @@
-﻿//! host/instance/reg_props.rs — APO 注册属性定义
+﻿//! object/vx_reg_props.rs — APO 注册属性定义
 //!
 //! VxAPO 自身的 CLSID 定义与 APO 注册属性。
-//! 系统级接口 IID 请见 `sys/iid.rs`。
+//! 系统级接口 IID 请见 `sys/com/apo_interfaces.rs`。
 //!
 //! 定义两个 APO 注册属性对象（PreMix / PostMix），各包含 CLSID、名称、版权信息
 //! 及 APO 标志位（`FRAMESPERSECOND_MUST_MATCH | BITSPERSAMPLE_MUST_MATCH | INPLACE`）。
@@ -293,8 +293,7 @@ impl ClsidEntry {
     }
     pub fn clsid_key_path(&self) -> String { format!("CLSID\\{}", self.clsid_str) }
     pub fn inproc_server_path(&self) -> String { format!("CLSID\\{}\\InprocServer32", self.clsid_str) }
-    /// AudioEngine APO 注册键（根因修复）：引擎读槽位 CLSID 后查此键取 APO 属性，
-    /// 缺失则静默拒载（ProcMon 实证：VxAPO 曾 NAME NOT FOUND，EAPO SUCCESS）。
+    /// AudioEngine APO 注册键：引擎读槽位 CLSID 后查此键取 APO 属性，缺失则静默拒载。
     pub fn audio_engine_path(&self) -> String {
         format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
     }
