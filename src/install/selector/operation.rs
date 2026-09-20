@@ -916,39 +916,18 @@ mod tests {
         assert_eq!(guid_to_string(&g), "{FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF}");
     }
 
-    /// 回归：EAPO REG_SZ 槽位（GUID 字符串）由 `slots::read_slot_value` 正确解析。
+    /// EAPO REG_SZ 槽位（GUID 字符串）解析：真实 EAPO CLSID 落到 `parse_guid_string`。
     ///
-    /// 双 bug 实证：
-    /// 1. 本文件旧 read_slot_safe data4 后半 12 字符误传 hex_to_bytes（要求 4 字符）→ None；
-    /// 2. hex_to_u32 传 8 字符给 hex_to_bytes（要求 4 字符）→ data1 永远 None。
-    /// 两个 bug 都导致 EAPO 槽位读成 NoValue → 子 APO 永不保留。
-    /// 根修：删除重复实现，统一用 `slots::read_slot_value`（parse_guid_string 验证过）。
+    /// 槽位读取统一走 `slots::read_slot_value`（REG_SZ 分支经
+    /// `utils::guid::parse_guid_string`），本测试用同一解析器核对 EAPO 实证值各字段。
     #[test]
     fn read_slot_value_parses_eapo_reg_sz_guid() {
-        // 与 list 预览同源：slots::read_slot_value 的 REG_SZ 分支经 parse_guid_string。
-        // 直接验证 parse_guid_string 对真实 EAPO CLSID 的输出（slots.rs 已有单测，
-        // 此处再加一条完全对齐 EAPO 实证值）。
         let s = "{EACD2258-FCAC-4FF4-B36D-419E924A6D79}";
-        let inner = &s[1..s.len() - 1];
-        let parts: Vec<&str> = inner.split('-').collect();
-        assert_eq!(parts.len(), 5);
-        // data1/data2/data3 + data4 前后拼接（slots::parse_guid_string 等价逻辑）
-        assert_eq!(parts[0], "EACD2258");
-        assert_eq!(parts[1], "FCAC");
-        assert_eq!(parts[2], "4FF4");
-        assert_eq!(parts[3], "B36D");
-        assert_eq!(parts[4], "419E924A6D79");
-        // data4 每 2 hex 字符 = 1 字节（等价 parse_guid_string 实现）
-        let hex4 = format!("{}{}", parts[3], parts[4]);
-        assert_eq!(hex4.len(), 16);
-        let mut data4 = [0u8; 8];
-        for i in 0..8 {
-            let hi = hex4.as_bytes()[i * 2];
-            let lo = hex4.as_bytes()[i * 2 + 1];
-            data4[i] = ((hi as char).to_digit(16).unwrap() as u8) << 4
-                | (lo as char).to_digit(16).unwrap() as u8;
-        }
-        assert_eq!(data4, [0xB3, 0x6D, 0x41, 0x9E, 0x92, 0x4A, 0x6D, 0x79]);
+        let guid = crate::utils::guid::parse_guid_string(s).expect("EAPO CLSID 应可解析");
+        assert_eq!(guid.data1, 0xEACD_2258);
+        assert_eq!(guid.data2, 0xFCAC);
+        assert_eq!(guid.data3, 0x4FF4);
+        assert_eq!(guid.data4, [0xB3, 0x6D, 0x41, 0x9E, 0x92, 0x4A, 0x6D, 0x79]);
     }
 
     /// EAPO 互斥保留语义：SfxEfx 不动 MFX、SfxMfx 不动 EFX、LfxGfx 全删。

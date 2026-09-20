@@ -124,4 +124,12 @@ mod tests {
         assert!(parse_guid_string("{12345678-9ABC-DEF0-0123-456789ABCDE}").is_none());
         assert!(parse_guid_string("{}").is_none());
     }
+
+    #[test]
+    fn parse_guid_string_rejects_invalid_charset() {
+        // 各段长度合法但含非 hex 字符 → None（不 panic）。
+        assert!(parse_guid_string("{GGGGGGGG-9ABC-DEF0-0123-456789ABCDEF}").is_none());
+        assert!(parse_guid_string("{12345678-9ABC-DEF0-0123-456789ABCDEZ}").is_none());
+        assert!(parse_guid_string("{12345678-9ABC-DEF0-0123-45_789ABCDEF}").is_none());
+    }
 }
