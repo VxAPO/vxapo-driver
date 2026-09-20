@@ -17,6 +17,7 @@ use crate::install::device::slots::{
 use crate::install::device::identity::{
     merge_endpoint_history, read_endpoint_identity, write_identity_values,
 };
+use crate::install::device::info::find_endpoint_path;
 use crate::install::device::sysfx;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::{
@@ -24,20 +25,11 @@ use crate::sys::com::prelude::{
     guid_to_string,
 };
 use crate::sys::registry::{RegKey, RegValue};
-use crate::utils::guid::parse_guid_string;
 use crate::utils::vx_error::{Result, VxApoError};
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 注册表路径常量
+// 路径常量
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// MMDevices 渲染端点根路径。
-const RENDER_PATH: &str =
-    r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
-
-/// MMDevices 采集端点根路径。
-const CAPTURE_PATH: &str =
-    r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
 
 /// .reg 备份默认目录。
 const BACKUP_DIR: &str = r"C:\ProgramData\VxAPO\backups";
@@ -552,31 +544,40 @@ fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// 把旧 GUID 安装迁移到新 GUID（编排层入口）。
+///
+/// `device::stale::migrate_install` 不做安装配置写入（`InstallConfig` 属本层），
+/// 由本函数构造配置并以回调传入，device 层因此不依赖 selector。
+pub fn migrate_install(
+    old_guid: &str,
+    new_guid: &str,
+    config_from: Option<&str>,
+    snapshot_from: Option<&str>,
+) -> Result<crate::install::device::stale::MigrationReport> {
+    let repair = |guid: &str, name: &str, mode: InstallMode| -> Result<()> {
+        let config = InstallConfig {
+            install_premix: true,
+            install_postmix: true,
+            install_mode: mode,
+            use_original_apo_premix: false,
+            use_original_apo_postmix: false,
+            allow_silent_buffer: true,
+            auto_adjust: false,
+        };
+        write_install_config(guid, name, "", &config)
+    };
+    crate::install::device::stale::migrate_install(
+        old_guid,
+        new_guid,
+        config_from,
+        snapshot_from,
+        &repair,
+    )
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 内部辅助
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// 从端点 GUID 定位注册表路径（先 Render 再 Capture）。
-///
-/// `pub(crate)`：运行期自愈（object/apo/init.rs `Initialize`）需要按端点 GUID
-/// 定位路径以接管 MSFX 模板。
-pub fn find_endpoint_path(device_guid: &str) -> Result<String> {
-    // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径（审查 #9）。
-    if parse_guid_string(device_guid).is_none() {
-        return Err(VxApoError::internal(&format!("无效的端点 GUID：{device_guid}")));
-    }
-    let render = format!("{}\\{}", RENDER_PATH, device_guid);
-    if RegKey::open(HKEY_LOCAL_MACHINE, &render).is_ok() {
-        return Ok(render);
-    }
-
-    let capture = format!("{}\\{}", CAPTURE_PATH, device_guid);
-    if RegKey::open(HKEY_LOCAL_MACHINE, &capture).is_ok() {
-        return Ok(capture);
-    }
-
-    Err(VxApoError::device_not_found(device_guid))
-}
 
 /// 确保 FxProperties 子键存在。
 ///

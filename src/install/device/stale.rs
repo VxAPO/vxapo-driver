@@ -33,13 +33,12 @@ use crate::install::device::identity::{
     identity_from_key, identity_from_values, merge_endpoint_history, normalize_device_id,
     read_endpoint_identity, write_identity_values, EndpointIdentity,
 };
-use crate::install::device::info::{detect_mode_for_guid, enumerate_devices};
+use crate::install::device::info::{detect_mode_for_guid, enumerate_devices, find_endpoint_path};
 use crate::install::device::slots::{
     child_apo_key_exists, ChildApoKind, InstallMode, CHILD_APO_PATH_ROOT, FX_PROPERTIES_KEY,
     INSTALL_VERSION,
 };
 use crate::install::device::sysfx::{decode_backups, SYSFX_BACKUP_VALUE};
-use crate::install::selector::operation::{find_endpoint_path, write_install_config, InstallConfig};
 use crate::sys::registry::{delete_tree, split_key, RegKey, RegValue};
 use crate::utils::guid::parse_guid_string;
 use crate::utils::vx_error::{Result, VxApoError};
@@ -196,15 +195,23 @@ pub fn fix_config_acl(guid: &str) -> Result<()> {
     Ok(())
 }
 
+/// 迁移修复回调：构造并写入目标端点的安装配置。
+///
+/// 参数 `(device_guid, device_name, install_mode)`。实现由 selector 层提供——
+/// `InstallConfig` / `write_install_config` 属 selector，不下沉到 device 层。
+pub type RepairInstallFn<'a> = &'a dyn Fn(&str, &str, InstallMode) -> Result<()>;
+
 /// 把旧 GUID 安装迁移到新 GUID。
 ///
 /// `config_from` / `snapshot_from` 为显式来源；缺省按「最新 config、最早 snapshot」
 /// 在同设备实例的旧记录与目标现有文件之间选择。
+/// 目标端点安装状态需修复时，通过 `repair_install` 回调写入安装配置。
 pub fn migrate_install(
     old_guid: &str,
     new_guid: &str,
     config_from: Option<&str>,
     snapshot_from: Option<&str>,
+    repair_install: RepairInstallFn<'_>,
 ) -> Result<MigrationReport> {
     validate_guid(old_guid)?;
     validate_guid(new_guid)?;
@@ -334,16 +341,7 @@ pub fn migrate_install(
             .and_then(|(pre, post)| mode_from_slots(&pre, &post))
             .or_else(|| Some(detect_mode_for_guid(new_guid)))
             .unwrap_or(InstallMode::SfxEfx);
-        let config = InstallConfig {
-            install_premix: true,
-            install_postmix: true,
-            install_mode: mode,
-            use_original_apo_premix: false,
-            use_original_apo_postmix: false,
-            allow_silent_buffer: true,
-            auto_adjust: false,
-        };
-        write_install_config(new_guid, &target.name, "", &config)?;
+        repair_install(new_guid, &target.name, mode)?;
         // 槽位改写要**重启端点**才生效：引擎缓存端点 APO 链，只改注册表不会
         // 立刻重载（新起的流仍加载旧 APO，直到端点/服务重建）。
         // 注意：写/删 FxProperties 值本身**不需要**停服（只需 KEY_SET_VALUE 句柄，

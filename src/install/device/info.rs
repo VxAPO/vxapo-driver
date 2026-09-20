@@ -11,7 +11,8 @@ use crate::install::device::slots::{
 };
 use crate::sys::registry::{RegKey, is_windows_version_at_least};
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
-use crate::utils::vx_error::Result;
+use crate::utils::guid::parse_guid_string;
+use crate::utils::vx_error::{Result, VxApoError};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
 /// 存储版本号的注册表值名称。
@@ -24,6 +25,28 @@ const RENDER_PATH: &str =
 /// MMDevices 采集端点根路径。
 const CAPTURE_PATH: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
+
+/// 从端点 GUID 定位注册表路径（先 Render 再 Capture）。
+///
+/// 供运行期自愈（`object/apo/init.rs` 的 `Initialize`）与各安装/迁移流程按端点
+/// GUID 定位注册表键。
+pub fn find_endpoint_path(device_guid: &str) -> Result<String> {
+    // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径。
+    if parse_guid_string(device_guid).is_none() {
+        return Err(VxApoError::internal(&format!("无效的端点 GUID：{device_guid}")));
+    }
+    let render = format!("{}\\{}", RENDER_PATH, device_guid);
+    if RegKey::open(HKEY_LOCAL_MACHINE, &render).is_ok() {
+        return Ok(render);
+    }
+
+    let capture = format!("{}\\{}", CAPTURE_PATH, device_guid);
+    if RegKey::open(HKEY_LOCAL_MACHINE, &capture).is_ok() {
+        return Ok(capture);
+    }
+
+    Err(VxApoError::device_not_found(device_guid))
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // DeviceInfo — 组合查询结果

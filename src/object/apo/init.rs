@@ -80,7 +80,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
     if let Some(eg) = endpoint_guid {
         let eg_str = guid_to_string(&eg);
         if selfheal_once(&eg_str) {
-            match crate::install::selector::operation::find_endpoint_path(&eg_str) {
+            match crate::install::device::info::find_endpoint_path(&eg_str) {
                 Ok(endpoint_path) => {
                     if let Err(e) =
                         crate::install::device::sysfx::ensure_takeover_for_endpoint(&endpoint_path)
