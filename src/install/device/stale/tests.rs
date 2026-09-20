@@ -1,4 +1,6 @@
 use super::*;
+use super::detect::*;
+use super::migrate::*;
 
 #[test]
 fn extracts_device_instance_from_sysfx_path() {
