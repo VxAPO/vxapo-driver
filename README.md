@@ -1,8 +1,54 @@
 # VxAPO Driver
 
-VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing Object）COM DLL，
-负责逐设备的实时音频 DSP 处理。它**只读配置、不写回**：配置来自
-`C:\ProgramData\VxAPO\{GUID}\config.toml`，变更由事件驱动监控并热重载。
+<!-- 徽章区（待补）：CI 状态 / 许可证 / 最新发布 -->
+
+[中文](#vxapo-driver) · [English](#vxapo-driver-english) · [项目总览](../vxapo-docs/overview/zh/项目概览.md)
+
+在 Windows 音频引擎里加一层**可编程的实时 DSP**：VxAPO Driver 是运行在 `audiodg` 进程内的
+APO（Audio Processing Object）COM DLL，按音频端点加载各自的 `config.toml` 并逐样本处理音频。
+**只读配置、不写回**——配置写入口只经 CLI（提权）与 App，DLL 自身从不改文件。
+
+## 生态位：与 Equalizer APO 的关系
+
+同一类问题（系统级、设备级、可脚本化的音频处理），设计取舍不同。下表只列事实与差异：
+
+| 维度 | Equalizer APO | VxAPO |
+|---|---|---|
+| 配置载体 | 文本配置（`config.txt` 语法） | 每端点一份 TOML：`C:\ProgramData\VxAPO\{GUID}\config.toml` |
+| 配置生效 | 重载/重启后生效 | 事件驱动热重载（`FindFirstChangeNotificationW`，10 ms 去抖合并）+ 双链过渡防爆音 |
+| 界面 | 独立 GUI 编辑器 | Tauri 2 + React 桌面 App（参数视图 / 语义视图）+ CLI |
+| 设备模型 | APO 装到端点，配置按设备文件组织 | 同上，另含旧 GUID 残留的检测/迁移/清理（以设备实例 ID 为稳定身份） |
+| PEQ | 多段 EQ（含 GraphicEQ） | 混合 PEQ：`fc < 200 Hz` 走 IIR（RBJ），`≥ 200 Hz` 走线性相位 FIR（1024–8192 抽头，>2048 分块 FFT），≤ 31 段 |
+| 效果集 | 由配置语法驱动的文本指令 | 7 个内置效果器（peq / preamp / aural / reverb / compressor / wide / loudness），参数带范围/步进/默认值契约 |
+| 许可 | GPL-2.0 | GPL-3.0-or-later，**独立实现**（不含 EAPO 代码） |
+
+> 设计上受益于 Equalizer APO 的公开实践（逐设备槽位安装、配置文件驱动 DSP、31 段上限、
+> 热重载的 notification 思路），细节见文末「设计参考与致谢」。
+
+## 架构
+
+```text
+vxapo-app (React / Tauri)
+    │  config.toml · CLI --json
+    ▼
+vxapo-cli ───────────────────────────▶ vxapo-driver (install layer)
+    │  config.toml                          │  HKLM 槽位 / CLSID 绑定 / 子 APO
+    ▼                                       ▼
+Windows audiodg.exe ────加载────▶ vxapo_driver.dll (APO)
+                                        │
+      ┌─────────────────────────────────┴─────────────────────────────────┐
+      │ sys/        COM 接口 · 注册表 · 音频格式/APO 常量                   │
+      │ object/     APO 对象 · 聚合委托 · 子 APO · 协商 · 热重载 · RT 转储   │
+      │ config/     TOML → 链模型 · 校验/限幅 · 目录监控                    │
+      │ pipeline/   RT 契约 + DSP 链（realtime/ 零分配 · dsp/ 7 个效果器）   │
+      │ install/    端点枚举 · 槽位选择 · 安装事务 · 残留迁移/清理           │
+      │ telemetry/  日志 · panic 记录                                      │
+      │ utils/      环形缓冲 · 对齐 · GUID · 错误类型                       │
+      └───────────────────────────────────────────────────────────────────┘
+```
+
+实时路径（`process`）只依赖 `pipeline/`；`install/` 与 `sys/` 只在初始化/安装阶段进入。
+模块职责与依赖方向详见 `../vxapo-docs/driver`。
 
 ## 功能与实现
 
@@ -56,6 +102,27 @@ VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing 
 | `wide` | 声场处理：线性相位 FIR 分频（Kaiser，抽头随采样率/分频点缩放）→ 低频直通、高频 M/S；中置走空气吸收（4k–5.5k 高架 + 10k–16k 二阶 Bessel 低通，按 f² 物理曲线）；侧通道动态增益（10ms 攻击/120ms 释放）+ 双路全通/ITD 去相关（仅 1.5kHz 以上泛音区）；增量 tanh 限幅后按 `mix` 渗入 |
 | `loudness` | 等响度补偿：按目标/参考 phon 以 1/3 倍频程 GraphicEq **近似** ISO 226 等响曲线（简化实现，非完整查表；完整查表与曲线拟合见 `CHANGELOG.md` 的 roadmap） |
 
+### 支持矩阵
+
+| 项 | 范围 | 实现位置 |
+|---|---|---|
+| 采样率 | 44.1 – 192 kHz | `object/apo/negotiate.rs`（范围校验） |
+| 通道数 | 1 – 8（含 7.1） | 同上；通道名按 `dwChannelMask` 推导 |
+| 位深 | 引擎侧 16 / 24 / 32-bit；APO 内部与连接格式为 32-bit float | `pipeline/context.rs`；`negotiate.rs` 校验 `WAVE_FORMAT_IEEE_FLOAT` |
+| 音频方向 | 播放与采集端点 | `pipeline/context.rs`（`DeviceType::Render / Capture`） |
+| 安装模式 | `LfxGfx`（Win8.1+ Legacy 槽位）/ `SfxMfx`（Win11 蓝牙组合）/ `SfxEfx`（默认） | `install/device/slots`、`install/selector` |
+| 系统 | Windows 8.1+；LFX/GFX 需 Win8.1+，SFX 槽位 Win10+，蓝牙 MFX Win11 | `install/device/info.rs`（`is_windows_version_at_least(6,3,9600)`） |
+
+### 性能
+
+- **PEQ 初始化启用 SIMD 点积（AVX2+FMA）**：1024 抽头直通链由标量 **3.2 ms/480 帧**
+  降到 **0.1 ms**，消除了初始化期实时欠载导致的杂音（提交 `c89c959`）。
+- **RT 路径零分配**：`buffer` / `interleave` / `ring` 初始化阶段预分配、逐帧复用；
+  `process` 内不做堆分配、不加锁、不做 I/O、不 panic。
+- **FIR 自适应**：`fc ≥ 200 Hz` 段按（频段指纹, 采样率）在进程内缓存生成最小相位 FIR
+  （1024–8192 抽头，≤ 2048 直接卷积 / > 2048 分块 FFT）。
+- **热重载幂等**：内容未变时按 `spec()` 指纹跳过，不重建 DSP 链。
+
 ### 安装与验证（`src/install/`）
 
 - 端点枚举与槽位选择：`LfxGfx` / `SfxMfx` / `SfxEfx`，支持保留原 APO 为子 APO
@@ -63,18 +130,25 @@ VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing 
 - 注册表写入走统一事务层（driver 是唯一写入口），安装后可通过 `verify`
   （CoCreateInstance + 格式协商）闭环验证。
 
-### 模块划分（2026-09 重构后）
+## 快速上手
 
-- `object/apo/`：`process.rs`（RT 处理）、`config.rs`（配置路径解析 + `diag.log` 输出）、
-  `reload.rs`（热重载编排 + watcher）、`rtdump.rs`（RT 转储诊断）、`negotiate.rs`、`state.rs`。
-- `pipeline/dsp/specs.rs`：**效果器参数表**（每个参数的范围/步进/精确默认值/单位，默认值
-  运行时取自各 `*Params::default()`），同时供 cli `effects schema` 与 App 参数 UI 生成使用。
-- `install/selector/operation/`：`execute.rs`（安装/卸载/迁移执行 + 事务回滚）、
-  `capx.rs`（CAPX 设备默认效果接管）、`helpers.rs`（注册表写入辅助）。
-- `install/device/`：`stale/`（旧 GUID 残留：分层匹配 / ACL / 迁移）、
-  `slots/`（槽位与子 APO 读写）。
-- `config/model/` 按子模块拆分；`utils/ring.rs` 为环形缓冲（telemetry 不再依赖 pipeline）。
-- `CHANGELOG.md` 记录版本与阶段变更；两种构建（`cargo build` / `cargo build --tests`）均为 **0 告警**。
+前提：Windows 8.1+ 与 Rust（MSVC）工具链。driver 不单独安装，由 CLI / App 部署：
+
+```bash
+# 1) 构建驱动 DLL
+cargo build --release           # 产物 vxapo_driver.dll
+
+# 2) 用 CLI 装到目标端点（CLI 会自动把 exe 同级的 vxapo_driver.dll 注册为 COM 类）
+vxapo-cli list                                  # 找设备（序号或 {GUID}）
+vxapo-cli install -d 0 --mode SfxEfx --verify   # 安装并闭环验证
+
+# 3) 查看变更 / 卸载
+vxapo-cli snapshot diff -d 0
+vxapo-cli uninstall -d 0
+```
+
+- 配置目录：`C:\ProgramData\VxAPO\{端点 GUID}\config.toml`（不存在时使用默认链）。
+- 完整命令见 `../vxapo-cli` 与 `../vxapo-app`；driver 本身不提供命令行入口。
 
 ## 与 App / CLI 的行为对齐
 
@@ -91,6 +165,43 @@ VxAPO 三层（App / CLI / Driver）共享同一份 config 契约，行为必须
 - **指纹与热重载**：`spec()` 生成的指纹不含 `name` / `group` 等 UI 元数据，
   因此改名/改分组不会触发 DSP 重建。
 - **延迟报告**：`latency()` 计入 wide FIR 与分块 FFT 的固定延迟；单声道直通。
+
+## 测试与排障
+
+**测试**：`cargo test` 共 **491 例**，分布在 **57 个源文件**（内联 `#[cfg(test)]` 或同目录
+`tests.rs` 挂载）：
+
+```bash
+cargo test              # 全部测试
+cargo build --tests     # 构建测试目标（应为 0 告警）
+```
+
+- 部分用例会写 `HKCU\SOFTWARE\VxAPO`（注册表读写），请在有写权限的账户下运行；
+  这些用例不触碰 `HKLM` 与真实端点槽位。
+- `install/device/*` 的枚举用例在无设备/无权限环境下也返回 `Ok`（可能为空列表）。
+
+**排障**：
+
+| 现象 | 排查方式 |
+|---|---|
+| 装了但没效果 | `vxapo-cli snapshot diff -d <device>` 看槽位是否写入；`vxapo-cli list` 看「槽位失守」标记 |
+| 声音异常（爆音/杂音） | 先确认热重载是否频繁触发（编辑器反复写文件）；内容未变时不应重建链 |
+| 需要 RT 实际数据 | RT 转储：`HKLM\SOFTWARE\VxAPO\RtDumpSecs`（DWORD）设为秒数 > 0，前 N 秒逐帧写入 `C:\ProgramData\VxAPO\rt_dump_*.f32`（`[in_L,in_R,out_L,out_R]`）；RT 路径只写内存，落盘在控制线程。分析完记得删除该值 |
+| 热重载/协商过程细节 | 驱动诊断日志 `diag.log`（路径解析见 `object/apo/config.rs`） |
+| 参数范围/默认值疑问 | `vxapo-cli effects schema --json`（与 App 参数 UI 同源） |
+
+## 模块划分（2026-09 重构后）
+
+- `object/apo/`：`process.rs`（RT 处理）、`config.rs`（配置路径解析 + `diag.log` 输出）、
+  `reload.rs`（热重载编排 + watcher）、`rtdump.rs`（RT 转储诊断）、`negotiate.rs`、`state.rs`。
+- `pipeline/dsp/specs.rs`：**效果器参数表**（每个参数的范围/步进/精确默认值/单位，默认值
+  运行时取自各 `*Params::default()`），同时供 cli `effects schema` 与 App 参数 UI 生成使用。
+- `install/selector/operation/`：`execute.rs`（安装/卸载/迁移执行 + 事务回滚）、
+  `capx.rs`（CAPX 设备默认效果接管）、`helpers.rs`（注册表写入辅助）。
+- `install/device/`：`stale/`（旧 GUID 残留：分层匹配 / ACL / 迁移）、
+  `slots/`（槽位与子 APO 读写）。
+- `config/model/` 按子模块拆分；`utils/ring.rs` 为环形缓冲（telemetry 不再依赖 pipeline）。
+- `CHANGELOG.md` 记录版本与阶段变更；两种构建（`cargo build` / `cargo build --tests`）均为 **0 告警**。
 
 ## 设计参考与致谢
 
@@ -124,12 +235,67 @@ GPL-3.0-or-later
 
 ---
 
+<a id="vxapo-driver-english"></a>
+
 # VxAPO Driver
 
-VxAPO Driver is the Windows APO (Audio Processing Object) COM DLL that runs inside
-`audiodg` and performs per-device real-time audio DSP. It is **read-only** regarding
-configuration: settings come from `C:\ProgramData\VxAPO\{GUID}\config.toml` and are
-hot-reloaded through an event-driven directory watcher.
+<!-- Badge area (TODO): CI status / license / latest release -->
+
+[中文](#vxapo-driver) · [English](#vxapo-driver-english) · [Project overview](../vxapo-docs/overview/en/Project%20Overview.md)
+
+A **programmable real-time DSP layer inside the Windows audio engine**: VxAPO Driver is an APO
+(Audio Processing Object) COM DLL that runs inside `audiodg`, loads a per-endpoint
+`config.toml`, and processes audio sample by sample. It is **read-only regarding
+configuration** — writes go through the CLI (elevated) and the App; the DLL itself never
+touches files.
+
+## Niche: relationship to Equalizer APO
+
+Same class of problem (system-wide, per-device, scriptable audio processing), different
+trade-offs. The table states facts and differences only:
+
+| Aspect | Equalizer APO | VxAPO |
+|---|---|---|
+| Config carrier | Text config (`config.txt` syntax) | One TOML per endpoint: `C:\ProgramData\VxAPO\{GUID}\config.toml` |
+| Applying config | Effective after reload/restart | Event-driven hot reload (`FindFirstChangeNotificationW`, 10 ms dedup) + dual-chain transition to avoid clicks |
+| UI | Standalone GUI editor | Tauri 2 + React desktop App (parameter view / semantic view) + CLI |
+| Device model | APO installed onto endpoints, config per device file | Same, plus stale-GUID detection/migration/cleanup (device instance ID as stable identity) |
+| PEQ | Multi-band EQ (incl. GraphicEQ) | Hybrid PEQ: IIR (RBJ) below 200 Hz, linear-phase FIR at/above 200 Hz (1024–8192 taps, partitioned FFT above 2048), ≤ 31 bands |
+| Effects | Text directives driven by config syntax | 7 built-in effects (peq / preamp / aural / reverb / compressor / wide / loudness) with range/step/default contracts |
+| License | GPL-2.0 | GPL-3.0-or-later, **independent implementation** (no EAPO code) |
+
+> Design decisions were informed by Equalizer APO's public practice (per-device slot
+> installation, config-file-driven DSP, the 31-band limit, notification-based hot reload) —
+> see "Design references & acknowledgments".
+
+## Architecture
+
+```text
+vxapo-app (React / Tauri)
+    │  config.toml · CLI --json
+    ▼
+vxapo-cli ───────────────────────────▶ vxapo-driver (install layer)
+    │  config.toml                          │  HKLM slots / CLSID binding / child APO
+    ▼                                       ▼
+Windows audiodg.exe ────loads────▶ vxapo_driver.dll (APO)
+                                        │
+      ┌─────────────────────────────────┴─────────────────────────────────┐
+      │ sys/        COM interfaces · registry · audio format/APO consts    │
+      │ object/     APO object · aggregate · child APO · negotiation ·     │
+      │             hot reload · RT dump                                   │
+      │ config/     TOML → chain model · validation/clamping · watcher     │
+      │ pipeline/   RT contracts + DSP chain (realtime/ zero-alloc ·       │
+      │             dsp/ 7 effects)                                       │
+      │ install/    endpoint enumeration · slot selection · transaction ·  │
+      │             stale migration/cleanup                                │
+      │ telemetry/  logging · panic records                                │
+      │ utils/      ring buffer · alignment · GUID · error types           │
+      └───────────────────────────────────────────────────────────────────┘
+```
+
+The real-time path (`process`) depends only on `pipeline/`; `install/` and `sys/` are entered
+at initialization/installation time only. Module responsibilities and dependency direction:
+`../vxapo-docs/driver`.
 
 ## Features & implementation
 
@@ -191,6 +357,30 @@ hot-reloaded through an event-driven directory watcher.
 | `wide` | Stereo field processor: linear-phase FIR crossover (Kaiser, taps scale with sample rate / crossover) → low band bypassed, high band into M/S; center air absorption (4k–5.5k shelf + 10k–16k 2nd-order Bessel low-pass, f² physical curve); dynamic side gain (10 ms attack / 120 ms release) + dual allpass/ITD decorrelation (1.5 kHz+ region only); tanh-limited delta mixed via `mix` |
 | `loudness` | Loudness compensation: 1/3-octave GraphicEq **approximating** the ISO 226 equal-loudness curves by target/reference phon (simplified, no full table lookup; full table lookup + curve fitting tracked in `CHANGELOG.md` roadmap) |
 
+### Support matrix
+
+| Item | Range | Where implemented |
+|---|---|---|
+| Sample rate | 44.1 – 192 kHz | `object/apo/negotiate.rs` (range check) |
+| Channels | 1 – 8 (incl. 7.1) | same; channel names derived from `dwChannelMask` |
+| Bit depth | 16 / 24 / 32-bit on the engine side; 32-bit float internally and on the connection format | `pipeline/context.rs`; `negotiate.rs` checks `WAVE_FORMAT_IEEE_FLOAT` |
+| Direction | Render and capture endpoints | `pipeline/context.rs` (`DeviceType::Render / Capture`) |
+| Install mode | `LfxGfx` (Win8.1+ legacy slots) / `SfxMfx` (Win11 Bluetooth) / `SfxEfx` (default) | `install/device/slots`, `install/selector` |
+| OS | Windows 8.1+; LFX/GFX need Win8.1+, SFX slots Win10+, Bluetooth MFX Win11 | `install/device/info.rs` (`is_windows_version_at_least(6,3,9600)`) |
+
+### Performance
+
+- **SIMD dot products (AVX2+FMA) enabled in PEQ initialization**: a 1024-tap pass-through
+  chain went from **3.2 ms / 480 frames** (scalar) to **0.1 ms**, removing the audible
+  glitch caused by real-time underruns during initialization (commit `c89c959`).
+- **Zero-allocation RT path**: buffers/interleave/ring are pre-allocated at init and
+  reused per frame; `process` performs no heap allocation, locking, I/O, or panics.
+- **Adaptive FIR**: bands with `fc ≥ 200 Hz` generate min-phase FIRs cached per
+  (band fingerprint, sample rate) — 1024–8192 taps, direct convolution ≤ 2048,
+  partitioned FFT above.
+- **Idempotent hot reload**: unchanged content is skipped by `spec()` fingerprint, so the
+  DSP chain is not rebuilt.
+
 ### Install & verification (`src/install/`)
 
 - Endpoint enumeration and slot selection: `LfxGfx` / `SfxMfx` / `SfxEfx`, with
@@ -199,22 +389,27 @@ hot-reloaded through an event-driven directory watcher.
   write path); installs can be closed-loop verified via `verify`
   (CoCreateInstance + format negotiation).
 
-### Module layout (after the 2026-09 refactor)
+## Quick start
 
-- `object/apo/`: `process.rs` (RT processing), `config.rs` (config path resolution +
-  `diag.log` output), `reload.rs` (hot-reload orchestration + watcher), `rtdump.rs` (RT dump
-  diagnostics), `negotiate.rs`, `state.rs`.
-- `pipeline/dsp/specs.rs`: the **effect parameter table** (range / step / precise default /
-  unit per parameter; defaults are read from each `*Params::default()` at runtime). It feeds
-  both the CLI `effects schema` and the app's parameter UI generation.
-- `install/selector/operation/`: `execute.rs` (install/uninstall/migrate + transactional
-  rollback), `capx.rs` (CAPX default-effect takeover), `helpers.rs` (registry write helpers).
-- `install/device/`: `stale/` (stale-GUID layering / ACL / migration), `slots/` (slots and
-  child APO I/O).
-- `config/model/` split into submodules; `utils/ring.rs` holds the ring buffer (telemetry no
-  longer depends on `pipeline`).
-- `CHANGELOG.md` tracks versions and phase changes; both build modes (`cargo build` /
-  `cargo build --tests`) report **zero warnings**.
+Prerequisites: Windows 8.1+ and a Rust (MSVC) toolchain. The driver is not installed on its
+own — the CLI / App deploys it:
+
+```bash
+# 1) Build the driver DLL
+cargo build --release           # produces vxapo_driver.dll
+
+# 2) Install onto a target endpoint (the CLI auto-registers the vxapo_driver.dll
+#    sitting next to its own executable as a COM class)
+vxapo-cli list                                  # find the device (index or {GUID})
+vxapo-cli install -d 0 --mode SfxEfx --verify   # install + closed-loop verify
+
+# 3) Inspect changes / uninstall
+vxapo-cli snapshot diff -d 0
+vxapo-cli uninstall -d 0
+```
+
+- Config directory: `C:\ProgramData\VxAPO\{endpoint GUID}\config.toml` (default chain when absent).
+- Full command reference: `../vxapo-cli` and `../vxapo-app`; the driver has no CLI entry point.
 
 ## Alignment with the App / CLI
 
@@ -235,6 +430,48 @@ The three layers (App / CLI / Driver) share one config contract and must stay al
   so renaming/regrouping does not rebuild the DSP chain.
 - **Latency**: `latency()` accounts for the fixed delay of the wide FIR and
   partitioned FFT; mono passthrough.
+
+## Testing & troubleshooting
+
+**Tests**: `cargo test` runs **491 cases** spread over **57 source files** (inline
+`#[cfg(test)]` modules or `tests.rs` next to the implementation):
+
+```bash
+cargo test              # everything
+cargo build --tests     # build test targets (expected: zero warnings)
+```
+
+- Some cases write `HKCU\SOFTWARE\VxAPO` (registry round-trips); run them under an account
+  with write access. They do not touch `HKLM` or real endpoint slots.
+- Enumeration cases under `install/device/*` return `Ok` (possibly an empty list) even
+  without devices or permissions.
+
+**Troubleshooting**:
+
+| Symptom | What to check |
+|---|---|
+| Installed but no effect | `vxapo-cli snapshot diff -d <device>` to see whether slots were written; `vxapo-cli list` for "slot lost" markers |
+| Audio glitches | Check whether hot reload fires repeatedly (editor rewriting the file); the chain should not be rebuilt when content is unchanged |
+| Need real RT data | RT dump: set `HKLM\SOFTWARE\VxAPO\RtDumpSecs` (DWORD) to N seconds > 0; the first N seconds are written frame-by-frame to `C:\ProgramData\VxAPO\rt_dump_*.f32` (`[in_L,in_R,out_L,out_R]`). The RT path only writes memory; flushing happens on the control thread. Remove the value afterwards |
+| Hot-reload / negotiation details | Driver diagnostics log `diag.log` (path resolution in `object/apo/config.rs`) |
+| Parameter ranges / defaults | `vxapo-cli effects schema --json` (same source as the App parameter UI) |
+
+## Module layout (after the 2026-09 refactor)
+
+- `object/apo/`: `process.rs` (RT processing), `config.rs` (config path resolution +
+  `diag.log` output), `reload.rs` (hot-reload orchestration + watcher), `rtdump.rs` (RT dump
+  diagnostics), `negotiate.rs`, `state.rs`.
+- `pipeline/dsp/specs.rs`: the **effect parameter table** (range / step / precise default /
+  unit per parameter; defaults are read from each `*Params::default()` at runtime). It feeds
+  both the CLI `effects schema` and the app's parameter UI generation.
+- `install/selector/operation/`: `execute.rs` (install/uninstall/migrate + transactional
+  rollback), `capx.rs` (CAPX default-effect takeover), `helpers.rs` (registry write helpers).
+- `install/device/`: `stale/` (stale-GUID layering / ACL / migration), `slots/` (slots and
+  child APO I/O).
+- `config/model/` split into submodules; `utils/ring.rs` holds the ring buffer (telemetry no
+  longer depends on `pipeline`).
+- `CHANGELOG.md` tracks versions and phase changes; both build modes (`cargo build` /
+  `cargo build --tests`) report **zero warnings**.
 
 ## Design references & acknowledgments
 
