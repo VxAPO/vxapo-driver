@@ -1,4 +1,4 @@
-﻿//! pipeline/realtime/ring.rs — SPSC 无锁环形缓冲区（规范 4.8）
+//! utils/ring.rs — SPSC 无锁环形缓冲区（规范 4.8）
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
