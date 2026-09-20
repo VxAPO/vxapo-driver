@@ -103,6 +103,17 @@ pub(crate) fn resolve_config_path_from(
     path.display().to_string()
 }
 
+/// per-device 配置文件的绝对路径（`{CONFIG_ROOT}\{guid}\config.toml`）。
+///
+/// 供 cli 与 driver 共用同一路径布局；纯拼接，不创建目录、不写文件。
+pub fn device_config_path(guid: &str) -> String {
+    std::path::Path::new(CONFIG_ROOT)
+        .join(guid)
+        .join("config.toml")
+        .display()
+        .to_string()
+}
+
 /// 运行期诊断日志（仅控制线程调用，非 RT）：`C:\ProgramData\VxAPO\diag.log`。
 /// 记录 Lock/热重载的关键事件，供设备切换/热重载失效问题定位；失败静默。
 pub(crate) fn diag_append(line: &str) {

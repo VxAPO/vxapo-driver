@@ -50,6 +50,11 @@ const CHILD_APO_ROOT_REL: &str = r"SOFTWARE\VxAPO\Child APOs";
 const BACKUP_PREMIX_SLOT: &str = "PreMixSlot";
 const BACKUP_POSTMIX_SLOT: &str = "PostMixSlot";
 
+/// 快照目录（`C:\ProgramData\VxAPO\snapshots`）：cli `snapshot` 子命令与迁移备份共用。
+pub fn snapshot_dir() -> &'static str {
+    SNAPSHOT_DIR
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct StaleInstall {
