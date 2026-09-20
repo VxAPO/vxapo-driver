@@ -28,35 +28,27 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置：
 
 ## 2 · 与 Equalizer APO 的差异
 
-两者面向同一问题（系统级、逐端点、脚本可驱动的音频处理），实现路线不同。下表只列
-**差异**，EAPO 侧注明记录出处（含 EAPO 源码文件名与行号）：
+两者面向同一问题（系统级、逐端点、脚本可驱动的音频处理），实现路线不同。下表只列差异：
 
-| 面 | Equalizer APO | VxAPO | 关系与出处 |
-|---|---|---|---|
-| 配置载体 | `config.txt` 逐行命令语法（`GraphicEQ:` 等） | v9.11 起每端点一份 TOML；旧命令体系整体移除，`vxapo-cli config convert` 做一次性转换 | **已移除**：`配置与DSP设计.md:162`、`config 模块规范.md:33` |
-| 语法错误处理 | 无冒号行**静默跳过**（`FilterEngine.cpp` 329-330：`pos = line.find(':')`，`pos == -1` 时整行不解析、不报错） | 无冒号 / 多冒号一律 `SyntaxError`，整体失败且不产出 spec | **有意差异**（更严格，写错必有反馈）：`config 模块规范.md:206` |
-| 安装模式探测 | `load()` 396-413（C41-C44）三档自动探测 LfxGfx / SfxMfx / SfxEfx | 移植为 `slots::detect_install_mode`，判定改为「VxAPO CLSID 成对」（EDIFIER 实证：按任意 GUID 占槽会误判 SfxMfx） | **对齐 + 修正**：`install 模块规范.md:266`、`changelog.md:868` |
-| 子 APO 注册表 | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO`（`RegistryHelper.h` 33），`childApoPath`（`DeviceAPOInfo.cpp` 43），值名 `PreMixChild` / `PostMixChild`（`DeviceAPOInfo.cpp` 558-563） | 机制相同但**路径隔离**：`HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`；禁止读写 EAPO 路径，否则污染其安装信息区 | **机制对齐、路径隔离**：`install 模块规范.md:167`、`changelog.md:942` |
-| 槽位值类型 | 第三方实测写入 `REG_SZ` GUID 字符串 | 双格式兼容（`REG_SZ` / 16 字节 LE `REG_BINARY`），并把全零 GUID 归一为「无 APO」 | **兼容并扩展**：`install 模块规范.md:242` |
-| 配置热重载 | `notificationThread`：`FindNextChangeNotification` 后 `WaitFor`，以 10 ms 窗口合并编辑器「写临时文件 + rename」 | `config/watcher.rs` 同构：事件驱动（非轮询）+ 10 ms 去重 + `spec()` 指纹幂等跳过 | **对齐**：`config 模块规范.md:490`、`config 模块规范.md:535` |
-| 安装后自检 | `CoCreateInstance` 验证 | 同一机制，扩展为「停/启服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe`」闭环 | **对齐并扩展**：`配置与DSP设计.md:167` |
-| 停服与管道权限 | `ServiceHelper` 停/启序；管道 DACL 授予 `Everyone` | 同款停服序与 DACL | **对齐**：`changelog.md:143`、`changelog.md:199` |
-| 卷积与延迟 | GraphicEQ：对数频率插值 + 最小相位 FIR + 1024 点直接时域卷积；分块卷积 `libHybridConv`；无 child 时 `GetLatency` 返回 0 | 同思路：`< 200 Hz` IIR（RBJ）、`≥ 200 Hz` 线性相位 FIR，> 2048 抽头改分块 FFT；延迟上报见 §9 | **思路对齐、实现不同**：`changelog.md:791`、`changelog.md:793`、`changelog.md:511` |
-| 设备状态判定 | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` 同判定 | **借鉴**：`install 模块规范.md:347` |
-| 许可 | GPL-2.0（© Jonas Thedering） | GPL-3.0-or-later，独立实现，不含 EAPO 代码 | `vxapo-docs/README.md:27` |
+| 面 | Equalizer APO | VxAPO |
+|---|---|---|
+| 配置载体 | `config.txt` 逐行命令语法（`GraphicEQ:` 等） | v9.11 起每端点一份 TOML；旧命令体系整体移除，`vxapo-cli config convert` 做一次性转换 |
+| 语法错误处理 | 无冒号行**静默跳过**（`FilterEngine.cpp` 329-330：`pos == -1` 时整行不解析、不报错） | 无冒号 / 多冒号一律 `SyntaxError`，整体失败且不产出 spec（有意更严格） |
+| 安装模式探测 | `load()` 396-413（C41-C44）三档自动探测 LfxGfx / SfxMfx / SfxEfx | 移植为 `slots::detect_install_mode`，判定改为「VxAPO CLSID 成对」（EDIFIER 实证：按任意 GUID 占槽会误判 SfxMfx） |
+| 子 APO 注册表 | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO`（`RegistryHelper.h` 33）、`childApoPath`（`DeviceAPOInfo.cpp` 43）、值名 `PreMixChild` / `PostMixChild`（`DeviceAPOInfo.cpp` 558-563） | 机制相同但**路径隔离**：`HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`；禁止读写 EAPO 路径，否则污染其安装信息区 |
+| 槽位值类型 | 第三方实测写入 `REG_SZ` GUID 字符串 | 双格式兼容（`REG_SZ` / 16 字节 LE `REG_BINARY`），全零 GUID 归一为「无 APO」 |
+| 配置热重载 | `notificationThread`：`FindNextChangeNotification` 后 `WaitFor`，以 10 ms 窗口合并编辑器「写临时文件 + rename」 | `config/watcher.rs` 同构：事件驱动（非轮询）+ 10 ms 去重 + `spec()` 指纹幂等跳过 |
+| 安装后自检 | `CoCreateInstance` 验证 | 同一机制，扩展为「停/启服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe`」闭环 |
+| 停服与管道权限 | `ServiceHelper` 停/启序；管道 DACL 授予 `Everyone` | 同款停服序与 DACL |
+| 卷积与延迟 | GraphicEQ：对数频率插值 + 最小相位 FIR + 1024 点直接时域卷积；分块卷积 `libHybridConv`；无 child 时 `GetLatency` 返回 0 | 同思路：`< 200 Hz` IIR（RBJ）、`≥ 200 Hz` 线性相位 FIR，> 2048 抽头改分块 FFT；延迟上报见 §9 |
+| 设备状态判定 | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` 同判定 |
+| 许可 | GPL-2.0（© Jonas Thedering） | GPL-3.0-or-later，独立实现，不含 EAPO 代码 |
 
-EAPO 侧记录集中在 `vxapo-docs/driver/zh/配置与DSP设计.md` §5「EqualizerAPO 行为参考」与
-`模块引用规范/`（`Equalizer 行为文档` 已随 v9.11 移除，条目保留在上述位置）。当前保留的
-可对照机制为四项：子 APO 创建与委托、安装模式探测、槽位备份与恢复、安装后自检。
+EAPO 侧行为记录见 `vxapo-docs/driver/zh/配置与DSP设计.md` §5「EqualizerAPO 行为参考」与
+`模块引用规范/` 各模块规范（`Equalizer 行为文档` 已随 v9.11 移除）。当前保留的可对照机制
+为四项：子 APO 创建与委托、安装模式探测、槽位备份与恢复、安装后自检。
 
 ## 3 · 架构
-
-```mermaid
-flowchart TB
-  app["vxapo-app<br/>React 19 + Tauri 2"] -->|"config.toml（热重载）"| cli["vxapo-cli<br/>枚举 · 安装/卸载 · 快照 · 验证"]
-  cli -->|"HKLM 槽位 · CLSID 绑定 · 子 APO 记录"| eng["audiodg.exe<br/>音频引擎（实时线程）"]
-  eng -->|"加载"| dll["vxapo_driver.dll<br/>标准 APO，逐帧处理"]
-```
 
 driver 内部按实时性划分为两条路径：
 
@@ -241,37 +233,29 @@ them.** This section lists the practices and where each can be checked:
 ## 2 · Differences from Equalizer APO
 
 Both projects address system-wide, per-endpoint, script-driven audio processing, along
-different routes and with different trade-offs. Only the **differences** are listed; the
-EAPO column cites the recorded source (including EAPO source file names and line numbers):
+different routes. Only the **differences** are listed:
 
-| Aspect | Equalizer APO | VxAPO | Relation and source |
-|---|---|---|---|
-| Config carrier | `config.txt` line-command syntax (`GraphicEQ:` etc.) | One TOML per endpoint since v9.11; the old command set was removed entirely, with `vxapo-cli config convert` for one-time migration | **Removed**: `配置与DSP设计.md:162`, `config 模块规范.md:33` |
-| Syntax errors | Lines without a colon are **silently skipped** (`FilterEngine.cpp` 329-330: `pos = line.find(':')`, nothing parsed and no error when `pos == -1`) | Missing or extra colons raise `SyntaxError`, fail the whole file and produce no spec | **Intentional difference** (stricter: mistakes are always reported): `config 模块规范.md:206` |
-| Install mode detection | `load()` 396-413 (C41-C44) auto-detects LfxGfx / SfxMfx / SfxEfx | Ported as `slots::detect_install_mode`, with the decision changed to "paired VxAPO CLSIDs" (EDIFIER evidence: arbitrary GUIDs in slots misdetect as SfxMfx) | **Aligned + corrected**: `install 模块规范.md:266`, `changelog.md:868` |
-| Child APO registry | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO` (`RegistryHelper.h` 33), `childApoPath` (`DeviceAPOInfo.cpp` 43), value names `PreMixChild` / `PostMixChild` (`DeviceAPOInfo.cpp` 558-563) | Same mechanism but with an **isolated path**: `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`; reading or writing EAPO's path is prohibited (it would corrupt EAPO's install record) | **Mechanism aligned, paths isolated**: `install 模块规范.md:167`, `changelog.md:942` |
-| Slot value types | `REG_SZ` GUID strings observed from third parties | Accepts both (`REG_SZ` and 16-byte LE `REG_BINARY`) and normalises the all-zero GUID to "no APO" | **Compatible, extended**: `install 模块规范.md:242` |
-| Config hot reload | `notificationThread`: `FindNextChangeNotification` + `WaitFor` with a 10 ms window to merge the editor's "temp file + rename" | `config/watcher.rs` mirrors it: event-driven (not polling), 10 ms dedup, idempotent skip via the `spec()` fingerprint | **Aligned**: `config 模块规范.md:490`, `config 模块规范.md:535` |
-| Post-install self-check | `CoCreateInstance` validation | Same mechanism, extended into a loop: stop/start service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` | **Aligned, extended**: `配置与DSP设计.md:167` |
-| Service control and pipe ACL | `ServiceHelper` stop/start sequence; pipe DACL grants `Everyone` | Same sequence and DACL | **Aligned**: `changelog.md:143`, `changelog.md:199` |
-| Convolution and latency | GraphicEQ: logarithmic frequency interpolation, minimum-phase FIR, 1024-point direct convolution; `libHybridConv` for partitioned convolution; `GetLatency` returns 0 with no child | Same approach: IIR (RBJ) below 200 Hz, minimum-phase FIR at/above 200 Hz, partitioned FFT above 2048 taps; latency reporting in §9 | **Same approach, different implementation**: `changelog.md:791`, `changelog.md:793`, `changelog.md:511` |
-| Device state | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` with the same checks | **Borrowed**: `install 模块规范.md:347` |
-| License | GPL-2.0 (© Jonas Thedering) | GPL-3.0-or-later, independent implementation, no EAPO code | `vxapo-docs/README.md:27` |
+| Aspect | Equalizer APO | VxAPO |
+|---|---|---|
+| Config carrier | `config.txt` line-command syntax (`GraphicEQ:` etc.) | One TOML per endpoint since v9.11; the old command set was removed entirely, with `vxapo-cli config convert` for one-time migration |
+| Syntax errors | Lines without a colon are **silently skipped** (`FilterEngine.cpp` 329-330: nothing parsed and no error when `pos == -1`) | Missing or extra colons raise `SyntaxError`, fail the whole file and produce no spec (intentionally stricter) |
+| Install mode detection | `load()` 396-413 (C41-C44) auto-detects LfxGfx / SfxMfx / SfxEfx | Ported as `slots::detect_install_mode`, with the decision changed to "paired VxAPO CLSIDs" (EDIFIER evidence: arbitrary GUIDs in slots misdetect as SfxMfx) |
+| Child APO registry | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO` (`RegistryHelper.h` 33), `childApoPath` (`DeviceAPOInfo.cpp` 43), value names `PreMixChild` / `PostMixChild` (`DeviceAPOInfo.cpp` 558-563) | Same mechanism but with an **isolated path**: `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`; reading or writing EAPO's path is prohibited (it would corrupt EAPO's install record) |
+| Slot value types | `REG_SZ` GUID strings observed from third parties | Accepts both (`REG_SZ` and 16-byte LE `REG_BINARY`) and normalises the all-zero GUID to "no APO" |
+| Config hot reload | `notificationThread`: `FindNextChangeNotification` + `WaitFor` with a 10 ms window to merge the editor's "temp file + rename" | `config/watcher.rs` mirrors it: event-driven (not polling), 10 ms dedup, idempotent skip via the `spec()` fingerprint |
+| Post-install self-check | `CoCreateInstance` validation | Same mechanism, extended into a loop: stop/start service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` |
+| Service control and pipe ACL | `ServiceHelper` stop/start sequence; pipe DACL grants `Everyone` | Same sequence and DACL |
+| Convolution and latency | GraphicEQ: logarithmic frequency interpolation, minimum-phase FIR, 1024-point direct convolution; `libHybridConv` for partitioned convolution; `GetLatency` returns 0 with no child | Same approach: IIR (RBJ) below 200 Hz, minimum-phase FIR at/above 200 Hz, partitioned FFT above 2048 taps; latency reporting in §9 |
+| Device state | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` with the same checks |
+| License | GPL-2.0 (© Jonas Thedering) | GPL-3.0-or-later, independent implementation, no EAPO code |
 
-The EAPO-side facts are recorded in `vxapo-docs/driver/zh/配置与DSP设计.md` §5
-("EqualizerAPO 行为参考") and under `模块引用规范/` (the `Equalizer 行为文档` document itself
-was removed with v9.11; the entries survive in the locations cited above). Four comparable
-mechanisms remain: child APO creation and delegation, install mode detection, slot backup and
-restore, and post-install self-check.
+The EAPO-side behaviour is recorded in `vxapo-docs/driver/zh/配置与DSP设计.md` §5
+("EqualizerAPO 行为参考") and in the per-module specs under `模块引用规范/` (the
+`Equalizer 行为文档` document itself was removed with v9.11). Four comparable mechanisms
+remain: child APO creation and delegation, install mode detection, slot backup and restore,
+and post-install self-check.
 
 ## 3 · Architecture
-
-```mermaid
-flowchart TB
-  app["vxapo-app<br/>React 19 + Tauri 2"] -->|"config.toml (hot-reloaded)"| cli["vxapo-cli<br/>enumeration · install/uninstall · snapshot · verify"]
-  cli -->|"HKLM slots · CLSID binding · child-APO records"| eng["audiodg.exe<br/>audio engine (real-time thread)"]
-  eng -->|"loads"| dll["vxapo_driver.dll<br/>standard APO, per-frame processing"]
-```
 
 Inside the driver, code is split by real-time eligibility:
 
