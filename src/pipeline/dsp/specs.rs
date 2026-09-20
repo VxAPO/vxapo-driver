@@ -45,6 +45,11 @@ pub struct EffectSpec {
 }
 
 /// 参数表构造（`unit = None` 表示无量纲）。
+/// f32 参数值 → JSON 用 f64：规整到 6 位小数，避免 f32→f64 的二进制尾巴
+/// （如 `0.6f32 as f64 = 0.6000000238418579`）。
+fn q(v: f32) -> f64 {
+    ((v as f64) * 1_000_000.0).round() / 1_000_000.0
+}
 fn spec(
     key: &'static str,
     min: f64,
@@ -86,16 +91,16 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
         EffectSpec {
             effect: "wide",
             params: vec![
-                spec("gain", 0.0, 1.0, 0.01, wide.gain as f64, None),
-                spec("air", 0.0, 1.0, 0.01, wide.air as f64, None),
-                spec("air_side", 0.0, 1.0, 0.01, wide.air_side as f64, None),
-                spec("mix", 0.0, 1.0, 0.01, wide.mix as f64, None),
+                spec("gain", 0.0, 1.0, 0.01, q(wide.gain), None),
+                spec("air", 0.0, 1.0, 0.01, q(wide.air), None),
+                spec("air_side", 0.0, 1.0, 0.01, q(wide.air_side), None),
+                spec("mix", 0.0, 1.0, 0.01, q(wide.mix), None),
                 spec(
                     "crossover_hz",
                     200.0,
                     1000.0,
                     10.0,
-                    wide.crossover_hz as f64,
+                    q(wide.crossover_hz),
                     Some("Hz"),
                 ),
             ],
@@ -108,14 +113,14 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     500.0,
                     10_000.0,
                     10.0,
-                    aural.tune_hz as f64,
+                    q(aural.tune_hz),
                     Some("Hz"),
                 ),
-                spec("drive", 0.0, 4.25, 0.01, aural.drive as f64, None),
-                spec("odd", 0.0, 1.5, 0.01, aural.odd as f64, None),
-                spec("even", 0.0, 0.75, 0.01, aural.even as f64, None),
-                spec("wet", 0.0, 1.0, 0.01, aural.wet as f64, None),
-                spec("dry", 0.0, 1.0, 0.01, aural.dry as f64, None),
+                spec("drive", 0.0, 4.25, 0.01, q(aural.drive), None),
+                spec("odd", 0.0, 1.5, 0.01, q(aural.odd), None),
+                spec("even", 0.0, 0.75, 0.01, q(aural.even), None),
+                spec("wet", 0.0, 1.0, 0.01, q(aural.wet), None),
+                spec("dry", 0.0, 1.0, 0.01, q(aural.dry), None),
             ],
         },
         EffectSpec {
@@ -126,17 +131,17 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     0.5,
                     1.5,
                     0.01,
-                    reverb.room_size as f64,
+                    q(reverb.room_size),
                     None,
                 ),
-                spec("decay", 0.0, 1.0, 0.01, reverb.decay as f64, None),
-                spec("damping", 0.0, 1.0, 0.01, reverb.damping as f64, None),
+                spec("decay", 0.0, 1.0, 0.01, q(reverb.decay), None),
+                spec("damping", 0.0, 1.0, 0.01, q(reverb.damping), None),
                 spec(
                     "pre_delay_ms",
                     0.0,
                     100.0,
                     1.0,
-                    reverb.pre_delay_ms as f64,
+                    q(reverb.pre_delay_ms),
                     Some("ms"),
                 ),
                 spec(
@@ -144,11 +149,11 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     20.0,
                     250.0,
                     5.0,
-                    reverb.low_cut_hz as f64,
+                    q(reverb.low_cut_hz),
                     Some("Hz"),
                 ),
-                spec("wet", 0.0, 1.0, 0.01, reverb.wet as f64, None),
-                spec("dry", 0.0, 1.0, 0.01, reverb.dry as f64, None),
+                spec("wet", 0.0, 1.0, 0.01, q(reverb.wet), None),
+                spec("dry", 0.0, 1.0, 0.01, q(reverb.dry), None),
             ],
         },
         EffectSpec {
@@ -159,17 +164,17 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     -60.0,
                     0.0,
                     1.0,
-                    compressor.threshold_db as f64,
+                    q(compressor.threshold_db),
                     Some("dBFS"),
                 ),
-                spec("ratio", 1.0, 20.0, 0.5, compressor.ratio as f64, None),
-                spec("knee_db", 0.0, 12.0, 1.0, compressor.knee_db as f64, Some("dB")),
+                spec("ratio", 1.0, 20.0, 0.5, q(compressor.ratio), None),
+                spec("knee_db", 0.0, 12.0, 1.0, q(compressor.knee_db), Some("dB")),
                 spec(
                     "attack_ms",
                     0.1,
                     100.0,
                     0.5,
-                    compressor.attack_ms as f64,
+                    q(compressor.attack_ms),
                     Some("ms"),
                 ),
                 spec(
@@ -177,7 +182,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     10.0,
                     1000.0,
                     10.0,
-                    compressor.release_ms as f64,
+                    q(compressor.release_ms),
                     Some("ms"),
                 ),
                 spec(
@@ -185,11 +190,11 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     0.0,
                     24.0,
                     0.5,
-                    compressor.makeup_gain_db as f64,
+                    q(compressor.makeup_gain_db),
                     Some("dB"),
                 ),
-                spec("wet", 0.0, 1.0, 0.01, compressor.wet as f64, None),
-                spec("dry", 0.0, 1.0, 0.01, compressor.dry as f64, None),
+                spec("wet", 0.0, 1.0, 0.01, q(compressor.wet), None),
+                spec("dry", 0.0, 1.0, 0.01, q(compressor.dry), None),
             ],
         },
         EffectSpec {
@@ -263,25 +268,25 @@ mod tests {
                 .unwrap_or_else(|| panic!("缺少 {effect}.{key}"))
         };
         let wide = WideParams::default();
-        assert_eq!(find("wide", "air"), wide.air as f64);
-        assert_eq!(find("wide", "mix"), wide.mix as f64);
+        assert_eq!(find("wide", "air"), q(wide.air));
+        assert_eq!(find("wide", "mix"), q(wide.mix));
         let aural = AuralParams::default();
-        assert_eq!(find("aural", "drive"), aural.drive as f64);
-        assert_eq!(find("aural", "odd"), aural.odd as f64);
+        assert_eq!(find("aural", "drive"), q(aural.drive));
+        assert_eq!(find("aural", "odd"), q(aural.odd));
         let reverb = ReverbParams::default();
-        assert_eq!(find("reverb", "damping"), reverb.damping as f64);
-        assert_eq!(find("reverb", "decay"), reverb.decay as f64);
+        assert_eq!(find("reverb", "damping"), q(reverb.damping));
+        assert_eq!(find("reverb", "decay"), q(reverb.decay));
         let compressor = CompressorParams::default();
-        assert_eq!(find("compressor", "ratio"), compressor.ratio as f64);
-        assert_eq!(find("compressor", "release_ms"), compressor.release_ms as f64);
+        assert_eq!(find("compressor", "ratio"), q(compressor.ratio));
+        assert_eq!(find("compressor", "release_ms"), q(compressor.release_ms));
         // loudness 无 Default 实现：默认值来自文档典型值与解析层回退（见参数表注释）。
         assert_eq!(find("loudness", "phon"), 80.0);
         assert_eq!(find("loudness", "reference_phon"), 80.0);
         // 本表给的是 driver 的**精确**默认值（0.354331 / 1.76993）。
         // UI 侧显示精度是 app 自己的取舍（输入框放不下长浮点，正常使用也不需要
         // 这么高精度），app 按自己的显示规则就近取整即可，不属漂移。
-        assert_eq!(find("wide", "air"), 0.354_331_f32 as f64);
-        assert_eq!(find("aural", "drive"), 1.769_93_f32 as f64);
+        assert_eq!(find("wide", "air"), q(0.354_331_f32));
+        assert_eq!(find("aural", "drive"), q(1.769_93_f32));
     }
 
     /// 覆盖 app 需要的全部效果器（缺一个会导致 UI 少一组参数）。
