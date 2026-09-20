@@ -42,7 +42,9 @@ pub(crate) fn check_format_supported(
     };
     let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
     // 浮点格式检查（WAVE_FORMAT_IEEE_FLOAT）。
-    if !unsafe { is_float_format(mt_ptr) } {
+    let is_float = unsafe { is_float_format(mt_ptr) }
+        .map_err(|_| windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))?;
+    if !is_float {
         return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
     }
     // 通道数范围：1 ~ 8。
@@ -71,7 +73,9 @@ pub(crate) fn is_input_format_supported(
         }
     }
     // 通过检查：返回请求格式（INPLACE 模式输入输出同格式）。
-    let req = p_requested.as_ref().expect("checked above");
+    let Some(req) = p_requested.as_ref() else {
+        return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
+    };
     Ok(req.clone())
 }
 
@@ -88,6 +92,23 @@ pub(crate) fn is_output_format_supported(
             return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
         }
     }
-    let req = p_requested.as_ref().expect("checked above");
+    let Some(req) = p_requested.as_ref() else {
+        return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
+    };
     Ok(req.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// null 引用不得 panic：四条入口全部走错误返回（panic=abort 下会拖垮 audiodg）。
+    #[test]
+    fn null_refs_are_rejected_without_panicking() {
+        let null_ref: Ref<'_, IAudioMediaType> = Ref::default();
+        assert!(extract_format_ref(&null_ref).is_err());
+        assert!(check_format_supported(&null_ref).is_err());
+        assert!(is_input_format_supported(&null_ref, &null_ref).is_err());
+        assert!(is_output_format_supported(&null_ref, &null_ref).is_err());
+    }
 }

@@ -61,34 +61,36 @@ pub(crate) fn is_float_wave_format(wf: &WAVEFORMATEX) -> bool {
 
 /// 从 IAudioMediaType 提取格式信息。
 ///
+/// `media_type` 为 null、或 `GetAudioFormat` 返回 null 时返回错误（不 panic）。
+///
 /// # Safety
-/// `media_type` 必须指向有效的 IAudioMediaType COM 对象。
+/// `media_type` 必须指向有效的 IAudioMediaType COM 对象，或为 null。
 pub unsafe fn extract_format(media_type: *mut IAudioMediaType) -> Result<AudioFormat> {
-    if media_type.is_null() {
+    let Some(media) = media_type.as_ref() else {
         return Err(VxApoError::format("media_type is null"));
-    }
-    let wfx = media_type.as_ref().unwrap().GetAudioFormat();
-    if wfx.is_null() {
+    };
+    let wfx = media.GetAudioFormat();
+    let Some(fmt) = (wfx as *const WAVEFORMATEX).as_ref() else {
         return Err(VxApoError::format("GetAudioFormat returned null"));
-    }
-    let fmt = (wfx as *const WAVEFORMATEX).as_ref().unwrap();
+    };
     Ok(format_from_wave_format(fmt))
 }
 
 /// 检查是否为浮点格式（WAVE_FORMAT_IEEE_FLOAT = 3）。
 ///
+/// `media_type` 为 null、或 `GetAudioFormat` 返回 null 时返回错误（不 panic）。
+///
 /// # Safety
-/// `media_type` 必须指向有效的 IAudioMediaType COM 对象。
-pub unsafe fn is_float_format(media_type: *mut IAudioMediaType) -> bool {
-    if media_type.is_null() {
-        return false;
-    }
-    let wfx = media_type.as_ref().unwrap().GetAudioFormat();
-    if wfx.is_null() {
-        return false;
-    }
-    let fmt = (wfx as *const WAVEFORMATEX).as_ref().unwrap();
-    is_float_wave_format(fmt)
+/// `media_type` 必须指向有效的 IAudioMediaType COM 对象，或为 null。
+pub unsafe fn is_float_format(media_type: *mut IAudioMediaType) -> Result<bool> {
+    let Some(media) = media_type.as_ref() else {
+        return Err(VxApoError::format("media_type is null"));
+    };
+    let wfx = media.GetAudioFormat();
+    let Some(fmt) = (wfx as *const WAVEFORMATEX).as_ref() else {
+        return Err(VxApoError::format("GetAudioFormat returned null"));
+    };
+    Ok(is_float_wave_format(fmt))
 }
 
 #[cfg(test)]
@@ -164,5 +166,17 @@ mod tests {
 
         let wf = unsafe { &*(&ext as *const WAVEFORMATEXTENSIBLE as *const WAVEFORMATEX) };
         assert!(!is_float_wave_format(wf));
+    }
+
+    #[test]
+    fn extract_format_null_pointer_is_error() {
+        let r = unsafe { extract_format(std::ptr::null_mut()) };
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn is_float_format_null_pointer_is_error() {
+        let r = unsafe { is_float_format(std::ptr::null_mut()) };
+        assert!(r.is_err());
     }
 }
