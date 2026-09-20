@@ -1,4 +1,5 @@
 use super::*;
+use super::execute::*;
 
 #[test]
 fn default_config_values() {
