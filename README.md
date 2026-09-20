@@ -54,7 +54,7 @@ VxAPO Driver 是运行在 Windows `audiodg` 进程内的 APO（Audio Processing 
 | `reverb` | Dattorro 板式混响（1997 论文）：4 级 AllPass 扩散 + 双槽交叉反馈环路（调制 AllPass → 主延迟 → 槽内滤波 → 扩散 → 尾延迟）+ 14 抽头输出；房间大小/衰减/阻尼/带宽/密度/预延迟/调制可调 |
 | `compressor` | 全声道联动 RMS 检测，软膝静态曲线，dB 域 attack/release 平滑，makeup 增益 |
 | `wide` | 声场处理：线性相位 FIR 分频（Kaiser，抽头随采样率/分频点缩放）→ 低频直通、高频 M/S；中置走空气吸收（4k–5.5k 高架 + 10k–16k 二阶 Bessel 低通，按 f² 物理曲线）；侧通道动态增益（10ms 攻击/120ms 释放）+ 双路全通/ITD 去相关（仅 1.5kHz 以上泛音区）；增量 tanh 限幅后按 `mix` 渗入 |
-| `loudness` | ISO 226 等响度补偿：按目标/参考 phon 自动调整频响 |
+| `loudness` | 等响度补偿：按目标/参考 phon 以 1/3 倍频程 GraphicEq **近似** ISO 226 等响曲线（简化实现，非完整查表；完整查表与曲线拟合见 `CHANGELOG.md` 的 roadmap） |
 
 ### 安装与验证（`src/install/`）
 
@@ -189,7 +189,7 @@ hot-reloaded through an event-driven directory watcher.
 | `reverb` | Dattorro plate reverb (1997 paper): 4-stage AllPass diffusion + dual cross-coupled feedback loops (modulated AllPass → main delay → in-loop filtering → diffusion → tail delay) + 14-tap output; room size / decay / damping / bandwidth / density / pre-delay / modulation |
 | `compressor` | Linked all-channel RMS detection, soft-knee static curve, dB-domain attack/release smoothing, makeup gain |
 | `wide` | Stereo field processor: linear-phase FIR crossover (Kaiser, taps scale with sample rate / crossover) → low band bypassed, high band into M/S; center air absorption (4k–5.5k shelf + 10k–16k 2nd-order Bessel low-pass, f² physical curve); dynamic side gain (10 ms attack / 120 ms release) + dual allpass/ITD decorrelation (1.5 kHz+ region only); tanh-limited delta mixed via `mix` |
-| `loudness` | ISO 226 loudness compensation: frequency response adjusted by target/reference phon |
+| `loudness` | Loudness compensation: 1/3-octave GraphicEq **approximating** the ISO 226 equal-loudness curves by target/reference phon (simplified, no full table lookup; full table lookup + curve fitting tracked in `CHANGELOG.md` roadmap) |
 
 ### Install & verification (`src/install/`)
 
