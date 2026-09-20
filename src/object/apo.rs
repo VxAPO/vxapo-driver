@@ -9,6 +9,8 @@ pub mod inner;
 pub mod lock_key;
 pub mod negotiate;
 pub mod process;
+pub mod reload;
+pub mod rtdump;
 pub mod state;
 pub mod test_pipe;
 

@@ -947,27 +947,18 @@ impl ApoObject {
             out_peak,
         );
 
-        // 临时 RT 转储（诊断）：仅写内存缓冲 [in_L,in_R,out_L,out_R]，
-        // 落盘交给 Unlock 控制线程——实时路径不做任何文件 I/O。
-        if let Some((_path, buf, remaining)) = inner_ref.rt_dump.as_mut() {
-            if *remaining > 0 {
-                let n = frames.min(*remaining);
-                // SAFETY: 输入缓冲由引擎按 max_frame_count × in_ch 分配（同
-                // checked_interleaved_slice 的契约）；frames 已 clamp。
-                unsafe {
-                    let in_ptr = input_one.pBuffer as *const f32;
-                    for f in 0..n {
-                        let in_base = f * in_ch as usize;
-                        let out_base = f * out_ch as usize;
-                        let il = if in_ch >= 1 { *in_ptr.add(in_base) } else { 0.0 };
-                        let ir = if in_ch >= 2 { *in_ptr.add(in_base + 1) } else { 0.0 };
-                        let ol = if out_ch >= 1 { out_slice[out_base] } else { 0.0 };
-                        let or_ = if out_ch >= 2 { out_slice[out_base + 1] } else { 0.0 };
-                        buf.extend_from_slice(&[il, ir, ol, or_]);
-                    }
-                }
-                *remaining -= n;
-            }
+        // 临时 RT 转储（诊断）：仅写内存缓冲，落盘交给 Unlock 控制线程。
+        // SAFETY: 输入缓冲由引擎按 max_frame_count × in_ch 分配（同
+        // checked_interleaved_slice 的契约）；frames 已 clamp。
+        unsafe {
+            super::rtdump::rt_dump_push(
+                &mut inner_ref.rt_dump,
+                frames,
+                in_ch as usize,
+                out_ch as usize,
+                input_one.pBuffer as *const f32,
+                out_slice,
+            );
         }
 
         inner_ref.temp_buffers = tbufs;
