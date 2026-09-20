@@ -43,7 +43,7 @@ pub use crate::install::audiodg::{
     stop_audio_service, stop_audio_service_with_dependents, wait_for_audiodg_exit,
 };
 // install/device：设备枚举、端点定位、槽位与残留记录
-pub use crate::install::device::endpoint::{EndpointInfo, EndpointState};
+pub use crate::install::device::endpoint::{EndpointInfo, EndpointState, Flow};
 pub use crate::install::device::format::AudioFormat;
 pub use crate::install::device::info::{
     detect_mode_for_guid, enumerate_devices, find_endpoint_path, DeviceInfo,

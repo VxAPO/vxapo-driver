@@ -3,7 +3,7 @@
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口。
 //! 只读，不修改系统状态。
 
-use crate::install::device::endpoint::{query_endpoint, EndpointInfo, EndpointState};
+use crate::install::device::endpoint::{query_endpoint, EndpointInfo, EndpointState, Flow};
 use crate::install::device::format::{read_audio_format, AudioFormat};
 use crate::install::device::slots::{
     read_all_slots, ApoSlot, InstallMode, SlotValue, detect_install_mode as eapo_detect_mode,
@@ -18,6 +18,18 @@ use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 /// 存储版本号的注册表值名称。
 const VERSION_VALUE_NAME: &str = "version";
 
+/// PKEY_AudioEngine_DeviceFormat：端点设备格式（WAVEFORMATEX / WAVEFORMATEXTENSIBLE 二进制）。
+///
+/// 值名末段经实机核对修正：原写 `-82c0-4e00-bce4-7f12f211c8f2`，本机 7 台活跃设备
+/// **全部不存在**，导致 `DeviceInfo.format` 恒为 `None`（cli 只能另走 probe 补格式）。
+const PKEY_AUDIOENGINE_DEVICE_FORMAT: &str = "{f19f064d-082c-4e27-bc73-6882a1bb8e4c},0";
+
+/// PKEY_AudioEndpoint_PhysicalSpeakers：通道掩码兜底值（EXTENSIBLE 掩码为 0 时用）。
+///
+/// 注意不是同 GUID 的 `,0`——那个值是 **FormFactor**（实机取值 1=Speakers / 3=Headphones /
+/// 4=Microphone / 9=HDMI / 10=LineLevel），当掩码用会得到 1/3/4 这类假掩码。
+const PKEY_AUDIOENDPOINT_PHYSICAL_SPEAKERS: &str = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},3";
+
 /// MMDevices 渲染端点根路径。
 const RENDER_PATH: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
@@ -25,6 +37,18 @@ const RENDER_PATH: &str =
 /// MMDevices 采集端点根路径。
 const CAPTURE_PATH: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
+
+/// 枚举根 → 音频流方向。
+///
+/// 注册表键不携带"来自 Render 还是 Capture"，`query_endpoint` 只能给缺省 `Render`；
+/// 按根遍历的枚举路径在拿到 info 后用本函数回填真实流向。
+fn flow_for_root(root_path: &str) -> Flow {
+    if root_path == CAPTURE_PATH {
+        Flow::Capture
+    } else {
+        Flow::Render
+    }
+}
 
 /// 从端点 GUID 定位注册表路径（先 Render 再 Capture）。
 ///
@@ -207,10 +231,12 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
                 }
                 // 端点 GUID：优先 Properties 子键值；为空时回填 MMDevices 子键名
                 // （子键名即端点 GUID，reg 实测与 PKEY_AudioEndpoint_GUID 值一致）。
+                // 流向：键不带根信息，`query_endpoint` 给的是缺省 Render，这里按枚举根回填。
                 if let Some(ep) = info.endpoint.as_mut() {
                     if ep.endpoint_guid.is_empty() {
                         ep.endpoint_guid = guid.clone();
                     }
+                    ep.flow = flow_for_root(root_path);
                 }
                 result.push(info);
             }
@@ -337,13 +363,12 @@ fn read_format_for_endpoint(endpoint_key: &RegKey) -> Result<Option<AudioFormat>
         Err(_) => return Ok(None),
     };
 
-    // 常见值名：`{PKEY_GUID},PID=0`。
-    // 简化：尝试设备格式 PKEY（{f19f064d-...} 由 Windows 定义），
-    // 具体值名由调用方传入。
-    let device_format_name = "{f19f064d-82c0-4e00-bce4-7f12f211c8f2},0";
-    let channel_mask_name = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},0";
-
-    read_audio_format(&props_key, device_format_name, Some(channel_mask_name))
+    // 值名见上方两个 PKEY 常量的注释（设备格式 + 物理扬声器掩码兜底）。
+    read_audio_format(
+        &props_key,
+        PKEY_AUDIOENGINE_DEVICE_FORMAT,
+        Some(PKEY_AUDIOENDPOINT_PHYSICAL_SPEAKERS),
+    )
 }
 
 /// 读取 VxAPO 安装版本。

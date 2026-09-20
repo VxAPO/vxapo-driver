@@ -24,6 +24,16 @@ const WAVE_FORMAT_PCM: u16 = 0x0001;
 /// WAVE_FORMAT_EXTENSIBLE（可扩展格式，含通道掩码和子格式 GUID）。
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
+/// PROPVARIANT 头部长度：部分端点的格式值带 8 字节前缀，需按 offset 8 再试一次
+/// （口径对齐 cli 侧 probe 的 `reg::parse_waveformatex`，实机存在这类端点）。
+const PROPVARIANT_HEADER_SIZE: usize = 8;
+
+/// 取值范围护栏（与 cli probe 一致）：越界视为畸形 blob 直接失败，
+/// 避免产出 `sr=0 / ch=0` 这类"看似有效"的格式喂给安装选择。
+const MAX_CHANNELS: u16 = 256;
+const MAX_SAMPLE_RATE: u32 = 1_000_000;
+const MAX_BITS_PER_SAMPLE: u16 = 64;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 数据结构
 // ══════════════════════════════════════════════════════════════════════════════
@@ -49,37 +59,62 @@ pub struct AudioFormat {
 // 纯字节解析（无 I/O，可独立测试）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 从原始字节解析音频格式。
+/// 从原始字节解析音频格式：先按 offset 0 试，失败再按 PROPVARIANT 前缀（offset 8）试。
 ///
-/// 1. 验证长度 >= 18 字节（WAVEFORMATEX 最小尺寸）
+/// 两步容错与 cli 侧 probe 对齐（部分端点的格式值带 8 字节前缀，只按 offset 0 解析会失败）。
+pub fn parse_audio_format(bytes: &[u8], channel_mask_override: Option<u32>) -> Option<AudioFormat> {
+    parse_audio_format_at(bytes, 0, channel_mask_override)
+        .or_else(|| parse_audio_format_at(bytes, PROPVARIANT_HEADER_SIZE, channel_mask_override))
+}
+
+/// 按指定偏移解析音频格式。
+///
+/// 1. 验证长度 >= offset + 18 字节（WAVEFORMATEX 最小尺寸）
 /// 2. 解析基本头（wFormatTag / nChannels / nSamplesPerSec / wBitsPerSample）
-/// 3. 若 wFormatTag == WAVE_FORMAT_EXTENSIBLE 且长度 >= 40 字节：
+/// 3. 取值范围校验（channels/rate/bits 任一越界即返回 None）
+/// 4. 若 wFormatTag == WAVE_FORMAT_EXTENSIBLE 且长度 >= 40 字节：
 ///    从 WAVEFORMATEXTENSIBLE 扩展部分提取 dwChannelMask（bytes[20..24]）
-/// 4. 否则 dwChannelMask = 0，由调用方执行兜底链
+/// 5. 否则 dwChannelMask = 0，由调用方执行兜底链
 ///
 /// `channel_mask_override`：外部提供的兜底通道掩码（来自注册表 DWORD 值）。
-pub fn parse_audio_format(bytes: &[u8], channel_mask_override: Option<u32>) -> Option<AudioFormat> {
+fn parse_audio_format_at(
+    bytes: &[u8],
+    offset: usize,
+    channel_mask_override: Option<u32>,
+) -> Option<AudioFormat> {
     // Step 1: 最小长度校验
-    if bytes.len() < WAVEFORMATEX_MIN_SIZE {
+    if bytes.len() < offset + WAVEFORMATEX_MIN_SIZE {
+        return None;
+    }
+    let d = &bytes[offset..];
+
+    // Step 2: 解析 WAVEFORMATEX 基本头（Little-Endian）
+    let format_tag = u16::from_le_bytes([d[0], d[1]]);
+    let channels = u16::from_le_bytes([d[2], d[3]]);
+    let sample_rate = u32::from_le_bytes([d[4], d[5], d[6], d[7]]);
+    let bits_per_sample = u16::from_le_bytes([d[14], d[15]]);
+
+    // Step 3: 取值范围校验（畸形 blob 不产出"看似有效"的格式）
+    if channels == 0 || channels > MAX_CHANNELS {
+        return None;
+    }
+    if sample_rate == 0 || sample_rate > MAX_SAMPLE_RATE {
+        return None;
+    }
+    if bits_per_sample == 0 || bits_per_sample > MAX_BITS_PER_SAMPLE {
         return None;
     }
 
-    // Step 2: 解析 WAVEFORMATEX 基本头（Little-Endian）
-    let format_tag = u16::from_le_bytes([bytes[0], bytes[1]]);
-    let channels = u16::from_le_bytes([bytes[2], bytes[3]]);
-    let sample_rate = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    let bits_per_sample = u16::from_le_bytes([bytes[14], bytes[15]]);
-
-    // Step 3: WAVEFORMATEXTENSIBLE 通道掩码（仅当 tag == EXTENSIBLE 且数据充足时提取）
+    // Step 4: WAVEFORMATEXTENSIBLE 通道掩码（仅当 tag == EXTENSIBLE 且数据充足时提取）
     let extensible_mask = if format_tag == WAVE_FORMAT_EXTENSIBLE
-        && bytes.len() >= WAVEFORMATEX_MIN_SIZE + WAVEFORMATEXTENSIBLE_EXTRA_SIZE
+        && d.len() >= WAVEFORMATEX_MIN_SIZE + WAVEFORMATEXTENSIBLE_EXTRA_SIZE
     {
-        u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]])
+        u32::from_le_bytes([d[20], d[21], d[22], d[23]])
     } else {
         0
     };
 
-    // Step 4: 通道掩码兜底链
+    // Step 5: 通道掩码兜底链
     let channel_mask = resolve_channel_mask(extensible_mask, channel_mask_override, channels);
 
     Some(AudioFormat {
@@ -255,6 +290,45 @@ mod tests {
         let fmt = parse_audio_format(&bytes, None).unwrap();
         assert!(fmt.is_extensible);
         assert_eq!(fmt.channel_mask, 0x0003);
+    }
+
+    /// PROPVARIANT 前缀（8 字节）端点：offset 0 解析失败后按 offset 8 回退成功。
+    #[test]
+    fn offset_prefixed_blob_parses() {
+        let mut bytes = vec![0xAA_u8; PROPVARIANT_HEADER_SIZE];
+        bytes.extend_from_slice(&build_waveformatex(WAVE_FORMAT_PCM, 2, 48000, 24));
+        let fmt = parse_audio_format(&bytes, None).unwrap();
+        assert_eq!(fmt.channels, 2);
+        assert_eq!(fmt.sample_rate, 48000);
+        assert_eq!(fmt.bits_per_sample, 24);
+    }
+
+    /// 两个偏移都不足最小长度 → None。
+    #[test]
+    fn offset_prefixed_too_short_returns_none() {
+        let bytes = vec![0_u8; PROPVARIANT_HEADER_SIZE + WAVEFORMATEX_MIN_SIZE - 1];
+        assert!(parse_audio_format(&bytes, None).is_none());
+    }
+
+    /// 通道数 0 → 畸形，拒绝（此前会产出 ch=0 的"看似有效"格式）。
+    #[test]
+    fn zero_channels_rejected() {
+        let bytes = build_waveformatex(WAVE_FORMAT_PCM, 0, 48000, 16);
+        assert!(parse_audio_format(&bytes, None).is_none());
+    }
+
+    /// 采样率越界（> 1 MHz）→ 畸形，拒绝。
+    #[test]
+    fn absurd_sample_rate_rejected() {
+        let bytes = build_waveformatex(WAVE_FORMAT_PCM, 2, 2_000_000, 16);
+        assert!(parse_audio_format(&bytes, None).is_none());
+    }
+
+    /// 位深越界（> 64）→ 畸形，拒绝。
+    #[test]
+    fn absurd_bits_rejected() {
+        let bytes = build_waveformatex(WAVE_FORMAT_PCM, 2, 48000, 127);
+        assert!(parse_audio_format(&bytes, None).is_none());
     }
 
     #[test]

@@ -154,8 +154,10 @@ pub fn is_endpoint_active(endpoint_key: &RegKey) -> Result<bool> {
 /// 从注册表键推断流方向。
 ///
 /// RegKey 不暴露路径，此处从 Properties 子键特征判断：
-/// - 存在 `PKEY_AudioEndpoint_GUID` 特性且端点有 `Render` 特征时返回 Render
-/// - 简化策略：默认 Render（回放是 APO 主要场景），由 info.rs 根据参数覆盖。
+/// - 注册表键本身不携带"来自 Render 还是 Capture"信息，`query_endpoint` 只拿到键，
+///   故这里恒返回缺省 `Render`；
+/// - 真实流向由 `info.rs::enumerate_devices` 在按根遍历时用 `flow_for_root` 回填
+///   （不回填时采集端点的 flow 也会是 Render——旧注释声称"由 info.rs 覆盖"，此前并未实现）。
 fn detect_flow(_endpoint_key: &RegKey) -> Flow {
     Flow::Render
 }
