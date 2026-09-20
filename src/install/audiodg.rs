@@ -93,7 +93,15 @@ pub fn ensure_can_load() -> Result<()> {
 
 /// 停止 Windows 音频服务（只停不启，uninstall 前置用）。
 ///
-/// audiodg 持有点端锁 MMDevices 槽位句柄时，删除槽位值会失败——必须先停服务。
+/// **关于"必须先停服才能改 MMDevices"的更正（2026-09-16 实测）**：写/删端点
+/// `FxProperties` 值只需要句柄具备 `KEY_SET_VALUE`（`RegKey::open_for_write` 即是），
+/// 与 audiodg 是否持有点端无关——在活动音频流上删除槽位值同样成功。历史上出现的
+/// 0x80070005 来自旧实现用 `SAM_ALL`（含 CreateSubKey 位，ACL 未授予）或只读句柄
+/// 打开该键，不是音频栈加锁。
+///
+/// 停服真正有用的是**让变更生效**：引擎会缓存端点的 APO 链，只改注册表不会立刻
+/// 重载（实测：活动流上删掉 VxAPO 槽位值后，新起的流仍加载旧 APO），需要端点/服务
+/// 重建后才生效。
 /// 与 `restart_audio_service` 共用停服逻辑，但**不开起**（uninstall 删槽位后由
 /// CLI 层调 `restart_audio_service` 恢复）。
 pub fn stop_audio_service() -> Result<()> {
@@ -286,6 +294,92 @@ pub fn ensure_audio_service_running() -> Result<()> {
         .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
     log::info!("AudioSrv started (ensure running)");
     Ok(())
+}
+
+/// 等待 `audiodg.exe` 全部退出（**事件驱动**，不盲等固定时长）。
+///
+/// 用途：停服/`taskkill` 之后确认模块映像已释放——audiodg 不退出时
+/// `vxapo_driver.dll` 仍被占用，紧随其后的重装/换 DLL 会覆盖失败。
+/// **注意**：槽位值的写/删不需要这步（只需 `KEY_SET_VALUE` 句柄，
+/// 2026-09-16 实测活动流上删值同样成功）；这里只解决文件/模块占用。
+///
+/// 实现：Toolhelp 快照取 `audiodg.exe` 的 PID → `OpenProcess(SYNCHRONIZE)` →
+/// `WaitForSingleObject`（内核事件等待，进程一退出立即返回），预算耗尽即收手。
+/// 最多两轮扫描：覆盖"等待期间才收尾"和"停服瞬间又被拉起"的实例。
+///
+/// 返回 `true` = 已无 audiodg 进程；`false` = 超时仍有残留（调用方 best-effort 继续）。
+pub fn wait_for_audiodg_exit(timeout_ms: u32) -> bool {
+    use std::time::{Duration, Instant};
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+    for _ in 0..2 {
+        let pids = audiodg_pids();
+        if pids.is_empty() {
+            return true;
+        }
+        for pid in pids {
+            // SAFETY: pid 来自 Toolhelp 快照；仅申请 SYNCHRONIZE（等待退出信号）。
+            let Ok(handle) = (unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }) else {
+                continue;
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait_ms = remaining.as_millis().min(u32::MAX as u128) as u32;
+            // SAFETY: handle 由 OpenProcess 返回且有效；超时上限受 deadline 约束。
+            let waited = unsafe { WaitForSingleObject(handle, wait_ms) };
+            // SAFETY: 句柄由本函数独占，等待结束后关闭。
+            let _ = unsafe { CloseHandle(handle) };
+            if waited != WAIT_OBJECT_0 {
+                // 超时/异常：不再空转，按当前快照判定。
+                return audiodg_pids().is_empty();
+            }
+        }
+    }
+    audiodg_pids().is_empty()
+}
+
+/// 枚举 `audiodg.exe` 的 PID（Toolhelp 进程快照，只读）。
+fn audiodg_pids() -> Vec<u32> {
+    use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let mut pids = Vec::new();
+    // SAFETY: 无参快照；失败返回无效句柄，直接返回空列表。
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return pids;
+    };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return pids;
+    }
+
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: entry 已按约定填写 dwSize；句柄有效；后续 Next 同理。
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while ok {
+        let name = String::from_utf16_lossy(
+            &entry.szExeFile[..entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len())],
+        );
+        if name.eq_ignore_ascii_case("audiodg.exe") {
+            pids.push(entry.th32ProcessID);
+        }
+        ok = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    // SAFETY: 快照句柄由本函数独占。
+    let _ = unsafe { CloseHandle(snapshot) };
+    pids
 }
 
 /// 停止 AudioSrv 及其活动依赖服务（EAPO ServiceHelper::restartService 对齐）。
@@ -622,5 +716,23 @@ mod tests {
         key.delete_value(VALUE_NAME).unwrap();
         assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), false);
         cleanup(&path);
+    }
+
+    /// `wait_for_audiodg_exit(0)` 必须立即返回（预算耗尽即收手，不阻塞）。
+    #[test]
+    fn wait_for_audiodg_exit_is_bounded() {
+        let start = std::time::Instant::now();
+        let _ = wait_for_audiodg_exit(0);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "超时预算为 0 时不应阻塞"
+        );
+    }
+
+    /// Toolhelp 枚举不 panic，且不会返回异常多的实例。
+    #[test]
+    fn audiodg_pids_enumeration_is_sane() {
+        let pids = audiodg_pids();
+        assert!(pids.len() < 64, "audiodg 实例数异常：{}", pids.len());
     }
 }
