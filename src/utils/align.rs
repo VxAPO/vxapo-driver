@@ -11,7 +11,7 @@ use std::ptr::NonNull;
 use crate::utils::vx_error::VxApoError;
 
 /// 默认 SIMD 对齐字节数（SSE = 16，AVX = 32）。
-pub const SIMD_ALIGN: usize = 32;
+pub(crate) const SIMD_ALIGN: usize = 32;
 
 /// 对齐到指定边界的连续内存块。
 ///
@@ -35,7 +35,7 @@ pub const SIMD_ALIGN: usize = 32;
 /// 分配发生在非实时路径（`initialize`），分配后所有操作仅涉及指针读写，
 /// 不触发堆分配。Drop 时释放内存。
 #[derive(Debug)]
-pub struct AlignedBuffer<T: Copy> {
+pub(crate) struct AlignedBuffer<T: Copy> {
     ptr: NonNull<T>,
     len: usize,
     layout: Layout,

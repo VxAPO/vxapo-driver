@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use crate::utils::ring::RingBuffer;
 
 /// 进程级日志器（DllGetClassObject 首次调用时惰性初始化）。
-pub static LOGGER: OnceLock<Logger> = OnceLock::new();
+pub(crate) static LOGGER: OnceLock<Logger> = OnceLock::new();
 
 /// 日志级别。
 #[repr(u8)]

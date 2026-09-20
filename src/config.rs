@@ -7,6 +7,3 @@ pub mod error;
 pub mod model;
 pub mod parser;
 pub mod watcher;
-
-/// 配置解析专用错误类型（重导出自 error.rs，保持兼容）。
-pub use error::ConfigError;

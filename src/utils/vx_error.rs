@@ -38,28 +38,6 @@ pub enum VxApoError {
 /// `vxapo-driver` 统一 Result 类型。
 pub type Result<T> = result::Result<T, VxApoError>;
 
-/// 判断 HRESULT 是否成功（>= 0）。
-pub fn succeeded(hr: windows_core::HRESULT) -> bool {
-    hr.0 >= 0
-}
-
-/// 判断 HRESULT 是否失败（< 0）。
-pub fn failed(hr: windows_core::HRESULT) -> bool {
-    hr.0 < 0
-}
-
-/// 将 HRESULT 转换为 `Result<()>`。
-pub fn check_hresult(hr: windows_core::HRESULT) -> Result<()> {
-    if succeeded(hr) {
-        Ok(())
-    } else {
-        Err(VxApoError::Internal(format!(
-            "HRESULT 错误: 0x{:08X}",
-            hr.0
-        )))
-    }
-}
-
 // ── APO 专用 HRESULT 错误码（单一来源 sys/consts.rs）──────────────────
 pub(crate) use crate::sys::consts::{APOERR_ALREADY_INITIALIZED, APOERR_FORMAT_NOT_SUPPORTED};
 
@@ -138,31 +116,6 @@ impl VxApoError {
 mod tests {
     use super::*;
     use windows_core::HRESULT;
-
-    #[test]
-    fn succeeded_ok() {
-        assert!(succeeded(HRESULT(0)));
-        assert!(succeeded(HRESULT(1)));
-    }
-
-    #[test]
-    fn failed_ok() {
-        let hr = HRESULT(0x8000_4005u32 as i32);
-        assert!(failed(hr));
-        assert!(!succeeded(hr));
-    }
-
-    #[test]
-    fn check_hresult_ok() {
-        assert!(check_hresult(HRESULT(0)).is_ok());
-    }
-
-    #[test]
-    fn check_hresult_err() {
-        let hr = HRESULT(0x8000_4005u32 as i32);
-        let err = check_hresult(hr).unwrap_err();
-        assert!(matches!(err, VxApoError::Internal(_)));
-    }
 
     #[test]
     fn from_format_to_hresult() {

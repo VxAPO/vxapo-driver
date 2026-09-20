@@ -25,7 +25,7 @@ const VALUE_NAME: &str = "DisableProtectedAudioDG";
 ///
 /// 返回 `true`：DisableProtectedAudioDG 值存在且 == 1（允许第三方 APO 加载）。
 /// 返回 `false`：值不存在或 != 1（Windows 阻止第三方 APO 加载）。
-pub fn is_disabled() -> Result<bool> {
+pub(crate) fn is_disabled() -> Result<bool> {
     let key = match RegKey::open(HKEY_LOCAL_MACHINE, AUDIO_KEY_PATH) {
         Ok(k) => k,
         Err(_) => {
@@ -43,14 +43,14 @@ pub fn is_disabled() -> Result<bool> {
 /// 检查是否允许第三方 APO 加载。
 ///
 /// `is_disabled()` 的语义别名——返回 `true` 表示可以加载。
-pub fn is_third_party_allowed() -> Result<bool> {
+pub(crate) fn is_third_party_allowed() -> Result<bool> {
     is_disabled()
 }
 
 /// 设置 DisableProtectedAudioDG = 1（禁用保护，允许第三方加载）。
 ///
 /// 需要管理员权限（写入 HKLM）。
-pub fn disable() -> Result<()> {
+pub(crate) fn disable() -> Result<()> {
     let key = RegKey::create(HKEY_LOCAL_MACHINE, AUDIO_KEY_PATH)?;
     key.write_dword(VALUE_NAME, 1)?;
     Ok(())
@@ -59,7 +59,7 @@ pub fn disable() -> Result<()> {
 /// 删除 DisableProtectedAudioDG 值（恢复 Windows 默认保护行为）。
 ///
 /// 值不存在不算错误。
-pub fn restore() -> Result<()> {
+pub(crate) fn restore() -> Result<()> {
     let key = match RegKey::open(HKEY_LOCAL_MACHINE, AUDIO_KEY_PATH) {
         Ok(k) => k,
         Err(_) => {
@@ -74,7 +74,7 @@ pub fn restore() -> Result<()> {
 /// 检查并确保允许加载，不允许时尝试修复。
 ///
 /// 由 object/apo.rs LockForProcess 调用。
-pub fn ensure_can_load() -> Result<()> {
+pub(crate) fn ensure_can_load() -> Result<()> {
     // 进程内缓存：设置页/多流会瞬间调用大量 LockForProcess；该值安装后
     // 已是 1（uninstall 会重启音频服务/进程），首查成功后无需反复读注册表。
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,7 +171,7 @@ pub fn stop_audio_service() -> Result<()> {
 /// 3. StartServiceW 启动 AudioSrv
 ///
 /// 失败不阻塞安装（best-effort，仅日志——注册表已写入，服务下次重启自然生效）。
-pub fn restart_audio_service() -> Result<()> {
+pub(crate) fn restart_audio_service() -> Result<()> {
     use windows::Win32::System::Services::{
         OpenSCManagerW, OpenServiceW, ControlService, StartServiceW, QueryServiceStatus,
         CloseServiceHandle, SC_HANDLE, SERVICE_STATUS,
@@ -618,7 +618,7 @@ fn string_from_wide(p: PWSTR) -> String {
 ///
 /// 与整服重启相比只影响目标端点，且 Windows 会保留其默认身份，
 /// 避免应用在重启后优先路由到其他设备。
-pub fn restart_endpoint_device(device_guid: &str, is_capture: bool) -> Result<()> {
+pub(crate) fn restart_endpoint_device(device_guid: &str, is_capture: bool) -> Result<()> {
     let flow = if is_capture { "1.0.0.00000000" } else { "0.0.0.00000000" };
     let guid = device_guid.trim_matches(|c| c == '{' || c == '}');
     let instance_id = format!(r"SWD\MMDEVAPI\{{{flow}}}.{{{guid}}}");
