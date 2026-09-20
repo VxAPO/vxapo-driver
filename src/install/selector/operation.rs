@@ -16,6 +16,9 @@ use crate::install::device::slots::{
     ApoSlot, ChildApoKind, InstallMode, SlotValue, read_slot_value, CHILD_APO_PATH_ROOT,
     FX_PROPERTIES_KEY, INSTALL_VERSION,
 };
+use crate::install::device::identity::{
+    merge_endpoint_history, read_endpoint_identity, write_identity_values,
+};
 use crate::install::device::sysfx;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::{
@@ -210,7 +213,15 @@ pub fn write_install_config(
     // capture 不装 PostMix → childPostMix 无意义，强制 None。
 
     let child_postmix = if is_capture { None } else { original_postmix };
-    write_child_apo_config(device_guid, &fx_key, config, original_premix, child_postmix, &mut tx)?;
+    write_child_apo_config(
+        device_guid,
+        &endpoint_path,
+        &fx_key,
+        config,
+        original_premix,
+        child_postmix,
+        &mut tx,
+    )?;
 
     // ── Step 5: 按模式写入 APO GUID（capture 只写 PreMix）───────────────
 
@@ -358,9 +369,15 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         }
     };
 
-    // 全流程前置：确认已安装后才停音频服务，避免 audiodg 锁住槽位导致删不掉。
+    // 全流程前置：确认已安装后才停音频服务。停服**不是删值的前提**（写/删
+    // `FxProperties` 值只需 `KEY_SET_VALUE` 句柄；2026-09-16 实测：音频播放中、
+    // DLL 已被 audiodg 加载、audiodg 持有点端时删槽位值同样成功）。真正的理由：
+    // ① 释放 DLL 模块映像（audiodg 不退出则 vxapo_driver.dll 仍被占用，随后的
+    //    重装/换 DLL 覆盖会失败；NSIS installer-hooks 亦为此停服务）；
+    // ② 让本流程末尾的端点重启（pnputil /restart-device）立刻生效——引擎会缓存
+    //    端点 APO 链。
     if let Err(e) = crate::install::audiodg::stop_audio_service() {
-        log::warn!("uninstall: 停止音频服务失败（后续删槽位可能被占用）：{e}");
+        log::warn!("uninstall: 停止音频服务失败（删槽位本身不受影响，仅影响变更生效时机）：{e}");
     }
 
     // ── 删除 VxAPO CLSID ──────────────────────────────────────────────────
@@ -369,11 +386,12 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // （实测：uninstall 后 slot 仍残留 VxAPO CLSID）。改用
     // read_slot_value 直接在 fx_key 上读槽位值（REG_SZ/REG_BINARY 兼容）。
     //
-    // 【 实测】audiodg 持有点端时 MMDevices 槽位值删除可能被锁
-    // （Windows 拒绝删除正在使用的 APO 槽位值）→ 不能静默吞掉失败：记录 +
-    // 返回错误，提示调用方重启音频服务（uninstall 后 net stop audiosrv &&
-    // net start audiosrv 使槽位变更生效）。信息区（HKLM\SOFTWARE\VxAPO）非
-    // MMDevices 不被锁——所以「第一次删信息区成功但槽位值残留」。
+    // 【2026-09-16 更正】删值失败**不是**"端点被占用/被锁"：写/删 `FxProperties`
+    // 值只需要句柄具备 `KEY_SET_VALUE`（`open_for_write` 即是），在活动音频流上
+    // 同样成功。历史 0x80070005 来自旧实现用 `SAM_ALL`（含 CreateSubKey 位，ACL
+    // 未授予）或只读句柄打开该键——「第一次删信息区成功但槽位值残留」即由此而来。
+    // 仍不静默吞错：权限/句柄异常必须暴露给调用方，但失败语义是"写入被拒"，
+    // 与音频服务是否运行无关。
 
     let mut any_failed = false;
     for slot in ApoSlot::ALL {
@@ -381,7 +399,7 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
             if g == CLSID_VXAPO_PRE_MIX || g == CLSID_VXAPO_POST_MIX {
                 let name = slot.value_name();
                 if let Err(e) = fx_key.delete_value(&name) {
-                    log::warn!("uninstall: delete slot {name} failed: {e} (audio service may hold endpoint)");
+                    log::warn!("uninstall: delete slot {name} failed: {e} (write denied: handle rights or key ACL)");
                     any_failed = true;
                 }
             }
@@ -389,7 +407,7 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     }
     if any_failed {
         return Err(VxApoError::internal(
-            "卸载槽位失败：音频服务可能仍在占用端点。请重启音频服务（管理员：net stop audiosrv && net start audiosrv）后重试卸载。",
+            "卸载槽位失败：写入被拒绝（句柄权限或键 ACL 异常）。请以管理员重试；若仍失败，重启音频服务（net stop audiosrv && net start audiosrv）后重试卸载。",
         ));
     }
 
@@ -662,10 +680,14 @@ const BACKUP_POSTMIX_SLOT_VALUE: &str = "PostMixSlotValue";
 ///   {PreMixChild|PostMixChild}`（与运行期 `object/child.rs` /
 ///   `slots::read_child_apo_guid` 读取路径一致）。
 /// - 被覆盖前的槽位名 → `{PreMixSlot|PostMixSlot}`（uninstall 恢复槽位值用）。
+/// - 设备稳定身份 → `{DeviceInstanceId|DeviceHardwareIds|DeviceProductName|
+///   EndpointHistory}`（`identity.rs`；Windows 重排端点 GUID 后靠它把新 GUID
+///   认回同一设备，见 `stale.rs` 分层匹配）。
 /// - allowSilentBuffer / autoAdjust / version → FxProperties 值
 ///   （`info.rs::read_install_version` 依 version 判定安装状态）。
 fn write_child_apo_config(
     device_guid: &str,
+    endpoint_path: &str,
     fx_key: &RegKey,
     config: &InstallConfig,
     original_premix: Option<GUID>,
@@ -705,6 +727,14 @@ fn write_child_apo_config(
     if let SlotValue::Guid(g) = read_slot_value(fx_key, config.install_mode.postmix_slot()) {
         info.write_sz(BACKUP_POSTMIX_SLOT_VALUE, &guid_to_string(&g))?;
     }
+
+    // 设备稳定身份（值，不是子键——迁移的 copy_values 只搬值；写成子键会丢）。
+    let identity = read_endpoint_identity(endpoint_path);
+    let history = merge_endpoint_history(&[
+        identity.endpoint_history.clone(),
+        vec![device_guid.to_string()],
+    ]);
+    write_identity_values(&info, &identity, &history)?;
 
     // 控制开关 → FxProperties（注意：本键由调用方以 KEY_SET_VALUE 打开，
     // 仅写值所需的最小权限）。
