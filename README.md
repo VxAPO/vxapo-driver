@@ -9,88 +9,65 @@
 `C:\ProgramData\VxAPO\{GUID}\config.toml`，逐帧处理音频流。配置是只读输入：写入路径
 仅存在于 CLI（提权）与 App，DLL 不修改任何文件。
 
-阅读顺序：工程价值 → 生态位 → 架构 → 实时契约 → 配置 → 效果器与支持面 → 性能 →
-上手 → 三端契约 → 测试与排障 → 参考。
+阅读顺序：实现要点 → 与 Equalizer APO 的差异 → 架构 → 实时契约 → 配置 → 效果器与支持面 →
+性能 → 上手 → 三端契约 → 测试与排障 → 参考。
 
-## 1 · 工程价值
+## 1 · 实现要点
 
-核心结论：**Windows 音频链路的驱动级实时处理可以由 Rust 完整实现，且遵守 COM/APO 的
-既有约定，而非绕开这些约定。** 以下判断均可复核：
+本项目围绕一个问题展开：**驱动级实时音频处理能否完整用 Rust 实现，同时遵守既有
+COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置：
 
-| 维度 | 结论 | 证据 |
+| 做法 | 说明 | 可核验位置 |
 |---|---|---|
-| 系统集成 | 以标准 APO 注册，由引擎在聚合模式（`pUnkOuter` 非空）下加载 | 注册项 `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}`；实现 `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`；导出 `DllGetClassObject` / `DllRegisterServer`，自维护实例与锁计数以支撑 `DllCanUnloadNow` |
-| 端到端可用 | 真机完成「安装 → 验证 → 卸载」闭环，且装卸对称 | `install --verify` 依次执行：停/启音频服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` 回环。耳机（Octave）端点槽位 `41C34613…` / `B4A97313…` → `NoValue` → 复原，`childApoKeyExists` 同向翻转；结束后设备配置与起始**逐字节一致** |
-| API 层 | 使用 windows-rs 类型化绑定，而非手写 COM 样板 | APO 接口取自 windows-rs 0.62 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 由 `#[implement]` 生成 vtable 与引用计数 |
-| `unsafe` 治理 | 集中于 FFI 边界，逐处附 SAFETY 说明 | 392 处，分布于 27 个文件：`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27 …，配套 126 处 SAFETY |
-| 实时约束 | 以编译期约束表达，而非运行时约定 | `unsafe trait RtSafe` / `RtCopy` 将「禁止分配、加锁、I/O、panic」编码为类型约束；`RealtimeContext` 为零尺寸编译期见证；`panic = "abort"`；处理链零分配 |
-| 工程可持续 | 具备可回归基线 | 491 个测试 / 57 个源文件；`cargo build` 与 `cargo build --tests` 均 0 告警；热重载按 `spec()` 指纹幂等跳过 |
+| 按标准 APO 契约实现并被引擎加载 | 实现 `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`，在聚合模式（`pUnkOuter` 非空）下工作；导出 `DllGetClassObject` / `DllRegisterServer`，自维护实例与锁计数以支撑 `DllCanUnloadNow` | `object/apo/`、`object/apo/dll_exports.rs`；注册项 `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
+| 安装/卸载走事务，并带安装后自检 | `install --verify`：停/启音频服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` 回环；卸载后槽位与 `childApoKeyExists` 复原，设备配置与起始逐字节一致 | `install/selector/operation.rs`；CLI `vxapo-cli install --verify` |
+| 用 windows-rs 类型化绑定代替手写 COM 样板 | APO 接口取自 windows-rs 0.62 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 由 `#[implement]` 生成 vtable 与引用计数 | `object/apo/factory.rs` |
+| `unsafe` 收敛在 FFI 边界并逐处注明 | 392 处 / 27 个文件（`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27 …），配 126 处 SAFETY 说明；唯一手写 vtable 偏移在 COM 聚合外壳（引擎要求多接口固定 offset 布局），该处注明布局依据 | `src/`（搜索 `unsafe`）、`object/apo/aggregate.rs` |
+| 实时约束写进类型系统 | `unsafe trait RtSafe` / `RtCopy` 约束「无分配、无锁、无 I/O、无 panic」；`RealtimeContext` 为零尺寸编译期见证；发布构建 `panic = "abort"`；链上零分配 | `pipeline/realtime/` |
+| 以测试与告警作为回归基线 | 491 个测试 / 57 个源文件；`cargo build` 与 `cargo build --tests` 均 0 告警 | `cargo test`、`cargo build --tests` |
 
-**边界说明**：唯一手写 vtable 偏移的位置是 COM 聚合外壳（`object/apo/aggregate.rs`）——
-Windows 引擎要求多接口按固定 offset 布局；该处逐条注明 SAFETY 与布局依据。其余 COM
-实现均通过 windows-rs 的声明式接口完成。
+## 2 · 与 Equalizer APO 的差异
 
-## 2 · 生态位：与 Equalizer APO 的取舍
+两者面向同一问题（系统级、逐端点、脚本可驱动的音频处理），实现路线不同。下表只列
+**差异**，EAPO 侧注明记录出处（含 EAPO 源码文件名与行号）：
 
-两者面向同一问题——系统级、逐端点、可脚本化的音频处理，工程取舍不同。下表只列差异：
+| 面 | Equalizer APO | VxAPO | 关系与出处 |
+|---|---|---|---|
+| 配置载体 | `config.txt` 逐行命令语法（`GraphicEQ:` 等） | v9.11 起每端点一份 TOML；旧命令体系整体移除，`vxapo-cli config convert` 做一次性转换 | **已移除**：`配置与DSP设计.md:162`、`config 模块规范.md:33` |
+| 语法错误处理 | 无冒号行**静默跳过**（`FilterEngine.cpp` 329-330：`pos = line.find(':')`，`pos == -1` 时整行不解析、不报错） | 无冒号 / 多冒号一律 `SyntaxError`，整体失败且不产出 spec | **有意差异**（更严格，写错必有反馈）：`config 模块规范.md:206` |
+| 安装模式探测 | `load()` 396-413（C41-C44）三档自动探测 LfxGfx / SfxMfx / SfxEfx | 移植为 `slots::detect_install_mode`，判定改为「VxAPO CLSID 成对」（EDIFIER 实证：按任意 GUID 占槽会误判 SfxMfx） | **对齐 + 修正**：`install 模块规范.md:266`、`changelog.md:868` |
+| 子 APO 注册表 | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO`（`RegistryHelper.h` 33），`childApoPath`（`DeviceAPOInfo.cpp` 43），值名 `PreMixChild` / `PostMixChild`（`DeviceAPOInfo.cpp` 558-563） | 机制相同但**路径隔离**：`HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`；禁止读写 EAPO 路径，否则污染其安装信息区 | **机制对齐、路径隔离**：`install 模块规范.md:167`、`changelog.md:942` |
+| 槽位值类型 | 第三方实测写入 `REG_SZ` GUID 字符串 | 双格式兼容（`REG_SZ` / 16 字节 LE `REG_BINARY`），并把全零 GUID 归一为「无 APO」 | **兼容并扩展**：`install 模块规范.md:242` |
+| 配置热重载 | `notificationThread`：`FindNextChangeNotification` 后 `WaitFor`，以 10 ms 窗口合并编辑器「写临时文件 + rename」 | `config/watcher.rs` 同构：事件驱动（非轮询）+ 10 ms 去重 + `spec()` 指纹幂等跳过 | **对齐**：`config 模块规范.md:490`、`config 模块规范.md:535` |
+| 安装后自检 | `CoCreateInstance` 验证 | 同一机制，扩展为「停/启服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe`」闭环 | **对齐并扩展**：`配置与DSP设计.md:167` |
+| 停服与管道权限 | `ServiceHelper` 停/启序；管道 DACL 授予 `Everyone` | 同款停服序与 DACL | **对齐**：`changelog.md:143`、`changelog.md:199` |
+| 卷积与延迟 | GraphicEQ：对数频率插值 + 最小相位 FIR + 1024 点直接时域卷积；分块卷积 `libHybridConv`；无 child 时 `GetLatency` 返回 0 | 同思路：`< 200 Hz` IIR（RBJ）、`≥ 200 Hz` 线性相位 FIR，> 2048 抽头改分块 FFT；延迟上报见 §9 | **思路对齐、实现不同**：`changelog.md:791`、`changelog.md:793`、`changelog.md:511` |
+| 设备状态判定 | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` 同判定 | **借鉴**：`install 模块规范.md:347` |
+| 许可 | GPL-2.0（© Jonas Thedering） | GPL-3.0-or-later，独立实现，不含 EAPO 代码 | `vxapo-docs/README.md:27` |
 
-| 维度 | Equalizer APO | VxAPO |
-|---|---|---|
-| 配置载体 | 文本配置（`config.txt` 语法） | 每端点一份 TOML：`C:\ProgramData\VxAPO\{GUID}\config.toml` |
-| 配置生效 | 重载/重启后生效 | 事件驱动热重载（`FindFirstChangeNotificationW`，10 ms 去抖）+ 双链过渡抑制爆音 |
-| 界面 | 独立 GUI 编辑器 | Tauri 2 + React 19 桌面应用（参数视图 / 语义视图）+ CLI |
-| 设备模型 | APO 安装到端点，配置按设备文件组织 | 同上，并额外提供旧 GUID 残留的检测 / 迁移 / 清理（以设备实例 ID 为稳定身份） |
-| PEQ 策略 | 多段 EQ（含 GraphicEQ） | 混合 PEQ：`fc < 200 Hz` 用 IIR（RBJ），`≥ 200 Hz` 用线性相位 FIR（1024–8192 抽头，> 2048 分块 FFT），≤ 31 段 |
-| 效果集 | 由配置语法驱动的文本指令 | 7 个内置效果器，参数带范围 / 步进 / 默认值契约（见 §6） |
-| 许可 | GPL-2.0 | GPL-3.0-or-later，独立实现（不含 EAPO 代码） |
-
-差异根源在于配置模型的定位：EAPO 以文本指令表达信号链，VxAPO 以结构化契约（driver 产出
-参数表、CLI 透传、App 生成界面），换取三端行为一致性（见 §9）。
+EAPO 侧记录集中在 `vxapo-docs/driver/zh/配置与DSP设计.md` §5「EqualizerAPO 行为参考」与
+`模块引用规范/`（`Equalizer 行为文档` 已随 v9.11 移除，条目保留在上述位置）。当前保留的
+可对照机制为四项：子 APO 创建与委托、安装模式探测、槽位备份与恢复、安装后自检。
 
 ## 3 · 架构
 
-链路与数据流：
-
-```text
-┌───────────────────────────┐
-│ vxapo-app                 │  界面：React 19 + Tauri 2
-└─────────────┬─────────────┘
-              │  config.toml（热重载）
-              ▼
-┌───────────────────────────┐
-│ vxapo-cli                 │  枚举 · 安装/卸载 · 快照 · 验证
-└─────────────┬─────────────┘
-              │  HKLM 槽位 · CLSID 绑定 · 子 APO 记录
-              ▼
-┌───────────────────────────┐
-│ audiodg.exe               │  音频引擎（实时线程）
-└───────────────────────────┘
-              ↑ 加载 vxapo_driver.dll：标准 APO，逐帧处理
+```mermaid
+flowchart TB
+  app["vxapo-app<br/>React 19 + Tauri 2"] -->|"config.toml（热重载）"| cli["vxapo-cli<br/>枚举 · 安装/卸载 · 快照 · 验证"]
+  cli -->|"HKLM 槽位 · CLSID 绑定 · 子 APO 记录"| eng["audiodg.exe<br/>音频引擎（实时线程）"]
+  eng -->|"加载"| dll["vxapo_driver.dll<br/>标准 APO，逐帧处理"]
 ```
 
 driver 内部按实时性划分为两条路径：
 
-```text
-实时路径（每帧执行；禁止分配、加锁、I/O、panic）
-┌──────────────────────────────────────────────────────────────┐
-│ pipeline/realtime/  RtSafe / RtCopy contracts, witness       │
-│ pipeline/dsp/       effect chain (7 effects, section 6)      │
-└──────────────────────────────────────────────────────────────┘
+| 路径 | 进入时机 | 模块 |
+|---|---|---|
+| 实时路径 | 每帧（`APOProcess`） | `pipeline/realtime/`（`RtSafe` / `RtCopy` 契约、编译期见证、无锁环形缓冲）、`pipeline/dsp/`（效果器链，7 个效果器见 §6） |
+| 控制路径 | 初始化、热重载、诊断 | `object/apo/`（APO 对象、聚合外壳、子 APO、协商、热重载、RT 转储）、`config/`（TOML → 链模型、校验、目录监控）、`install/`（枚举、槽位、安装事务、残留迁移）、`sys/`（COM、注册表、音频格式常量）、`telemetry/`（日志、panic 记录）、`utils/`（环形缓冲、对齐、GUID、错误类型） |
 
-控制路径（初始化、热重载、诊断；允许分配与加锁）
-┌──────────────────────────────────────────────────────────────┐
-│ object/apo/         APO object, aggregate shell, child APO,  │
-│                     negotiation, hot reload, RT dump         │
-│ config/             chain model, validation, watcher         │
-│ install/            enumeration, slots, transaction, stale   │
-│ sys/                COM, registry, audio-format constants    │
-│ telemetry/          logging, panic records                   │
-│ utils/              ring buffer, alignment, GUID, errors     │
-└──────────────────────────────────────────────────────────────┘
-```
-
-实时路径只依赖 `pipeline/`；`install/` 与 `sys/` 仅在初始化与安装阶段进入。模块职责与
-依赖方向详见 [`../vxapo-docs/driver`](../vxapo-docs/driver)。
+实时路径只依赖 `pipeline/`；`install/` 与 `sys/` 仅在初始化与安装阶段进入。模块树、
+依赖规则与三条数据流（安装 / 配置加载 / 实时处理）见
+[`../vxapo-docs/driver/zh/架构与模块规范.md`](../vxapo-docs/driver/zh/架构与模块规范.md)。
 
 ## 4 · 实时安全契约（`src/pipeline/realtime/`）
 
@@ -242,94 +219,71 @@ VxAPO Driver registers and is loaded as a standard APO (Audio Processing Object)
 Configuration is a read-only input: the only write paths are the CLI (elevated) and the App;
 the DLL never modifies files.
 
-Reading order: engineering value → positioning → architecture → real-time contracts →
-configuration → effects and support surface → performance → getting started →
-cross-component contracts → testing and troubleshooting → references.
+Reading order: implementation notes → differences from Equalizer APO → architecture →
+real-time contracts → configuration → effects and support surface → performance →
+getting started → cross-component contracts → testing and troubleshooting → references.
 
-## 1 · Engineering value
+## 1 · Implementation notes
 
-Core claim: **driver-level real-time processing in the Windows audio chain can be
-implemented entirely in Rust while respecting the existing COM/APO contracts rather than
-bypassing them.** Each statement below is verifiable:
+The project answers one question: **can driver-level real-time audio processing be written
+entirely in Rust while respecting the existing COM/APO contracts instead of bypassing
+them.** This section lists the practices and where each can be checked:
 
-| Aspect | Conclusion | Evidence |
+| Practice | What it means | Where to check |
 |---|---|---|
-| System integration | Registered as a standard APO and loaded by the engine in aggregated mode (`pUnkOuter` non-null) | Registry entry `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}`; implements `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`; exports `DllGetClassObject` / `DllRegisterServer`; self-manages instance and lock counts for `DllCanUnloadNow` |
-| End-to-end viability | Full install → verify → uninstall cycle on real hardware, symmetric in both directions | `install --verify` performs: stop/start audio service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` round trip. On the headphones (Octave) endpoint, slots `41C34613…` / `B4A97313…` → `NoValue` → restored and `childApoKeyExists` flips both ways; the device config ends **byte-identical** to its starting state |
-| API layer | Typed windows-rs bindings instead of hand-written COM plumbing | APO interfaces come from windows-rs 0.62 `Win32::Media::Audio::Apo` (including `*_Impl` traits); `ClassFactory` uses `#[implement]` to generate vtables and reference counting |
-| `unsafe` governance | Concentrated at the FFI boundary, documented per site | 392 occurrences across 27 files: `aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27 …, with 126 SAFETY notes |
-| Real-time constraints | Expressed as compile-time constraints, not runtime conventions | `unsafe trait RtSafe` / `RtCopy` encode "no allocation, no locking, no I/O, no panics" as type constraints; `RealtimeContext` is a zero-sized compile-time witness; `panic = "abort"`; zero-allocation processing chain |
-| Sustainability | Reproducible baseline | 491 tests across 57 source files; `cargo build` and `cargo build --tests` both report zero warnings; hot reload is idempotent via `spec()` fingerprints |
+| Implements the standard APO contracts and is loaded by the engine | Implements `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`, works in aggregated mode (`pUnkOuter` non-null); exports `DllGetClassObject` / `DllRegisterServer` and tracks instance/lock counts for `DllCanUnloadNow` | `object/apo/`, `object/apo/dll_exports.rs`; registry entry `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
+| Install/uninstall as transactions with a post-install self-check | `install --verify`: stop/start audio service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe`; after uninstall the slots and `childApoKeyExists` are restored and the device config is byte-identical to its starting state | `install/selector/operation.rs`; CLI `vxapo-cli install --verify` |
+| Typed windows-rs bindings instead of hand-written COM plumbing | APO interfaces from windows-rs 0.62 `Win32::Media::Audio::Apo` (incl. `*_Impl` traits); `ClassFactory` uses `#[implement]` for vtables and reference counting | `object/apo/factory.rs` |
+| `unsafe` confined to the FFI boundary, documented per site | 392 occurrences / 27 files (`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27 …) with 126 SAFETY notes; the only hand-written vtable offsets are in the COM aggregate shell (the engine requires fixed multi-interface offsets there), with the layout rationale documented on site | `src/` (search `unsafe`), `object/apo/aggregate.rs` |
+| Real-time constraints encoded in the type system | `unsafe trait RtSafe` / `RtCopy` require no allocation, no locking, no I/O and no panics; `RealtimeContext` is a zero-sized compile-time witness; release builds use `panic = "abort"`; zero-allocation chain | `pipeline/realtime/` |
+| Tests and warning-free builds as the regression baseline | 491 tests / 57 source files; `cargo build` and `cargo build --tests` report zero warnings | `cargo test`, `cargo build --tests` |
 
-**Scope note**: the only hand-written vtable offsets are in the COM aggregate shell
-(`object/apo/aggregate.rs`) — the Windows engine requires fixed multi-interface offsets
-there; every such site documents its SAFETY and layout rationale. All other COM work uses
-windows-rs declarative interfaces.
+## 2 · Differences from Equalizer APO
 
-## 2 · Positioning: trade-offs versus Equalizer APO
+Both projects address system-wide, per-endpoint, script-driven audio processing, along
+different routes and with different trade-offs. Only the **differences** are listed; the
+EAPO column cites the recorded source (including EAPO source file names and line numbers):
 
-Both projects address the same problem — system-wide, per-endpoint, scriptable audio
-processing — with different engineering trade-offs. Only the differences are listed:
+| Aspect | Equalizer APO | VxAPO | Relation and source |
+|---|---|---|---|
+| Config carrier | `config.txt` line-command syntax (`GraphicEQ:` etc.) | One TOML per endpoint since v9.11; the old command set was removed entirely, with `vxapo-cli config convert` for one-time migration | **Removed**: `配置与DSP设计.md:162`, `config 模块规范.md:33` |
+| Syntax errors | Lines without a colon are **silently skipped** (`FilterEngine.cpp` 329-330: `pos = line.find(':')`, nothing parsed and no error when `pos == -1`) | Missing or extra colons raise `SyntaxError`, fail the whole file and produce no spec | **Intentional difference** (stricter: mistakes are always reported): `config 模块规范.md:206` |
+| Install mode detection | `load()` 396-413 (C41-C44) auto-detects LfxGfx / SfxMfx / SfxEfx | Ported as `slots::detect_install_mode`, with the decision changed to "paired VxAPO CLSIDs" (EDIFIER evidence: arbitrary GUIDs in slots misdetect as SfxMfx) | **Aligned + corrected**: `install 模块规范.md:266`, `changelog.md:868` |
+| Child APO registry | `APP_REGPATH = HKLM\SOFTWARE\EqualizerAPO` (`RegistryHelper.h` 33), `childApoPath` (`DeviceAPOInfo.cpp` 43), value names `PreMixChild` / `PostMixChild` (`DeviceAPOInfo.cpp` 558-563) | Same mechanism but with an **isolated path**: `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}`; reading or writing EAPO's path is prohibited (it would corrupt EAPO's install record) | **Mechanism aligned, paths isolated**: `install 模块规范.md:167`, `changelog.md:942` |
+| Slot value types | `REG_SZ` GUID strings observed from third parties | Accepts both (`REG_SZ` and 16-byte LE `REG_BINARY`) and normalises the all-zero GUID to "no APO" | **Compatible, extended**: `install 模块规范.md:242` |
+| Config hot reload | `notificationThread`: `FindNextChangeNotification` + `WaitFor` with a 10 ms window to merge the editor's "temp file + rename" | `config/watcher.rs` mirrors it: event-driven (not polling), 10 ms dedup, idempotent skip via the `spec()` fingerprint | **Aligned**: `config 模块规范.md:490`, `config 模块规范.md:535` |
+| Post-install self-check | `CoCreateInstance` validation | Same mechanism, extended into a loop: stop/start service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` | **Aligned, extended**: `配置与DSP设计.md:167` |
+| Service control and pipe ACL | `ServiceHelper` stop/start sequence; pipe DACL grants `Everyone` | Same sequence and DACL | **Aligned**: `changelog.md:143`, `changelog.md:199` |
+| Convolution and latency | GraphicEQ: logarithmic frequency interpolation, minimum-phase FIR, 1024-point direct convolution; `libHybridConv` for partitioned convolution; `GetLatency` returns 0 with no child | Same approach: IIR (RBJ) below 200 Hz, minimum-phase FIR at/above 200 Hz, partitioned FFT above 2048 taps; latency reporting in §9 | **Same approach, different implementation**: `changelog.md:791`, `changelog.md:793`, `changelog.md:511` |
+| Device state | `DEVICE_STATE_DISABLED` / `DEVICE_STATE_NOTPRESENT` | `is_disabled()` / `is_unplugged()` with the same checks | **Borrowed**: `install 模块规范.md:347` |
+| License | GPL-2.0 (© Jonas Thedering) | GPL-3.0-or-later, independent implementation, no EAPO code | `vxapo-docs/README.md:27` |
 
-| Aspect | Equalizer APO | VxAPO |
-|---|---|---|
-| Config carrier | Text config (`config.txt` syntax) | One TOML per endpoint: `C:\ProgramData\VxAPO\{GUID}\config.toml` |
-| Applying config | Effective after reload/restart | Event-driven hot reload (`FindFirstChangeNotificationW`, 10 ms dedup) with dual-chain transition to suppress clicks |
-| UI | Standalone GUI editor | Tauri 2 + React 19 desktop app (parameter / semantic views) plus CLI |
-| Device model | APO installed per endpoint, config organised per device file | Same, plus detection / migration / cleanup of stale GUIDs (device instance ID as stable identity) |
-| PEQ strategy | Multi-band EQ (incl. GraphicEQ) | Hybrid PEQ: IIR (RBJ) below 200 Hz, linear-phase FIR at/above 200 Hz (1024–8192 taps, partitioned FFT above 2048), ≤ 31 bands |
-| Effects | Text directives driven by config syntax | 7 built-in effects with range / step / default contracts (see §6) |
-| License | GPL-2.0 | GPL-3.0-or-later, independent implementation (no EAPO code) |
-
-The difference follows from the configuration model: EAPO expresses the signal chain as text
-directives, while VxAPO uses structured contracts (the driver publishes the parameter table,
-the CLI relays it, the App generates its UI) to keep all three components consistent (§9).
+The EAPO-side facts are recorded in `vxapo-docs/driver/zh/配置与DSP设计.md` §5
+("EqualizerAPO 行为参考") and under `模块引用规范/` (the `Equalizer 行为文档` document itself
+was removed with v9.11; the entries survive in the locations cited above). Four comparable
+mechanisms remain: child APO creation and delegation, install mode detection, slot backup and
+restore, and post-install self-check.
 
 ## 3 · Architecture
 
-Chain and data flow:
-
-```text
-┌───────────────────────────┐
-│ vxapo-app                 │  UI: React 19 + Tauri 2
-└─────────────┬─────────────┘
-              │  config.toml (hot-reloaded)
-              ▼
-┌───────────────────────────┐
-│ vxapo-cli                 │  enumeration · install/uninstall · snapshot · verify
-└─────────────┬─────────────┘
-              │  HKLM slots · CLSID binding · child-APO records
-              ▼
-┌───────────────────────────┐
-│ audiodg.exe               │  audio engine (real-time thread)
-└───────────────────────────┘
-              ^ loads vxapo_driver.dll: standard APO, per-frame processing
+```mermaid
+flowchart TB
+  app["vxapo-app<br/>React 19 + Tauri 2"] -->|"config.toml (hot-reloaded)"| cli["vxapo-cli<br/>enumeration · install/uninstall · snapshot · verify"]
+  cli -->|"HKLM slots · CLSID binding · child-APO records"| eng["audiodg.exe<br/>audio engine (real-time thread)"]
+  eng -->|"loads"| dll["vxapo_driver.dll<br/>standard APO, per-frame processing"]
 ```
 
 Inside the driver, code is split by real-time eligibility:
 
-```text
-Real-time path (per frame; no allocation, locking, I/O or panics)
-┌──────────────────────────────────────────────────────────────┐
-│ pipeline/realtime/  RtSafe / RtCopy contracts, witness       │
-│ pipeline/dsp/       effect chain (7 effects, section 6)      │
-└──────────────────────────────────────────────────────────────┘
-
-Control path (initialization, hot reload, diagnostics; allocation allowed)
-┌──────────────────────────────────────────────────────────────┐
-│ object/apo/         APO object, aggregate shell, child APO,  │
-│                     negotiation, hot reload, RT dump         │
-│ config/             chain model, validation, watcher         │
-│ install/            enumeration, slots, transaction, stale   │
-│ sys/                COM, registry, audio-format constants    │
-│ telemetry/          logging, panic records                   │
-│ utils/              ring buffer, alignment, GUID, errors     │
-└──────────────────────────────────────────────────────────────┘
-```
+| Path | Entered | Modules |
+|---|---|---|
+| Real-time | every frame (`APOProcess`) | `pipeline/realtime/` (`RtSafe` / `RtCopy` contracts, compile-time witness, lock-free ring buffer), `pipeline/dsp/` (effect chain; the 7 effects are listed in §6) |
+| Control | initialization, hot reload, diagnostics | `object/apo/` (APO object, aggregate shell, child APO, negotiation, hot reload, RT dump), `config/` (TOML → chain model, validation, directory watcher), `install/` (enumeration, slots, install transaction, stale migration), `sys/` (COM, registry, audio-format constants), `telemetry/` (logging, panic records), `utils/` (ring buffer, alignment, GUID, error types) |
 
 The real-time path depends only on `pipeline/`; `install/` and `sys/` are entered during
-initialization and installation only. Module responsibilities and dependency direction:
-[`../vxapo-docs/driver`](../vxapo-docs/driver).
+initialization and installation only. Module tree, dependency rules and the three data flows
+(install / config load / real-time processing) are in
+[`../vxapo-docs/driver/zh/架构与模块规范.md`](../vxapo-docs/driver/zh/架构与模块规范.md).
 
 ## 4 · Real-time contracts (`src/pipeline/realtime/`)
 
