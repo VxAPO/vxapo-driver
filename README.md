@@ -2,7 +2,7 @@
 
 <!-- 徽章区（待补）：CI 状态 · 许可证 · 最近发布 -->
 
-[中文](#vxapo-driver) · [English](#vxapo-driver-english) · [项目总览](../vxapo-docs/overview/zh/项目概览.md)
+[中文](#vxapo-driver) · [English](#vxapo-driver-english)
 
 VxAPO Driver 在 Windows 音频引擎（`audiodg`）内做逐端点的实时音频处理。它以标准 APO
 （Audio Processing Object）形式注册，引擎随后加载它。它按端点读取
@@ -207,7 +207,7 @@ APO 槽位的安装模型、以配置文件驱动 DSP 的思路、31 段 Graphic
 
 <!-- Badges (TODO): CI status · license · latest release -->
 
-[中文](#vxapo-driver) · [English](#vxapo-driver-english) · [Project overview](../vxapo-docs/overview/en/Project%20Overview.md)
+[中文](#vxapo-driver) · [English](#vxapo-driver-english)
 
 Per-endpoint real-time audio processing inside the Windows audio engine (`audiodg`).
 VxAPO Driver registers and is loaded as a standard APO (Audio Processing Object), reads
