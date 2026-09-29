@@ -52,7 +52,7 @@ q = 0.9
 
 [[effects]]
 type = "wide"
-intensity = 0.5
+air = 0.5
 "#;
     let model = convert(toml).unwrap();
     assert_eq!(model.effects.len(), 3);
@@ -313,7 +313,7 @@ fn missing_required_key_rejected() {
 #[test]
 fn duplicate_channel_rejected() {
     let err = convert(
-        "[[effects]]\ntype = \"wide\"\nchannels = [\"FL\", \"fl\"]\nintensity = 0.5\n",
+        "[[effects]]\ntype = \"wide\"\nchannels = [\"FL\", \"fl\"]\nair = 0.5\n",
     )
     .unwrap_err();
     assert!(err.to_string().contains("duplicate channel"));

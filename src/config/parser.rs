@@ -268,7 +268,7 @@ gain_db = -3.0
 
 [[effects]]
 type = "wide"
-intensity = 0.5
+air = 0.5
 "#;
         let parser = ConfigParser::new();
         let (filters, specs) = parser
@@ -358,7 +358,7 @@ intensity = 0.5
 
     #[test]
     fn disabled_file_is_passthrough_chain() {
-        let toml = "version = 1\nenabled = false\n[[effects]]\ntype = \"wide\"\nintensity = 0.5\n";
+        let toml = "version = 1\nenabled = false\n[[effects]]\ntype = \"wide\"\nair = 0.5\n";
         let parser = ConfigParser::new();
         let (filters, specs) = parser
             .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
@@ -369,7 +369,7 @@ intensity = 0.5
 
     #[test]
     fn unknown_channel_rejected() {
-        let toml = "[[effects]]\ntype = \"wide\"\nchannels = [\"XX\"]\nintensity = 0.5\n";
+        let toml = "[[effects]]\ntype = \"wide\"\nchannels = [\"XX\"]\nair = 0.5\n";
         let parser = ConfigParser::new();
         let err = parser
             .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
@@ -379,7 +379,7 @@ intensity = 0.5
 
     #[test]
     fn channel_scoped_effect_built() {
-        let toml = "[[effects]]\ntype = \"wide\"\nchannels = [\"L\"]\nintensity = 0.5\n";
+        let toml = "[[effects]]\ntype = \"wide\"\nchannels = [\"L\"]\nair = 0.5\n";
         let parser = ConfigParser::new();
         let (filters, _) = parser
             .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
@@ -398,13 +398,13 @@ intensity = 0.5
 
     #[test]
     fn disabled_effect_is_passthrough_in_chain() {
-        let toml = "[[effects]]\ntype = \"wide\"\nenabled = false\nintensity = 0.5\n";
+        let toml = "[[effects]]\ntype = \"wide\"\nenabled = false\nair = 0.5\n";
         let parser = ConfigParser::new();
         let (mut filters, specs) = parser
             .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
             .unwrap();
         assert_eq!(filters.len(), 1);
-        // 旧 intensity 键回退映射为 air（驱动只消费 gain/air/air_side/mix/xover）。
+        // 空气吸收参数：air（驱动消费 gain/air/air_side/mix/crossover_hz；旧键已移除）。
         assert_eq!(
             specs[0],
             "wide:false|gain=0.000000;air=0.500000;air_side=0.000000;mix=0.600000;xover=200.0"

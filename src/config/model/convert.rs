@@ -129,15 +129,7 @@ impl FileEffect {
                 "noise_gate_db",
                 "peak_limit_db",
             ][..],
-            EffectType::Wide => &[
-                "intensity",
-                "depth",
-                "crossover_hz",
-                "air",
-                "air_side",
-                "mix",
-                "gain",
-            ][..],
+            EffectType::Wide => &["crossover_hz", "air", "air_side", "mix", "gain"][..],
             EffectType::Loudness => &["phon", "reference_phon"][..],
         };
         for field in self.set_fields() {
@@ -408,30 +400,15 @@ impl FileEffect {
 
     fn into_wide(&self, file: &str, idx: usize) -> Result<WideParams, ConfigError> {
         let d = WideParams::default();
-        // 旧 `depth` 键（本会话早期版本）：映射到空气吸收。
-        let depth_fallback = |what: &str| -> Result<f32, ConfigError> {
-            match self.depth {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, what),
-                None => Ok(0.0),
-            }
-        };
         Ok(WideParams {
             gain: match self.gain {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "gain")?,
                 None => d.gain,
             },
-            // 空气吸收：优先显式 air；旧配置的 depth / intensity 依次回退映射。
+            // 空气吸收：只认显式 air（旧 depth / intensity 回退已删除）。
             air: match self.air {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air")?,
-                None => {
-                    if self.depth.is_some() {
-                        depth_fallback("depth")?
-                    } else if let Some(intensity) = self.intensity {
-                        finite_range(intensity, 0.0, 1.0, file, idx, "intensity")?
-                    } else {
-                        d.air
-                    }
-                }
+                None => d.air,
             },
             air_side: match self.air_side {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air_side")?,
