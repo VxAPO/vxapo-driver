@@ -127,8 +127,8 @@ impl EffectConfig {
                 p.threshold_db, p.ratio, p.knee_db, p.attack_ms, p.release_ms, p.makeup_gain_db, p.wet, p.dry
             )),
             EffectParams::Wide(p) => s.push_str(&format!(
-                "gain={:.6};air={:.6};air_side={:.6};mix={:.6};xover={:.1}",
-                p.gain, p.air, p.air_side, p.mix, p.crossover_hz
+                "gain={:.6};air={:.6};side_itd={:.6};xover={:.1}",
+                p.gain, p.air, p.side_itd, p.crossover_hz
             )),
             EffectParams::Loudness(p) => s.push_str(&format!(
                 "phon={:.6};ref={:.6}",

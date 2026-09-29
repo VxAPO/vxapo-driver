@@ -31,10 +31,9 @@ pub struct WideParams {
     pub gain: f32,
     /// 空气吸收（0..1，中声道按物理曲线渐进吸收高频，把中置人声推远）。
     pub air: f32,
-    /// 侧通道空气吸收（0..1，作用于高频补偿后的侧输出，默认 0 = 关闭）。
-    pub air_side: f32,
-    /// 干湿混合（0..1，默认 0.6）：处理增量最终渗入量。
-    pub mix: f32,
+    /// 侧向时间差（Side ITD，0..1，默认 0.6）：侧通道 1.5kHz 以上时间差
+    /// 去相关的干湿比——0 = 完全不动相位，1 = 全额 +5/+7 采样时间差。
+    pub side_itd: f32,
     /// M/S 分频点（Hz，100..1000，默认 200；以下低频保持原样）。
     pub crossover_hz: f32,
     /// 低频降低最大深度（dB，默认 6.0；0 = 关闭）。低架拐点 = `crossover_hz`，
@@ -48,8 +47,7 @@ impl Default for WideParams {
             gain: 0.0,
             // 与原 Wide32.c Quick preset 的默认距离对齐。
             air: 0.354331,
-            air_side: 0.0,
-            mix: 0.6,
+            side_itd: 0.6,
             crossover_hz: 200.0,
             low_shelf_depth_db: LOW_SHELF_DEPTH_DB,
         }
@@ -467,11 +465,9 @@ pub struct WideFilter {
     low_shelf_coeffs: BiquadCoeffs,
     low_shelf_l: BiquadState,
     low_shelf_r: BiquadState,
-    mix: f32,
+    /// 侧向时间差（0..1）：侧高频 ITD 去相关的干湿比。
+    side_itd: f32,
     air: AirAbsorption,
-    /// 侧通道空气吸收（L/R 各一实例；先高频补偿后吸收）。
-    side_air_l: AirAbsorption,
-    side_air_r: AirAbsorption,
     hpf_l: FirstOrderHpf,
     hpf_r: FirstOrderHpf,
     itd_l: ItdDelay,
@@ -502,10 +498,8 @@ impl WideFilter {
             low_shelf_coeffs: BiquadCoeffs::BYPASS,
             low_shelf_l: BiquadState::new(),
             low_shelf_r: BiquadState::new(),
-            mix: 0.6,
+            side_itd: 0.6,
             air: AirAbsorption::new(0.0, 48000),
-            side_air_l: AirAbsorption::new(0.0, 48000),
-            side_air_r: AirAbsorption::new(0.0, 48000),
             hpf_l: FirstOrderHpf::new(200.0, 48000),
             hpf_r: FirstOrderHpf::new(200.0, 48000),
             itd_l: ItdDelay::new(ITD_DELAY_L),
@@ -532,7 +526,7 @@ impl Filter for WideFilter {
         }
         let stereo = self.channel_indices.len() >= 2;
         let p0 = self.params;
-        self.active = stereo && (p0.air > 0.0 || p0.air_side > 0.0 || p0.gain > 0.0);
+        self.active = stereo && (p0.air > 0.0 || p0.side_itd > 0.0 || p0.gain > 0.0);
         if !self.active {
             return None;
         }
@@ -540,8 +534,6 @@ impl Filter for WideFilter {
         let p = self.params;
         let gain = p.gain.clamp(0.0, 1.0);
         let air = p.air.clamp(0.0, 1.0);
-        let air_side = p.air_side.clamp(0.0, 1.0);
-        let mix = p.mix.clamp(0.0, 1.0);
         let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let sr = sample_rate.max(1) as f32;
         // 低频降低：低架 Q 固定 0.707、拐点 = 分频点，深度按 Gain 线性加深。
@@ -560,11 +552,10 @@ impl Filter for WideFilter {
         };
         self.low_shelf_l.clear();
         self.low_shelf_r.clear();
-        self.mix = mix;
-        // 空气吸收深度由 air（mid）/ air_side（侧）参数控制（物理距离曲线）。
+        // 侧向时间差：侧高频去相关的干湿比（0 = 不动相位，1 = 全额时间差）。
+        self.side_itd = p.side_itd.clamp(0.0, 1.0);
+        // 中置空气吸收深度（物理距离曲线）。
         self.air = AirAbsorption::new(air, sample_rate);
-        self.side_air_l = AirAbsorption::new(air_side, sample_rate);
-        self.side_air_r = AirAbsorption::new(air_side, sample_rate);
         // 增量安全锁：一阶高通（截止 = 分频点）+ ITD 去相关延迟线。
         self.hpf_l = FirstOrderHpf::new(xover, sample_rate);
         self.hpf_r = FirstOrderHpf::new(xover, sample_rate);
@@ -602,7 +593,7 @@ impl Filter for WideFilter {
         }
         let frame_count = frame_count.min(samples[l].len()).min(samples[r].len());
 
-        let mix = self.mix;
+        let alpha = self.side_itd;
 
         for f in 0..frame_count {
             let xl = samples[l][f];
@@ -637,16 +628,17 @@ impl Filter for WideFilter {
                 1.0
             };
             // 侧通道按频率分流（线性相位 FIR，1.5kHz）：
-            // 侧通道去相关：**1.5kHz 以上**过 ITD 延迟线（左 +5 / 右 +7 采样），
-            // 1.5kHz 以下直通保实体感（用线性相位 FIR 分离，相位干净）。
+            // 侧通道去相关：**1.5kHz 以上**做侧向时间差（左 +5 / 右 +7 采样），
+            // 1.5kHz 以下直通保实体感（线性相位 FIR 分离，相位干净）。
+            // 干湿比 α = side_itd：α=0 完全不动相位，α=1 全额时间差。
             // 侧通道不提升、不衰减，低频部分也不被单独动。
             let _ = gr;
             let (side_mid, side_top) = self.side_fir.split_channel(0, side_h);
-            let side_top_l = self.itd_l.process(side_top);
-            let side_top_r = self.itd_r.process(side_top);
-            // 侧空气吸收（与 mid 同曲线）。
-            let out_side_l = self.side_air_l.next(side_mid + side_top_l);
-            let out_side_r = self.side_air_r.next(side_mid + side_top_r);
+            let side_top_dry = side_top * (1.0 - alpha);
+            let side_top_l = side_top_dry + self.itd_l.process(side_top) * alpha;
+            let side_top_r = side_top_dry + self.itd_r.process(side_top) * alpha;
+            let out_side_l = side_mid + side_top_l;
+            let out_side_r = side_mid + side_top_r;
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
             let out_mid_h = self.air.next(mid_h);
 
@@ -654,8 +646,8 @@ impl Filter for WideFilter {
             // 侧高频不提升、低频又让出余量，链路本身不推电平。
             let delta_l = out_mid_h + out_side_l - hl;
             let delta_r = out_mid_h - out_side_r - hr;
-            let delta_limited_l = self.hpf_l.process(delta_l) * mix;
-            let delta_limited_r = self.hpf_r.process(delta_r) * mix;
+            let delta_limited_l = self.hpf_l.process(delta_l);
+            let delta_limited_r = self.hpf_r.process(delta_r);
             // 干声叠加：原始高频与限幅增量同步延迟 1 样本，
             // 保持同一时间基准（避免高频相位错位）。
             let dl_prev = self.dl_prev_l;
@@ -689,8 +681,6 @@ impl Filter for WideFilter {
     fn reset(&mut self) {
         self.fir.reset();
         self.air.clear();
-        self.side_air_l.clear();
-        self.side_air_r.clear();
         self.hpf_l.clear();
         self.hpf_r.clear();
         self.itd_l.clear();

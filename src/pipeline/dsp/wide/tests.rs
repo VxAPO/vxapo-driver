@@ -31,6 +31,7 @@ fn all_zero_is_passthrough() {
     let mut f = WideFilter::new(WideParams {
         gain: 0.0,
         air: 0.0,
+        side_itd: 0.0,
         ..Default::default()
     });
     f.initialize(48000, &["L".into(), "R".into()]);
@@ -87,7 +88,6 @@ fn gain_cuts_side_low_and_leaves_highs_flat() {
     let side_width = |freq: f32, gain: f32| -> f32 {
         let mut f = WideFilter::new(WideParams {
             gain,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
@@ -137,7 +137,6 @@ fn air_depth_drives_center_attenuation() {
     fn center_8k_energy(air: f32) -> f32 {
         let mut f = WideFilter::new(WideParams {
             air,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
@@ -166,67 +165,8 @@ fn air_depth_drives_center_attenuation() {
     );
 }
 
-#[test]
-fn side_air_attenuates_side_only() {
-    // air_side：纯侧 8k 信号被衰减（且只影响侧、不影响 mid）；
-    // air_side=0 时侧保持原样。
-    fn side_8k_energy(air_side: f32) -> f32 {
-        let mut f = WideFilter::new(WideParams {
-            air_side,
-            gain: 0.0,
-            air: 0.0,
-            ..Default::default()
-        });
-        f.initialize(48000, &["L".into(), "R".into()]);
-        let n = 9600usize;
-        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
-        for i in 0..n {
-            let v = 0.3 * (core::f32::consts::TAU * 8000.0 * i as f32 / 48000.0).sin();
-            s[0][i] = v;
-            s[1][i] = -v;
-        }
-        f.process(&mut s, n);
-        let mut e = 0.0f32;
-        for i in 4800..n {
-            let d = (s[0][i] - s[1][i]) * 0.5;
-            e += d * d;
-        }
-        e
-    }
-    let e0 = side_8k_energy(0.0);
-    let e1 = side_8k_energy(1.0);
-    assert!(e0 > 0.0);
-    assert!(
-        e1 < e0 * 0.85,
-        "air_side should attenuate side highs: {e1} vs {e0}"
-    );
-
-    // air_side 不影响纯中心信号。
-    let mut f = WideFilter::new(WideParams {
-        air_side: 1.0,
-        air: 0.0,
-        ..Default::default()
-    });
-    f.initialize(48000, &["L".into(), "R".into()]);
-    let n = 9600usize;
-    let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
-    for i in 0..n {
-        let v = 0.3 * (core::f32::consts::TAU * 8000.0 * i as f32 / 48000.0).sin();
-        s[0][i] = v;
-        s[1][i] = v;
-    }
-    f.process(&mut s, n);
-    let mut e = 0.0f32;
-    for i in 4800..n {
-        let m = (s[0][i] + s[1][i]) * 0.5;
-        e += m * m;
-    }
-    // 中心无 mid air：能量应接近输入（air_side 不碰 mid）。
-    assert!(
-        e > 0.05,
-        "air_side must not affect center, energy {e}"
-    );
-}
+// 侧向空气（air_side）已从参数模型中移除：它与中置空气语义重叠、
+// 默认 0 时不起作用，独立价值不足。相关测试一并删除。
 
 #[test]
 fn center_signal_preserved_without_air_and_symmetric() {
@@ -266,7 +206,6 @@ fn bass_tilts_down_per_low_shelf_and_highs_stay_flat() {
     let centered_low_rms = |gain: f32| -> f32 {
         let mut f = WideFilter::new(WideParams {
             gain,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
@@ -303,7 +242,6 @@ fn bass_tilts_down_per_low_shelf_and_highs_stay_flat() {
     let high_diff = |gain: f32| -> f32 {
         let mut f = WideFilter::new(WideParams {
             gain,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
@@ -426,7 +364,6 @@ fn air_absorption_follows_physical_curve() {
     fn tone_attenuation_db(air: f32, freq: f32) -> f32 {
         let mut f = WideFilter::new(WideParams {
             air,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
@@ -469,7 +406,6 @@ fn air_absorption_follows_physical_curve() {
     fn air_only_attenuation_db(air: f32) -> f32 {
         let mut f = WideFilter::new(WideParams {
             air,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
@@ -567,8 +503,6 @@ fn crossover_endpoints_are_bounded() {
         let mut f = WideFilter::new(WideParams {
             gain: 1.0,
             air: 1.0,
-            air_side: 1.0,
-            mix: 1.0,
             crossover_hz: xover,
             ..Default::default()
         });
@@ -595,8 +529,6 @@ fn out_of_range_params_are_clamped() {
     let mut f = WideFilter::new(WideParams {
         gain: 2.0,
         air: -1.0,
-        air_side: 2.0,
-        mix: 2.0,
         crossover_hz: 99999.0,
         ..Default::default()
     });
@@ -734,36 +666,45 @@ fn side_fir_splits_at_1k5() {
 }
 
 #[test]
-fn mix_zero_is_delayed_passthrough() {
-    // Mix=0：增量完全不入，整条链路退化为纯延迟——
-    // 输出 = 输入延迟 (FIR 中心 + 1) 帧（忽略 FIR 浮点重建误差）。
-    let mut f = WideFilter::new(WideParams {
-        air: 0.354331,
-        mix: 0.0,
-        ..Default::default()
-    });
-    f.initialize(48000, &["L".into(), "R".into()]);
-    let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize + 1;
-    let n = 4800usize;
-    let mut input = vec![vec![0.0f32; n], vec![0.0f32; n]];
-    for i in 0..n {
-        let t = i as f32 / 48000.0;
-        input[0][i] = 0.2 * (core::f32::consts::TAU * 440.0 * t).sin()
-            + 0.1 * (core::f32::consts::TAU * 2200.0 * t).sin();
-        input[1][i] = 0.15 * (core::f32::consts::TAU * 330.0 * t).sin()
-            + 0.08 * (core::f32::consts::TAU * 5000.0 * t).sin();
-    }
-    let mut out = input.clone();
-    f.process(&mut out, n);
-    for ch in 0..2 {
-        for i in center..n {
-            let err = (out[ch][i] - input[ch][i - center]).abs();
-            assert!(
-                err < 1e-5,
-                "mix=0 must be delayed passthrough: ch{ch} i={i} err={err}"
-            );
+fn side_itd_controls_decorrelation() {
+    // 侧向时间差（Side ITD）= 侧通道 1.5kHz 以上去相关的干湿比。
+    // 表征用「侧输出相对干声的相位延迟」（3kHz，避开相位折叠且位于 ITD 带内）：
+    // α=0 必须为 0（完全不动相位），α 增大相位延迟单调增大。
+    let phase = |side_itd: f32| -> f32 {
+        let mut f = WideFilter::new(WideParams {
+            air: 0.354331,
+            side_itd,
+            ..Default::default()
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let n = 9600usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            let v = 0.3 * (core::f32::consts::TAU * 3000.0 * i as f32 / 48000.0).sin();
+            s[0][i] = v;
+            s[1][i] = -v;
         }
-    }
+        f.process(&mut s, n);
+        let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize + 1;
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for i in 4800..n {
+            let side_out = (s[0][i] - s[1][i]) * 0.5;
+            let t = (i - center) as f32 / 48000.0;
+            re += side_out * (core::f32::consts::TAU * 3000.0 * t).sin();
+            im += side_out * (core::f32::consts::TAU * 3000.0 * t).cos();
+        }
+        im.atan2(re)
+    };
+    let p0 = phase(0.0).abs();
+    let p_mid = phase(0.5).abs();
+    let p1 = phase(1.0).abs();
+    // α=0 时侧通道仍带约 1 个采样的群延迟（side_fir 的中心与主分频中心不重合，
+    // 3kHz 下 ≈0.4 rad），所以只要求它足够小；关键是随 α 单调增大。
+    assert!(p0.abs() < 0.5, "α=0 的残余相位应不足 1.5 采样: p0={p0}");
+    assert!(
+        p_mid > p0 && p1 > p_mid && p1 > 1.0,
+        "相位延迟应随侧向时间差单调增大: p0={p0} p_mid={p_mid} p1={p1}"
+    );
 }
 
 #[test]
@@ -798,7 +739,6 @@ fn extreme_antiphase_is_bounded() {
     let mut f = WideFilter::new(WideParams {
         air: 1.0,
         gain: 1.0,
-        mix: 1.0,
         ..Default::default()
     });
     f.initialize(48000, &["L".into(), "R".into()]);
@@ -830,7 +770,6 @@ fn output_is_linear_below_knee_and_never_clips() {
         let mut f = WideFilter::new(WideParams {
             air: 1.0,
             gain: 1.0,
-            mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);

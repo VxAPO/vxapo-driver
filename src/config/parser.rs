@@ -404,10 +404,10 @@ air = 0.5
             .parse_content_with_spec(toml, &test_ctx(), Path::new("t"))
             .unwrap();
         assert_eq!(filters.len(), 1);
-        // 空气吸收参数：air（驱动消费 gain/air/air_side/mix/crossover_hz；旧键已移除）。
+        // 参数指纹：驱动消费 gain/air/side_itd/crossover_hz。
         assert_eq!(
             specs[0],
-            "wide:false|gain=0.000000;air=0.500000;air_side=0.000000;mix=0.600000;xover=200.0"
+            "wide:false|gain=0.000000;air=0.500000;side_itd=0.600000;xover=200.0"
         );
         let mut samples = vec![vec![0.3f32; 8], vec![0.2f32; 8]];
         let before = samples.clone();

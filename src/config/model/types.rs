@@ -58,9 +58,7 @@ pub struct FileEffect {
     #[serde(default)]
     pub air: Option<f32>,
     #[serde(default)]
-    pub air_side: Option<f32>,
-    #[serde(default)]
-    pub mix: Option<f32>,
+    pub side_itd: Option<f32>,
     #[serde(default)]
     pub gain: Option<f32>,
     #[serde(default)]

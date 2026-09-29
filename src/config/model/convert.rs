@@ -129,7 +129,7 @@ impl FileEffect {
                 "noise_gate_db",
                 "peak_limit_db",
             ][..],
-            EffectType::Wide => &["crossover_hz", "air", "air_side", "mix", "gain"][..],
+            EffectType::Wide => &["crossover_hz", "air", "side_itd", "gain"][..],
             EffectType::Loudness => &["phon", "reference_phon"][..],
         };
         for field in self.set_fields() {
@@ -188,8 +188,7 @@ impl FileEffect {
             ("intensity", self.intensity.is_some()),
             ("depth", self.depth.is_some()),
             ("air", self.air.is_some()),
-            ("air_side", self.air_side.is_some()),
-            ("mix", self.mix.is_some()),
+            ("side_itd", self.side_itd.is_some()),
             ("gain", self.gain.is_some()),
             ("phon", self.phon.is_some()),
             ("reference_phon", self.reference_phon.is_some()),
@@ -410,13 +409,10 @@ impl FileEffect {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air")?,
                 None => d.air,
             },
-            air_side: match self.air_side {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "air_side")?,
-                None => d.air_side,
-            },
-            mix: match self.mix {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "mix")?,
-                None => d.mix,
+            // 侧向时间差（干湿比 0..1）。
+            side_itd: match self.side_itd {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "side_itd")?,
+                None => d.side_itd,
             },
             crossover_hz: match self.crossover_hz {
                 Some(v) => finite_range(v, 200.0, 1000.0, file, idx, "crossover_hz")?,

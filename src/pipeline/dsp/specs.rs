@@ -93,8 +93,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
             params: vec![
                 spec("gain", 0.0, 1.0, 0.01, q(wide.gain), None),
                 spec("air", 0.0, 1.0, 0.01, q(wide.air), None),
-                spec("air_side", 0.0, 1.0, 0.01, q(wide.air_side), None),
-                spec("mix", 0.0, 1.0, 0.01, q(wide.mix), None),
+                spec("side_itd", 0.0, 1.0, 0.01, q(wide.side_itd), None),
                 spec(
                     "crossover_hz",
                     200.0,
@@ -214,7 +213,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     PHON_MIN as f64,
                     PHON_MAX as f64,
                     1.0,
-                    // 与解析层缺省一致（config/model/convert.rs 的 eference_phon.unwrap_or(80.0)）。
+                    // 与解析层缺省一致（config/model/convert.rs 的 reference_phon.unwrap_or(80.0)）。
                     80.0,
                     Some("phon"),
                 ),
@@ -269,7 +268,7 @@ mod tests {
         };
         let wide = WideParams::default();
         assert_eq!(find("wide", "air"), q(wide.air));
-        assert_eq!(find("wide", "mix"), q(wide.mix));
+        assert_eq!(find("wide", "side_itd"), q(wide.side_itd));
         let aural = AuralParams::default();
         assert_eq!(find("aural", "drive"), q(aural.drive));
         assert_eq!(find("aural", "odd"), q(aural.odd));
