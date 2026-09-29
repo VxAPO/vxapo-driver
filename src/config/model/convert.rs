@@ -445,6 +445,9 @@ impl FileEffect {
                 Some(v) => finite_range(v, 200.0, 1000.0, file, idx, "crossover_hz")?,
                 None => d.crossover_hz,
             },
+            // 可调斜率：配置文件暂不暴露，用默认值（改默认即可全局调深浅）。
+            side_low_slope: d.side_low_slope,
+            low_shelf_slope: d.low_shelf_slope,
         })
     }
 

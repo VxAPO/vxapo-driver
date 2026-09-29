@@ -552,6 +552,7 @@ fn crossover_endpoints_are_bounded() {
             air_side: 1.0,
             mix: 1.0,
             crossover_hz: xover,
+            ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
         let n = 4800usize;
@@ -579,6 +580,7 @@ fn out_of_range_params_are_clamped() {
         air_side: 2.0,
         mix: 2.0,
         crossover_hz: 99999.0,
+        ..Default::default()
     });
     f.initialize(48000, &["L".into(), "R".into()]);
     let n = 4800usize;
