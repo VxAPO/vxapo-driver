@@ -637,17 +637,14 @@ impl Filter for WideFilter {
                 1.0
             };
             // 侧通道按频率分流（线性相位 FIR，1.5kHz）：
-            // 侧通道只做「泛音区 ITD 去相关」产出宽度：1.5kHz 以上过延迟线
-            // （左 +5 / 右 +7），以下直通保实体感。**任何频段都不提升**。
-            let (side_mid, side_top) = self.side_fir.split_channel(0, side_h);
-            let side_top_l = self.itd_l.process(side_top);
-            let side_top_r = self.itd_r.process(side_top);
-            // 侧通道不再提升、也不单独衰减，动态 M/S 已无作用对象
-            // （包络状态暂留，听感确认后一并删除）。
+            // 侧通道**原样通过**：不提升、不衰减、也不做任何延时错位。
+            // （之前把 ITD 延迟加在整条侧高频上，等于把原始立体声高频推了
+            // 5/7 个采样、与中置错位 ⇒ 梳状/发虚。去相关只在「额外增强量」
+            // 上才有意义；现在没有增强量，就不该动侧通道。）
             let _ = gr;
             // 侧空气吸收（与 mid 同曲线）。
-            let out_side_l = self.side_air_l.next(side_mid + side_top_l);
-            let out_side_r = self.side_air_r.next(side_mid + side_top_r);
+            let out_side_l = self.side_air_l.next(side_h);
+            let out_side_r = self.side_air_r.next(side_h);
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
             let out_mid_h = self.air.next(mid_h);
 
@@ -663,14 +660,14 @@ impl Filter for WideFilter {
             let dr_prev = self.dl_prev_r;
             self.dl_prev_l = delta_limited_l;
             self.dl_prev_r = delta_limited_r;
-            let hf_l = p_hl + dl_prev;
-            let hf_r = p_hr + dr_prev;
-            // 低频降低：干声低通支路过低架（Q 0.707）；侧通道原样不动。
-            // 再叠输出端软膝限幅兜底。
-            let low_l = self.low_shelf_l.process_sample(&self.low_shelf_coeffs, p_ll);
-            let low_r = self.low_shelf_r.process_sample(&self.low_shelf_coeffs, p_rl);
-            samples[l][f] = output_soft_clip(low_l + hf_l);
-            samples[r][f] = output_soft_clip(low_r + hf_r);
+            // 低频降低：低架加在**重建后的干声和**（低通 + 高通）上，而不是只加
+            // 低通支路。只加低通会让线性相位分频的两路不再对称，原本相互抵消的
+            // 前后振铃会露出来（听感发虚、发毛）；加在重建和上两路同步缩放，
+            // 抵消关系保持，低频照样下降、侧通道也不被单独动。
+            let dry_l = self.low_shelf_l.process_sample(&self.low_shelf_coeffs, p_ll + p_hl);
+            let dry_r = self.low_shelf_r.process_sample(&self.low_shelf_coeffs, p_rl + p_hr);
+            samples[l][f] = output_soft_clip(dry_l + dl_prev);
+            samples[r][f] = output_soft_clip(dry_r + dr_prev);
         }
     }
 
