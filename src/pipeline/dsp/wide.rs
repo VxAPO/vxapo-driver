@@ -637,14 +637,16 @@ impl Filter for WideFilter {
                 1.0
             };
             // 侧通道按频率分流（线性相位 FIR，1.5kHz）：
-            // 侧通道**原样通过**：不提升、不衰减、也不做任何延时错位。
-            // （之前把 ITD 延迟加在整条侧高频上，等于把原始立体声高频推了
-            // 5/7 个采样、与中置错位 ⇒ 梳状/发虚。去相关只在「额外增强量」
-            // 上才有意义；现在没有增强量，就不该动侧通道。）
+            // 侧通道去相关：**1.5kHz 以上**过 ITD 延迟线（左 +5 / 右 +7 采样），
+            // 1.5kHz 以下直通保实体感（用线性相位 FIR 分离，相位干净）。
+            // 侧通道不提升、不衰减，低频部分也不被单独动。
             let _ = gr;
+            let (side_mid, side_top) = self.side_fir.split_channel(0, side_h);
+            let side_top_l = self.itd_l.process(side_top);
+            let side_top_r = self.itd_r.process(side_top);
             // 侧空气吸收（与 mid 同曲线）。
-            let out_side_l = self.side_air_l.next(side_h);
-            let out_side_r = self.side_air_r.next(side_h);
+            let out_side_l = self.side_air_l.next(side_mid + side_top_l);
+            let out_side_r = self.side_air_r.next(side_mid + side_top_r);
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
             let out_mid_h = self.air.next(mid_h);
 
