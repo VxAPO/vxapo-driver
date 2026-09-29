@@ -37,12 +37,9 @@ pub struct WideParams {
     pub mix: f32,
     /// M/S 分频点（Hz，100..1000，默认 200；以下低频保持原样）。
     pub crossover_hz: f32,
-    /// 侧低频衰减斜率（0..1，默认 1.0）：Gain=1 时侧低频压到 0。
-    /// 衰减位置 = `crossover_hz`（与主分频同步），只作用于分频点以下的侧信号。
-    pub side_low_slope: f32,
-    /// 干声低频搁架衰减斜率（0..1，默认 0.5）：Gain=1 时低频 -6dB，
-    /// 为高频让出余量（替代原 headroom 全频段压 + tanh）。
-    pub low_shelf_slope: f32,
+    /// 低频降低最大深度（dB，默认 6.0；0 = 关闭）。低架拐点 = `crossover_hz`，
+    /// Q 固定 0.707；实际深度按 Gain 线性加深。
+    pub low_shelf_depth_db: f32,
 }
 
 impl Default for WideParams {
@@ -54,8 +51,7 @@ impl Default for WideParams {
             air_side: 0.0,
             mix: 0.6,
             crossover_hz: 200.0,
-            side_low_slope: SIDE_GAIN_LOW_SLOPE,
-            low_shelf_slope: LOW_SHELF_SLOPE,
+            low_shelf_depth_db: LOW_SHELF_DEPTH_DB,
         }
     }
 }
@@ -69,12 +65,14 @@ const DIRECT_FIR_MAX_LEN: usize = 2048;
 const FIR_MIN_LEN: usize = 512;
 /// FIR 长度上限（384k 时 8192 抽头 ≈ 21.3ms，分块 FFT 承担）。
 const FIR_MAX_LEN: usize = 8192;
-/// 侧低频衰减斜率：不做高频提升，改为压侧低频（1 − SIDE_GAIN_LOW_SLOPE·Gain）。
-/// 相对高频感由「压低频」给出，不增加任何能量，因此不需要 tanh 限幅。
-const SIDE_GAIN_LOW_SLOPE: f32 = 1.0;
-/// 干声低通（低频）搁架衰减斜率（1 − LOW_SHELF_SLOPE·Gain）。
-/// 用低频让出余量替代原「headroom 全频段压 + tanh」：不压高频动态，也不削波。
-const LOW_SHELF_SLOPE: f32 = 0.5;
+/// 低频降低：RBJ 低架，**Q 固定 0.707**（不做成可调项）。
+/// 拐点 = 分频点，深度随「高频补偿」加深（补偿越高低频减越多）。
+const LOW_SHELF_Q: f32 = 0.707;
+/// 低频降低的最大深度（dB，Gain=1 时），也是参数 `low_shelf_depth_db` 的默认值。
+///
+/// 注意：0.707 低架在 200Hz 的过渡带会延伸到约 500Hz。因此它**只作用于干声
+/// 低通支路**，绝不单独衰减侧通道——单动侧低频会破坏低频立体声像。
+const LOW_SHELF_DEPTH_DB: f32 = 6.0;
 /// ITD 去相关：左侧增强延迟（采样点）。
 const ITD_DELAY_L: usize = 5;
 /// ITD 去相关：右侧增强延迟（采样点），与左路差 2 样本破坏同频相消。
@@ -465,8 +463,10 @@ pub struct WideFilter {
     params: WideParams,
     channel_indices: Vec<usize>,
     active: bool,
-    gain_side_low: f32,
-    low_shelf_gain: f32,
+    /// 低频降低低架（RBJ LowShelf，Q 固定 0.707，拐点 = 分频点）。
+    low_shelf_coeffs: BiquadCoeffs,
+    low_shelf_l: BiquadState,
+    low_shelf_r: BiquadState,
     mix: f32,
     air: AirAbsorption,
     /// 侧通道空气吸收（L/R 各一实例；先高频补偿后吸收）。
@@ -484,8 +484,6 @@ pub struct WideFilter {
     orig_hl: f32,
     orig_rl: f32,
     orig_hr: f32,
-    /// 上一帧的侧低频（分频点以下）——衰减位置与主分频点同步。
-    orig_side_lo: f32,
     /// 上一帧的限幅增量（与原始信号同步延迟 1 样本，保证同基准叠加）。
     dl_prev_l: f32,
     dl_prev_r: f32,
@@ -501,8 +499,9 @@ impl WideFilter {
             params,
             channel_indices: Vec::new(),
             active: false,
-            gain_side_low: 1.0,
-            low_shelf_gain: 1.0,
+            low_shelf_coeffs: BiquadCoeffs::BYPASS,
+            low_shelf_l: BiquadState::new(),
+            low_shelf_r: BiquadState::new(),
             mix: 0.6,
             air: AirAbsorption::new(0.0, 48000),
             side_air_l: AirAbsorption::new(0.0, 48000),
@@ -516,7 +515,6 @@ impl WideFilter {
             orig_hl: 0.0,
             orig_rl: 0.0,
             orig_hr: 0.0,
-            orig_side_lo: 0.0,
             dl_prev_l: 0.0,
             dl_prev_r: 0.0,
             side_attack_c: 0.01,
@@ -546,10 +544,22 @@ impl Filter for WideFilter {
         let mix = p.mix.clamp(0.0, 1.0);
         let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let sr = sample_rate.max(1) as f32;
-        // 侧低频衰减只随用户 Gain（高频补偿）加深，斜率可调：Gain=1 时压到 0。
-        self.gain_side_low = 1.0 - p.side_low_slope.clamp(0.0, 1.0) * gain;
-        // 干声低频搁架衰减，斜率可调：Gain=1 时按斜率让出余量。
-        self.low_shelf_gain = 1.0 - p.low_shelf_slope.clamp(0.0, 1.0) * gain;
+        // 低频降低：低架 Q 固定 0.707、拐点 = 分频点，深度按 Gain 线性加深。
+        // 只作用于干声低通支路；侧通道不动。
+        let depth_db = p.low_shelf_depth_db.max(0.0) * gain;
+        self.low_shelf_coeffs = if depth_db > 0.0 {
+            compute_coeffs(
+                BiquadType::LowShelf,
+                xover,
+                -depth_db,
+                LOW_SHELF_Q,
+                sample_rate,
+            )
+        } else {
+            BiquadCoeffs::BYPASS
+        };
+        self.low_shelf_l.clear();
+        self.low_shelf_r.clear();
         self.mix = mix;
         // 空气吸收深度由 air（mid）/ air_side（侧）参数控制（物理距离曲线）。
         self.air = AirAbsorption::new(air, sample_rate);
@@ -570,7 +580,6 @@ impl Filter for WideFilter {
         self.orig_hl = 0.0;
         self.orig_rl = 0.0;
         self.orig_hr = 0.0;
-        self.orig_side_lo = 0.0;
         self.dl_prev_l = 0.0;
         self.dl_prev_r = 0.0;
         self.side_attack_c = 1.0 - (-1.0 / (SIDE_DYN_ATTACK_SECS * sr)).exp();
@@ -593,8 +602,6 @@ impl Filter for WideFilter {
         }
         let frame_count = frame_count.min(samples[l].len()).min(samples[r].len());
 
-        let g_side_low = self.gain_side_low;
-        let low_gain = self.low_shelf_gain;
         let mix = self.mix;
 
         for f in 0..frame_count {
@@ -616,10 +623,6 @@ impl Filter for WideFilter {
 
             let mid_h = (hl + hr) * 0.5;
             let side_h = (hl - hr) * 0.5;
-            // 侧低频取**主分频**的低通支路之差：衰减位置 = 分频点，不另设固定分频。
-            let side_lo = (ll - rl) * 0.5;
-            let p_sl = self.orig_side_lo;
-            self.orig_side_lo = side_lo;
 
             // 动态 M/S：侧通道包络跟随，强侧信号自动收增益（防削波、保留动态）。
             let side_abs = side_h.abs();
@@ -639,8 +642,9 @@ impl Filter for WideFilter {
             let (side_mid, side_top) = self.side_fir.split_channel(0, side_h);
             let side_top_l = self.itd_l.process(side_top);
             let side_top_r = self.itd_r.process(side_top);
-            // 侧低频衰减量（位置 = 分频点）：Gain 越深、侧信号越强压得越多。
-            let side_low_gain = 1.0 - (1.0 - g_side_low) * gr;
+            // 侧通道不再提升、也不单独衰减，动态 M/S 已无作用对象
+            // （包络状态暂留，听感确认后一并删除）。
+            let _ = gr;
             // 侧空气吸收（与 mid 同曲线）。
             let out_side_l = self.side_air_l.next(side_mid + side_top_l);
             let out_side_r = self.side_air_r.next(side_mid + side_top_r);
@@ -661,11 +665,12 @@ impl Filter for WideFilter {
             self.dl_prev_r = delta_limited_r;
             let hf_l = p_hl + dl_prev;
             let hf_r = p_hr + dr_prev;
-            // 低频两处衰减：干声低通搁架（让出余量防削波）+ 侧低频按 Gain 加深
-            // （位置 = 分频点）；再叠输出端软膝限幅兜底。
-            let side_cut = p_sl * low_gain * (side_low_gain - 1.0);
-            samples[l][f] = output_soft_clip(p_ll * low_gain + side_cut + hf_l);
-            samples[r][f] = output_soft_clip(p_rl * low_gain - side_cut + hf_r);
+            // 低频降低：干声低通支路过低架（Q 0.707）；侧通道原样不动。
+            // 再叠输出端软膝限幅兜底。
+            let low_l = self.low_shelf_l.process_sample(&self.low_shelf_coeffs, p_ll);
+            let low_r = self.low_shelf_r.process_sample(&self.low_shelf_coeffs, p_rl);
+            samples[l][f] = output_soft_clip(low_l + hf_l);
+            samples[r][f] = output_soft_clip(low_r + hf_r);
         }
     }
 
@@ -696,7 +701,8 @@ impl Filter for WideFilter {
         self.orig_hl = 0.0;
         self.orig_rl = 0.0;
         self.orig_hr = 0.0;
-        self.orig_side_lo = 0.0;
+        self.low_shelf_l.clear();
+        self.low_shelf_r.clear();
         self.dl_prev_l = 0.0;
         self.dl_prev_r = 0.0;
         self.side_env = 0.0;
