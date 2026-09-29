@@ -80,45 +80,47 @@ fn width_rms(samples: &[Vec<f32>], start: usize) -> f32 {
 }
 
 #[test]
-fn side_signal_is_widened() {
-    // 低频（300Hz，直通路径）与高频（5kHz，ITD 路径）带侧成分：
-    // 宽度应随用户 Gain 单调递增（避开线性相位 FIR 分离的
-    // 梳状谷频率，如 945Hz/1.9kHz）。
-    let run = |gain: f32| -> f32 {
+fn gain_cuts_side_low_and_leaves_highs_flat() {
+    // 新语义：宽度不再靠提升侧信号能量。Gain 只衰减侧低频
+    // （side_low_gain = 1 − 1.0·Gain，衰减位置 = crossover_hz），
+    // 高频段不做任何提升：低频侧能量随 Gain 单调下降、高频侧能量不变。
+    let side_width = |freq: f32, gain: f32| -> f32 {
         let mut f = WideFilter::new(WideParams {
             gain,
             mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let n = 4800usize;
+        let n = 9600usize;
         let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
         for i in 0..n {
-            let t = i as f32 / 48000.0;
-            let v = 0.4 * (core::f32::consts::TAU * 300.0 * t).sin()
-                + 0.3 * (core::f32::consts::TAU * 5000.0 * t).sin();
-            samples[0][i] = 0.2 * v;
-            samples[1][i] = 0.04 * v;
+            let v = (core::f32::consts::TAU * freq * i as f32 / 48000.0).sin();
+            samples[0][i] = 0.5 * v;
+            samples[1][i] = 0.1 * v;
         }
         f.process(&mut samples, n);
-        width_rms(&samples, 2000)
+        width_rms(&samples, 4800)
     };
 
-    let base = run(0.0);
-    let quarter = run(0.25);
-    let half = run(0.5);
-    let full = run(1.0);
+    // 低频（60Hz，分频点以下，直通支路）：侧低频随 Gain 单调下降。
+    let lo_base = side_width(60.0, 0.0);
+    let lo_half = side_width(60.0, 0.5);
+    let lo_full = side_width(60.0, 1.0);
     assert!(
-        quarter > base && half > quarter && full > half,
-        "width should grow monotonically with Gain: {base} < {quarter} < {half} < {full}"
+        lo_half < lo_base && lo_full < lo_half,
+        "side low must fall monotonically with Gain: {lo_base} < {lo_half} < {lo_full}"
     );
     assert!(
-        full / base > 1.35,
-        "full Gain should clearly widen: {full} vs {base}"
+        lo_full < lo_base * 0.5,
+        "full Gain should clearly cut side low: {lo_full} vs {lo_base}"
     );
+
+    // 高频（5kHz，ITD 泛音区）：不提升，随 Gain 基本不变。
+    let hi_base = side_width(5000.0, 0.0);
+    let hi_full = side_width(5000.0, 1.0);
     assert!(
-        half / base > 1.1,
-        "mid Gain should already widen: {half} vs {base}"
+        (hi_full / hi_base - 1.0).abs() < 0.05,
+        "highs must not be boosted by Gain: full={hi_full} base={hi_base}"
     );
 }
 
@@ -272,44 +274,74 @@ fn center_signal_preserved_without_air_and_symmetric() {
 }
 
 #[test]
-fn bass_keeps_energy_and_width_highs_widened() {
-    // 低频干净直通：60 Hz 带侧成分原样通过（线性相位 FIR 不破坏瞬态）；
-    // 1 kHz 侧成分被用户 Gain 放大。
-    let run = |freq: f32, n: usize| -> (f32, f32) {
+fn bass_tilts_down_per_low_shelf_and_highs_stay_flat() {
+    // 新语义：低频不再「保持能量」，而是按 low_shelf_gain = 1 − 0.5·Gain
+    // 整体下压（Gain=1 → −6dB）让出相对高频感；高频不提升。
+    // 纯中央低频（L==R）只走直通搁架：输出 ≈ 输入 · low_shelf_gain。
+    let centered_low_rms = |gain: f32| -> f32 {
         let mut f = WideFilter::new(WideParams {
-            gain: 1.0,
+            gain,
             mix: 1.0,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        let n = 9600usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
         for i in 0..n {
-            let v = (core::f32::consts::TAU * freq * i as f32 / 48000.0).sin();
-            samples[0][i] = 0.5 * v;
-            samples[1][i] = 0.1 * v;
+            let v = 0.5 * (core::f32::consts::TAU * 60.0 * i as f32 / 48000.0).sin();
+            s[0][i] = v;
+            s[1][i] = v;
         }
-        f.process(&mut samples, n);
-        let mut diff = 0.0f32;
-        let mut peak_l = 0.0f32;
-        for i in (n / 2)..n {
-            diff = diff.max((samples[0][i] - samples[1][i]).abs());
-            peak_l = peak_l.max(samples[0][i].abs());
+        f.process(&mut s, n);
+        let mut sum = 0.0f32;
+        for i in 4800..n {
+            sum += s[0][i] * s[0][i];
         }
-        (diff, peak_l)
+        (sum / 4800.0).sqrt()
     };
+    let r0 = centered_low_rms(0.0);
+    let r5 = centered_low_rms(0.5);
+    let r1 = centered_low_rms(1.0);
+    assert!(
+        (r5 / r0 - 0.75).abs() < 0.04,
+        "Gain=0.5 → low shelf ≈ −2.5dB (ratio {}), r5={r5} r0={r0}",
+        r5 / r0
+    );
+    assert!(
+        (r1 / r0 - 0.5).abs() < 0.04,
+        "Gain=1 → low shelf −6dB (ratio {}), r1={r1} r0={r0}",
+        r1 / r0
+    );
 
-    let (diff_low, peak_low) = run(60.0, 9600);
-    let (diff_high, _) = run(5000.0, 4800);
+    // 5kHz 侧成分：不提升（宽度不靠抬高频）。
+    let high_diff = |gain: f32| -> f32 {
+        let mut f = WideFilter::new(WideParams {
+            gain,
+            mix: 1.0,
+            ..Default::default()
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let n = 4800usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            let v = (core::f32::consts::TAU * 5000.0 * i as f32 / 48000.0).sin();
+            s[0][i] = 0.5 * v;
+            s[1][i] = 0.1 * v;
+        }
+        f.process(&mut s, n);
+        let mut d = 0.0f32;
+        for i in (n / 2)..n {
+            d = d.max((s[0][i] - s[1][i]).abs());
+        }
+        d
+    };
+    let d0 = high_diff(0.0);
+    let d1 = high_diff(1.0);
+    assert!(d0 > 0.0);
     assert!(
-        (peak_low - 0.5).abs() < 0.02,
-        "bass must stay at original level: peak {peak_low}"
+        (d1 / d0 - 1.0).abs() < 0.05,
+        "highs must not be boosted by Gain: full={d1} base={d0}"
     );
-    assert!(
-        (diff_low - 0.4).abs() < 0.03,
-        "bass keeps original stereo info: diff {diff_low}"
-    );
-    // 5kHz 在 ITD 泛音区（避开线性相位 FIR 分离的梳状谷）。
-    assert!(diff_high > 0.45, "highs should be widened: high {diff_high}");
 }
 
 #[test]
@@ -805,10 +837,10 @@ fn extreme_antiphase_is_bounded() {
 }
 
 #[test]
-fn wide_material_preserves_dynamics() {
-    // 动态 M/S：低于包络阈值的侧信号保持线性（动态不被压），
-    // 超过阈值后自动收增益（防削波），这是动态 M/S 的核心行为。
-    let run = |amp: f32| -> f32 {
+fn output_is_linear_below_knee_and_never_clips() {
+    // 新语义：链路不再过 tanh。输出未触及软膝（0.9）时处理是线性的——
+    // 输入等比放大、输出峰值等比放大；超过软膝由 output_soft_clip 兜底，峰值恒 ≤ 1.0。
+    let peak = |amp: f32| -> f32 {
         let mut f = WideFilter::new(WideParams {
             air: 1.0,
             gain: 1.0,
@@ -816,7 +848,7 @@ fn wide_material_preserves_dynamics() {
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let n = 9600usize;
+        let n = 4800usize;
         let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
         for i in 0..n {
             let v = 0.9 * (core::f32::consts::TAU * 1000.0 * i as f32 / 48000.0).sin();
@@ -824,24 +856,31 @@ fn wide_material_preserves_dynamics() {
             s[1][i] = -amp * v;
         }
         f.process(&mut s, n);
-        let pk = |ch: &[f32]| ch[4800..].iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        (pk(&s[0]) + pk(&s[1])) * 0.5
+        let mut pk = 0.0f32;
+        for ch in &s {
+            for &x in &ch[(n / 2)..] {
+                pk = pk.max(x.abs());
+            }
+        }
+        pk
     };
-    let p_lo = run(0.1);
-    let p_mid = run(0.2);
-    let p_hi = run(0.5);
-    // 低电平（阈值下）：2 倍输入 → 输出接近 2 倍。
-    let ratio_linear = p_mid / p_lo;
+    let p1 = peak(0.1);
+    let p2 = peak(0.2);
+    let p4 = peak(0.4);
+    assert!(p1 > 0.0);
+    assert!(p4 < 0.9, "test loads must stay below the soft knee: peak {p4}");
     assert!(
-        ratio_linear > 1.7 && ratio_linear < 2.3,
-        "below threshold dynamics should scale linearly: ratio {ratio_linear}"
+        (p2 / p1 - 2.0).abs() < 0.15 && (p4 / p2 - 2.0).abs() < 0.15,
+        "below knee output must scale linearly: p1={p1} p2={p2} p4={p4}"
     );
-    // 高电平（阈值上）：动态增益介入，输出不再线性放大。
-    let ratio_compressed = p_hi / p_mid;
-    assert!(
-        ratio_compressed < 2.2,
-        "loud side should be dynamically tamed (linear would be 2.5): ratio {ratio_compressed}"
-    );
+    // 大电平 / 极端反相：软限幅兜底，峰值恒 ≤ 1.0。
+    for amp in [1.0f32, 2.0, 5.0] {
+        let p = peak(amp);
+        assert!(
+            p.is_finite() && p <= 1.0 + 1e-6,
+            "output must stay ≤ 1.0: amp {amp} → peak {p}"
+        );
+    }
 }
 
 #[test]
