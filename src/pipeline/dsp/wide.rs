@@ -60,8 +60,12 @@ const DIRECT_FIR_MAX_LEN: usize = 2048;
 const FIR_MIN_LEN: usize = 512;
 /// FIR 长度上限（384k 时 8192 抽头 ≈ 21.3ms，分块 FFT 承担）。
 const FIR_MAX_LEN: usize = 8192;
-/// 高频段侧信号增益斜率（1 + 1.5·Gain，由用户手动控制）。
-const SIDE_GAIN_HIGH_SLOPE: f32 = 1.5;
+/// 侧低频衰减斜率：不做高频提升，改为压侧低频（1 − SIDE_GAIN_LOW_SLOPE·Gain）。
+/// 相对高频感由「压低频」给出，不增加任何能量，因此不需要 tanh 限幅。
+const SIDE_GAIN_LOW_SLOPE: f32 = 1.0;
+/// 干声低通（低频）搁架衰减斜率（1 − LOW_SHELF_SLOPE·Gain）。
+/// 用低频让出余量替代原「headroom 全频段压 + tanh」：不压高频动态，也不削波。
+const LOW_SHELF_SLOPE: f32 = 0.5;
 /// ITD 去相关：左侧增强延迟（采样点）。
 const ITD_DELAY_L: usize = 5;
 /// ITD 去相关：右侧增强延迟（采样点），与左路差 2 样本破坏同频相消。
@@ -79,10 +83,6 @@ const SIDE_DYN_RATIO: f32 = 0.55;
 const SIDE_DYN_ATTACK_SECS: f32 = 0.010;
 /// 动态 M/S：包络释放时间（s）。
 const SIDE_DYN_RELEASE_SECS: f32 = 0.12;
-/// tanh 软限幅 headroom 范围（Gain=1 时最小，Gain→0 时最大；
-/// 只有用户手动加的侧增益会推电平）。
-const HEADROOM_MIN_DB: f32 = 1.0;
-const HEADROOM_MAX_DB: f32 = 1.6;
 /// 空气吸收：高频架增益范围（air 0→1：-0.5dB → -3.5dB）。
 const AIR_SHELF_GAIN_MIN_DB: f32 = -0.5;
 const AIR_SHELF_GAIN_MAX_DB: f32 = -3.5;
@@ -456,8 +456,8 @@ pub struct WideFilter {
     params: WideParams,
     channel_indices: Vec<usize>,
     active: bool,
-    gain_side_high: f32,
-    headroom_factor: f32,
+    gain_side_low: f32,
+    low_shelf_gain: f32,
     mix: f32,
     air: AirAbsorption,
     /// 侧通道空气吸收（L/R 各一实例；先高频补偿后吸收）。
@@ -490,8 +490,8 @@ impl WideFilter {
             params,
             channel_indices: Vec::new(),
             active: false,
-            gain_side_high: 1.0,
-            headroom_factor: 1.0,
+            gain_side_low: 1.0,
+            low_shelf_gain: 1.0,
             mix: 0.6,
             air: AirAbsorption::new(0.0, 48000),
             side_air_l: AirAbsorption::new(0.0, 48000),
@@ -534,12 +534,11 @@ impl Filter for WideFilter {
         let mix = p.mix.clamp(0.0, 1.0);
         let xover = p.crossover_hz.clamp(CROSSOVER_MIN_HZ, CROSSOVER_MAX_HZ);
         let sr = sample_rate.max(1) as f32;
-        // 高频侧增益完全由用户 Gain 控制。
-        self.gain_side_high = 1.0 + SIDE_GAIN_HIGH_SLOPE * gain;
+        // 侧低频衰减由用户 Gain 控制：Gain=1 时侧低频压到 0（相对高频感最强）。
+        self.gain_side_low = 1.0 - SIDE_GAIN_LOW_SLOPE * gain;
+        // 干声低频搁架衰减：Gain=1 时低频 -6dB，为高频让出余量（替代原 headroom+tanh）。
+        self.low_shelf_gain = 1.0 - LOW_SHELF_SLOPE * gain;
         self.mix = mix;
-        // headroom 只随用户 Gain 变化：Gain 越大余量越小。
-        let headroom_db = HEADROOM_MIN_DB + (HEADROOM_MAX_DB - HEADROOM_MIN_DB) * (1.0 - gain);
-        self.headroom_factor = 10.0f32.powf(-headroom_db / 20.0);
         // 空气吸收深度由 air（mid）/ air_side（侧）参数控制（物理距离曲线）。
         self.air = AirAbsorption::new(air, sample_rate);
         self.side_air_l = AirAbsorption::new(air_side, sample_rate);
@@ -581,8 +580,8 @@ impl Filter for WideFilter {
         }
         let frame_count = frame_count.min(samples[l].len()).min(samples[r].len());
 
-        let g_high = self.gain_side_high;
-        let headroom = self.headroom_factor;
+        let g_side_low = self.gain_side_low;
+        let low_gain = self.low_shelf_gain;
         let mix = self.mix;
 
         for f in 0..frame_count {
@@ -617,28 +616,26 @@ impl Filter for WideFilter {
             } else {
                 1.0
             };
-            // 只增强用户 Gain 指定的部分，原始侧信号保留；
-            // 增强部分按频率分流（线性相位 FIR，1.5kHz）：
-            // 中低频直通（保持实体感），泛音区过 ITD 延迟线
-            // 去相关（左 +5 / 右 +7）。
-            let boost = (g_high - 1.0) * gr;
-            let boost_full = side_h * boost;
-            let (boost_lp, boost_hp) = self.side_fir.split_channel(0, boost_full);
-            let side_boost_l = boost_lp + self.itd_l.process(boost_hp);
-            let side_boost_r = boost_lp + self.itd_r.process(boost_hp);
-            // 先高频补偿（gain 增强）再侧空气吸收（与 mid 同曲线）。
-            let out_side_l = self.side_air_l.next(side_h + side_boost_l);
-            let out_side_r = self.side_air_r.next(side_h + side_boost_r);
+            // 侧通道按频率分流（线性相位 FIR，1.5kHz）：
+            // 侧低频按 Gain 衰减——**不提升高频**，相对宽度由低频让出，不增加能量；
+            // 泛音区过 ITD 延迟线去相关（左 +5 / 右 +7），保留宽度与实体感。
+            let side_low_gain = 1.0 - (1.0 - g_side_low) * gr;
+            let (side_lo, side_hi) = self.side_fir.split_channel(0, side_h);
+            let side_low_out = side_lo * side_low_gain;
+            let side_high_l = self.itd_l.process(side_hi);
+            let side_high_r = self.itd_r.process(side_hi);
+            // 侧空气吸收（与 mid 同曲线）。
+            let out_side_l = self.side_air_l.next(side_low_out + side_high_l);
+            let out_side_r = self.side_air_r.next(side_low_out + side_high_r);
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
             let out_mid_h = self.air.next(mid_h);
 
-            // 原始增量 → 一阶高通安全锁（截止 = 分频点）→ 先滤波后 tanh。
+            // 原始增量 → 一阶高通安全锁（截止 = 分频点）。不再过 tanh：
+            // 侧高频不提升、低频又让出余量，链路本身不推电平。
             let delta_l = out_mid_h + out_side_l - hl;
             let delta_r = out_mid_h - out_side_r - hr;
-            let delta_hpf_l = self.hpf_l.process(delta_l);
-            let delta_hpf_r = self.hpf_r.process(delta_r);
-            let delta_limited_l = (delta_hpf_l * headroom).tanh() * mix;
-            let delta_limited_r = (delta_hpf_r * headroom).tanh() * mix;
+            let delta_limited_l = self.hpf_l.process(delta_l) * mix;
+            let delta_limited_r = self.hpf_r.process(delta_r) * mix;
             // 干声叠加：原始高频与限幅增量同步延迟 1 样本，
             // 保持同一时间基准（避免高频相位错位）。
             let dl_prev = self.dl_prev_l;
@@ -647,9 +644,9 @@ impl Filter for WideFilter {
             self.dl_prev_r = delta_limited_r;
             let hf_l = p_hl + dl_prev;
             let hf_r = p_hr + dr_prev;
-            // 低频干净直通（线性相位 FIR 分频不破坏瞬态）+ 输出端软膝限幅。
-            samples[l][f] = output_soft_clip(p_ll + hf_l);
-            samples[r][f] = output_soft_clip(p_rl + hf_r);
+            // 低频搁架衰减（让出余量防削波）+ 输出端软膝限幅兜底。
+            samples[l][f] = output_soft_clip(p_ll * low_gain + hf_l);
+            samples[r][f] = output_soft_clip(p_rl * low_gain + hf_r);
         }
     }
 

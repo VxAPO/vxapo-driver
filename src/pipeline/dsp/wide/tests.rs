@@ -124,18 +124,23 @@ fn side_signal_is_widened() {
 
 #[test]
 fn gain_mapping_curve() {
-    // 侧增益只随用户 Gain（1 + 1.5·Gain）。
-    let setup = |gain: f32| -> f32 {
+    // 侧低频衰减（1 − 1.0·Gain）＋ 干声低频搁架衰减（1 − 0.5·Gain）：
+    // 相对高频感由「压低频」给出，不再提升高频。
+    let setup = |gain: f32| -> (f32, f32) {
         let mut f = WideFilter::new(WideParams {
             gain,
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
-        f.gain_side_high
+        (f.gain_side_low, f.low_shelf_gain)
     };
-    assert!((setup(0.0) - 1.0).abs() < 1e-5, "Gain=0 side must stay flat");
-    assert!((setup(0.5) - 1.75).abs() < 1e-4);
-    assert!((setup(1.0) - 2.5).abs() < 1e-4, "Gain=1 side gain should be 2.5x");
+    let (s0, l0) = setup(0.0);
+    assert!((s0 - 1.0).abs() < 1e-5 && (l0 - 1.0).abs() < 1e-5, "Gain=0 不处理");
+    let (s5, l5) = setup(0.5);
+    assert!((s5 - 0.5).abs() < 1e-4 && (l5 - 0.75).abs() < 1e-4);
+    let (s1, l1) = setup(1.0);
+    assert!((s1 - 0.0).abs() < 1e-4, "Gain=1 侧低频压到 0");
+    assert!((l1 - 0.5).abs() < 1e-4, "Gain=1 低频 -6dB");
 }
 
 #[test]
