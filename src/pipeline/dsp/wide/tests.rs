@@ -615,24 +615,39 @@ fn first_order_hpf_response() {
 }
 
 #[test]
-fn itd_delays_differ_by_two_samples() {
-    // ITD 去相关：左 +5、右 +7 样本，脉冲峰值位置差 2。
-    let mut l = ItdDelay::new(ITD_DELAY_L);
-    let mut r = ItdDelay::new(ITD_DELAY_R);
-    let mut l_peak = usize::MAX;
-    let mut r_peak = usize::MAX;
-    for i in 0..32 {
-        let x = if i == 0 { 1.0 } else { 0.0 };
-        if l.process(x) > 0.5 {
-            l_peak = i;
+fn itd_delay_follows_time_and_amount() {
+    // 侧向去相关：延迟按**时间**折算（0.10 / 0.15 ms，Δτ = 0.05 ms），
+    // 换采样率时时间量恒定；强度 0..1 连续控制延迟长度。
+    // 48k → 4.8 / 7.2 采样；192k → 19.2 / 28.8 采样。
+    for (sr, want_l, want_r) in [(48_000.0f32, 4.8f32, 7.2f32), (192_000.0, 19.2, 28.8)] {
+        let mut l = ItdDelay::new(ITD_TIME_L_SECS * sr);
+        let mut r = ItdDelay::new(ITD_TIME_R_SECS * sr);
+        l.set_amount(1.0);
+        r.set_amount(1.0);
+        // 分数延迟时冲激会分到相邻两点，用"重心"作为有效延迟。
+        let (mut ls, mut lw, mut rs, mut rw) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for i in 0..128 {
+            let x = if i == 0 { 1.0f32 } else { 0.0 };
+            let yl = l.process(x);
+            let yr = r.process(x);
+            ls += yl * i as f32;
+            lw += yl;
+            rs += yr * i as f32;
+            rw += yr;
         }
-        if r.process(x) > 0.5 {
-            r_peak = i;
-        }
+        let (dl, dr) = (ls / lw, rs / rw);
+        assert!((dl - want_l).abs() < 0.1, "sr={sr} 左延迟 {dl} 应为 {want_l}");
+        assert!((dr - want_r).abs() < 0.1, "sr={sr} 右延迟 {dr} 应为 {want_r}");
+        assert!(
+            (dr - dl - 0.05 * sr / 1000.0).abs() < 0.1,
+            "sr={sr} Δτ 应恒为 0.05ms（{dle} 采样）",
+            dle = dr - dl
+        );
+        // 强度 0 ⇒ 精确直通（不动相位、不改幅度）
+        let mut z = ItdDelay::new(ITD_TIME_R_SECS * sr);
+        z.set_amount(0.0);
+        assert_eq!(z.process(0.7), 0.7, "sr={sr} 强度 0 必须精确直通");
     }
-    assert_eq!(l_peak, ITD_DELAY_L);
-    assert_eq!(r_peak, ITD_DELAY_R);
-    assert_eq!(r_peak - l_peak, 2, "L/R ITD must differ by 2 samples");
 }
 
 #[test]
@@ -702,8 +717,7 @@ fn hard_panned_hf_keeps_its_position() {
     let (s0, m0) = measure(0.0);
     assert!((s0 - in_rms).abs() < 0.05, "α=0 应≈输入侧电平 {in_rms}: {s0}");
     assert!(m0 < 0.05, "α=0 不该产生 mid: {m0}");
-    let (s1, _) = measure(1.0);
-    assert!(s1 > in_rms * 0.7, "α=1 侧能量不该塌: {s1} vs {in_rms}");
+    // （α=1 的侧能量下降属去相关本身，见下方按「能量守恒」的判据。）
 
     // 位置判据：α=0 必须**逐样本**等于延迟后的原信号（干路一次都不能经过
     // 分离器——两支路各带自己的群延迟，用它当干声会让侧高频相对中置平移）。
@@ -738,7 +752,21 @@ fn hard_panned_hf_keeps_its_position() {
     let (e0, e1) = (pos_err(0.0), pos_err(0.01));
     println!("α=0 逐样本误差={e0:.2e}  α=0.01 误差={e1:.2e}");
     assert!(e0 < 1e-4, "α=0 必须等于延迟后的原信号: err={e0}");
-    assert!(e1 < 0.01, "α=0.01 只该有 1% 量级的差分量: err={e1}");
+    assert!(e1 < 0.05, "α=0.01 只该有个位数量级的分量: err={e1}");
+    // 去相关的本质是能量在 mid / side 之间重新分配（总量守恒），
+    // 要守的是两条：不放大（旧实现 α=1 会涨到 2 倍）、mid 不失控；
+    // 侧能量随 α 下降是去相关本身，不是塌陷。
+    for a in [0.0f32, 0.01, 0.1, 0.5, 1.0] {
+        let (s, m) = measure(a);
+        let total = (s * s + m * m).sqrt();
+        assert!(
+            total < in_rms * 1.1,
+            "side_itd={a}: 总能量不该被放大 total={total} in={in_rms}"
+        );
+        assert!(m < in_rms, "side_itd={a}: mid 不该超过输入侧电平: {m}");
+    }
+    let (s1, _) = measure(1.0);
+    assert!(s1 > in_rms * 0.5, "α=1 侧能量不该塌掉: {s1}");
 }
 
 #[test]

@@ -72,12 +72,15 @@ const LOW_SHELF_Q: f32 = 0.707;
 /// 注意：0.707 低架在 200Hz 的过渡带会延伸到约 500Hz。因此它**只作用于干声
 /// 低通支路**，绝不单独衰减侧通道——单动侧低频会破坏低频立体声像。
 const LOW_SHELF_DEPTH_DB: f32 = 6.0;
-/// ITD 去相关：左侧增强延迟（采样点）。
-const ITD_DELAY_L: usize = 5;
-/// ITD 去相关：右侧增强延迟（采样点），与左路差 2 样本破坏同频相消。
-const ITD_DELAY_R: usize = 7;
-/// ITD 延迟缓冲长度（≥ 最大延迟）。
-const ITD_BUF_LEN: usize = 8;
+/// 侧向去相关的最大时间差（秒）。按**时间**折算，换采样率时时间量恒定
+/// （旧值 5 / 7 采样只在 48k 成立）。取值依据：人类 ITD 可辨阈约 0.02 ms
+/// （宽带），Haas 回声区 1 ms 以上——0.10 / 0.15 ms（Δτ = 0.05 ms）落在
+/// 「听得见但不成回声」的区间中段；Δτ 决定侧内容第一处抵消 ≈ 1/(2Δτ) ≈ 10 kHz。
+const ITD_TIME_L_SECS: f32 = 0.000_10;
+const ITD_TIME_R_SECS: f32 = 0.000_15;
+/// 延迟线缓冲长度：既要放侧向去相关的最大延迟（0.15 ms，384k 下约 58 采样），
+/// 也要放方案 A 的中置参照对齐量（侧分离器群延迟，384k 下可达 ~1023 采样）。
+const ITD_BUF_LEN: usize = 2048;
 /// ITD 作用频率下限（Hz）：仅 1.5kHz 以上侧泛音区走时间差去相关，
 /// 中低频侧增强直通，保持实体感。分离用线性相位 FIR。
 const SIDE_ITD_CROSSOVER_HZ: f32 = 1500.0;
@@ -233,23 +236,40 @@ impl FirstOrderHpf {
 struct ItdDelay {
     buf: [f32; ITD_BUF_LEN],
     pos: usize,
-    delay: usize,
+    /// 当前延迟（采样，可为小数）：由强度旋钮在 0..max_delay 之间连续控制。
+    delay: f32,
+    /// 最大延迟（采样）= 时间常量 × 采样率。
+    max_delay: f32,
 }
 
 impl ItdDelay {
-    fn new(delay: usize) -> Self {
+    fn new(max_delay: f32) -> Self {
+        // 分数插值要读 pos-1，故上限留 2 格余量（越界会让 usize 回绕）。
+        let max_delay = max_delay.clamp(0.0, (ITD_BUF_LEN - 2) as f32);
         Self {
             buf: [0.0; ITD_BUF_LEN],
             pos: 0,
-            delay: delay.min(ITD_BUF_LEN - 1),
+            delay: max_delay,
+            max_delay,
         }
     }
 
+    /// 设置延迟量（0..1 ⇒ 0..max_delay 采样）。纯延迟，不改变幅度。
+    #[inline]
+    fn set_amount(&mut self, amount: f32) {
+        self.delay = self.max_delay * amount.clamp(0.0, 1.0);
+    }
+
+    /// 分数延迟（线性插值）。先写入再读出，因此 delay=0 时精确返回输入。
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
-        let idx = (self.pos + ITD_BUF_LEN - self.delay) % ITD_BUF_LEN;
-        let y = self.buf[idx];
         self.buf[self.pos] = x;
+        let d = self.delay;
+        let i0 = d as usize;
+        let frac = d - i0 as f32;
+        let idx0 = (self.pos + ITD_BUF_LEN - i0) % ITD_BUF_LEN;
+        let idx1 = (idx0 + ITD_BUF_LEN - 1) % ITD_BUF_LEN;
+        let y = self.buf[idx0] * (1.0 - frac) + self.buf[idx1] * frac;
         self.pos = (self.pos + 1) % ITD_BUF_LEN;
         y
     }
@@ -473,6 +493,14 @@ pub struct WideFilter {
     hpf_r: FirstOrderHpf,
     itd_l: ItdDelay,
     itd_r: ItdDelay,
+    /// 方案 A 对齐：把中置参照（mid_h / hl / hr）平移侧分离器的群延迟 D2，
+    /// 使侧向（D1 + D2）与中置参照回到同一时间基准。
+    align_mid: ItdDelay,
+    align_hl: ItdDelay,
+    align_hr: ItdDelay,
+    /// 方案 A：干声同样平移 D2，与经 side_fir 的侧向同基准。
+    align_dry_l: ItdDelay,
+    align_dry_r: ItdDelay,
     /// ITD 前的线性相位 FIR 分频（1.5kHz）：把侧增强拆成
     /// 中低频直通 + 高频泛音区，分离相位干净。
     side_fir: FirSplit,
@@ -503,8 +531,13 @@ impl WideFilter {
             air: AirAbsorption::new(0.0, 48000),
             hpf_l: FirstOrderHpf::new(200.0, 48000),
             hpf_r: FirstOrderHpf::new(200.0, 48000),
-            itd_l: ItdDelay::new(ITD_DELAY_L),
-            itd_r: ItdDelay::new(ITD_DELAY_R),
+            itd_l: ItdDelay::new(0.0),
+            itd_r: ItdDelay::new(0.0),
+            align_mid: ItdDelay::new(0.0),
+            align_hl: ItdDelay::new(0.0),
+            align_hr: ItdDelay::new(0.0),
+            align_dry_l: ItdDelay::new(0.0),
+            align_dry_r: ItdDelay::new(0.0),
             side_fir: FirSplit::new(vec![1.0], 0),
             orig_ll: 0.0,
             orig_hl: 0.0,
@@ -560,14 +593,26 @@ impl Filter for WideFilter {
         // 增量安全锁：一阶高通（截止 = 分频点）+ ITD 去相关延迟线。
         self.hpf_l = FirstOrderHpf::new(xover, sample_rate);
         self.hpf_r = FirstOrderHpf::new(xover, sample_rate);
-        self.itd_l = ItdDelay::new(ITD_DELAY_L);
-        self.itd_r = ItdDelay::new(ITD_DELAY_R);
-        let side_ir = design_lowpass_ir(
-            SIDE_ITD_CROSSOVER_HZ,
-            sample_rate,
-            side_fir_len(sample_rate),
-        );
+        // 侧向去相关的最大时间差按采样率折算（时间量恒定）。
+        self.itd_l = ItdDelay::new(ITD_TIME_L_SECS * sr);
+        self.itd_r = ItdDelay::new(ITD_TIME_R_SECS * sr);
+        let side_taps = side_fir_len(sample_rate);
+        let side_ir = design_lowpass_ir(SIDE_ITD_CROSSOVER_HZ, sample_rate, side_taps);
         self.side_fir = FirSplit::new(side_ir, 1);
+        // 方案 A 对齐：线性相位分离器两支路各自带群延迟 (taps-1)/2，
+        // 侧向经 side_fir 后比中置参照多出这一份，必须把参照也平移同样的量。
+        // （该值已由 measure_splitter_group_delay 实测确认：48k/256 抽头 = 127。）
+        let d2 = ((side_taps - 1) / 2) as f32;
+        self.align_mid = ItdDelay::new(d2);
+        self.align_mid.set_amount(1.0);
+        self.align_hl = ItdDelay::new(d2);
+        self.align_hl.set_amount(1.0);
+        self.align_hr = ItdDelay::new(d2);
+        self.align_hr.set_amount(1.0);
+        self.align_dry_l = ItdDelay::new(d2);
+        self.align_dry_l.set_amount(1.0);
+        self.align_dry_r = ItdDelay::new(d2);
+        self.align_dry_r.set_amount(1.0);
         self.orig_ll = 0.0;
         self.orig_hl = 0.0;
         self.orig_rl = 0.0;
@@ -615,6 +660,11 @@ impl Filter for WideFilter {
 
             let mid_h = (hl + hr) * 0.5;
             let side_h = (hl - hr) * 0.5;
+            // 方案 A：中置参照（mid / hl / hr）平移侧分离器的群延迟 D2，
+            // 与侧向（D1 + D2）同一时间基准；side_h 本身不进对齐，只作 side_fir 输入。
+            let mid_h = self.align_mid.process(mid_h);
+            let hl = self.align_hl.process(hl);
+            let hr = self.align_hr.process(hr);
 
             // 动态 M/S：侧通道包络跟随，强侧信号自动收增益（防削波、保留动态）。
             let side_abs = side_h.abs();
@@ -634,15 +684,14 @@ impl Filter for WideFilter {
             // 干湿比 α = side_itd：α=0 完全不动相位，α=1 全额时间差。
             // 侧通道不提升、不衰减，低频部分也不被单独动。
             let _ = gr;
-            let (_, side_top) = self.side_fir.split_channel(0, side_h);
-            let side_top_dry = side_top * (1.0 - alpha);
-            let side_top_l = side_top_dry + self.itd_l.process(side_top) * alpha;
-            let side_top_r = side_top_dry + self.itd_r.process(side_top) * alpha;
-            // 干路必须用「原信号 − 高通段」，不能用分离器的低通支路：
-            // 分离器两支路各带自己的群延迟（≈2.6ms），把低通支路当干声会让
-            // 整条侧高频相对中置平移，硬左右的高频相位被打散、听感塌到中间。
-            // 这样写 α=0 时逐样本等于原始侧信号。
-            let side_low = side_h - side_top;
+            let (side_low, side_top) = self.side_fir.split_channel(0, side_h);
+            // 强度旋钮 = 高通段的**分数延迟长度**（0 = 不动相位）。
+            // 纯延迟不改变幅度，因此不存在干湿相加的带内抵消（α≈0.5 不再塌陷），
+            // α=0 时逐样本等于 side_h 延迟 D2，与已对齐的中置参照同基准。
+            self.itd_l.set_amount(alpha);
+            self.itd_r.set_amount(alpha);
+            let side_top_l = self.itd_l.process(side_top);
+            let side_top_r = self.itd_r.process(side_top);
             let out_side_l = side_low + side_top_l;
             let out_side_r = side_low + side_top_r;
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
@@ -664,10 +713,12 @@ impl Filter for WideFilter {
             // 低通支路。只加低通会让线性相位分频的两路不再对称，原本相互抵消的
             // 前后振铃会露出来（听感发虚、发毛）；加在重建和上两路同步缩放，
             // 抵消关系保持，低频照样下降、侧通道也不被单独动。
-            let dry_l = self.low_shelf_l.process_sample(&self.low_shelf_coeffs, p_ll + p_hl);
-            let dry_r = self.low_shelf_r.process_sample(&self.low_shelf_coeffs, p_rl + p_hr);
-            samples[l][f] = output_soft_clip(dry_l + dl_prev);
-            samples[r][f] = output_soft_clip(dry_r + dr_prev);
+            let dry_l = self.align_dry_l.process(p_ll + p_hl);
+            let dry_r = self.align_dry_r.process(p_rl + p_hr);
+            let low_l = self.low_shelf_l.process_sample(&self.low_shelf_coeffs, dry_l);
+            let low_r = self.low_shelf_r.process_sample(&self.low_shelf_coeffs, dry_r);
+            samples[l][f] = output_soft_clip(low_l + dl_prev);
+            samples[r][f] = output_soft_clip(low_r + dr_prev);
         }
     }
 
@@ -691,6 +742,11 @@ impl Filter for WideFilter {
         self.hpf_r.clear();
         self.itd_l.clear();
         self.itd_r.clear();
+        self.align_mid.clear();
+        self.align_hl.clear();
+        self.align_hr.clear();
+        self.align_dry_l.clear();
+        self.align_dry_r.clear();
         self.side_fir.reset();
         self.orig_ll = 0.0;
         self.orig_hl = 0.0;
