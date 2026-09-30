@@ -742,6 +742,37 @@ fn hard_panned_hf_keeps_its_position() {
 }
 
 #[test]
+fn measure_splitter_group_delay() {
+    // 只读测量：线性相位分离器的群延迟（喂冲激，看 LP+HP 的峰值落在第几个样本）。
+    // 方案 A 需要把 mid_h / hl / hr 平移「侧分离器」的这个延迟量。
+    let sr = 48000u32;
+    for (name, fc, taps) in [
+        ("main", 200.0f32, wide_fir_len(sr, 200.0)),
+        ("side", SIDE_ITD_CROSSOVER_HZ, side_fir_len(sr)),
+    ] {
+        let ir = design_lowpass_ir(fc, sr, taps);
+        let mut f = FirSplit::new(ir, 1);
+        let n = taps * 2;
+        let (mut peak, mut best) = (0usize, 0.0f32);
+        let mut energy = 0.0f32;
+        for i in 0..n {
+            let x = if i == 0 { 1.0f32 } else { 0.0 };
+            let (lp, hp) = f.split_channel(0, x);
+            let y = (lp + hp).abs();
+            energy += y * y;
+            if y > best {
+                best = y;
+                peak = i;
+            }
+        }
+        println!("{name}: fc={fc}Hz taps={taps} 群延迟={peak} 采样 ({:.3} ms) 峰值={best:.4}",
+            peak as f32 * 1000.0 / sr as f32);
+        assert!(best > 0.5, "{name}: 冲激响应峰值异常 {best}");
+        assert!(energy > 0.9, "{name}: 重建能量异常 {energy}");
+    }
+}
+
+#[test]
 fn side_itd_controls_decorrelation() {
     // 侧向时间差（Side ITD）= 侧通道 1.5kHz 以上去相关的干湿比。
     // 表征用「侧输出相对干声的相位延迟」（3kHz，避开相位折叠且位于 ITD 带内）：
