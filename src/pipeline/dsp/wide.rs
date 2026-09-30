@@ -44,9 +44,9 @@ pub struct WideParams {
 impl Default for WideParams {
     fn default() -> Self {
         Self {
-            gain: 0.0,
-            // 中置空气与侧向去相关默认都取 0.2（轻度处理）。
-            // 这里是默认值的唯一源头：specs.rs 会据此生成 app 侧参数表。
+            // 默认值唯一源头：specs.rs 会据此生成 app 侧参数表。
+            // gain 0.05：轻度低频降低；air / side_itd 0.2：轻度中置空气与去相关。
+            gain: 0.05,
             air: 0.2,
             side_itd: 0.2,
             crossover_hz: 200.0,
