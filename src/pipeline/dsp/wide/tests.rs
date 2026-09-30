@@ -666,6 +666,82 @@ fn side_fir_splits_at_1k5() {
 }
 
 #[test]
+fn hard_panned_hf_keeps_its_position() {
+    // 诊断：硬左右（纯侧）5kHz，air=0、gain=0，只变 side_itd。
+    // 期望：任何档位下侧能量都不该塌、mid 不该涨（α=0 时 mid 应≈0）。
+    let measure = |side_itd: f32| -> (f32, f32) {
+        let mut f = WideFilter::new(WideParams {
+            air: 0.0,
+            gain: 0.0,
+            side_itd,
+            ..Default::default()
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let n = 9600usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            let v = 0.3 * (core::f32::consts::TAU * 5000.0 * i as f32 / 48000.0).sin();
+            s[0][i] = v;
+            s[1][i] = -v;
+        }
+        f.process(&mut s, n);
+        let (mut es, mut em) = (0.0f32, 0.0f32);
+        for i in 4800..n {
+            let side = (s[0][i] - s[1][i]) * 0.5;
+            let mid = (s[0][i] + s[1][i]) * 0.5;
+            es += side * side;
+            em += mid * mid;
+        }
+        ((es / 4800.0).sqrt(), (em / 4800.0).sqrt())
+    };
+    for a in [0.0f32, 0.01, 0.1, 0.5, 1.0] {
+        let (side_rms, mid_rms) = measure(a);
+        println!("side_itd={a}: side_rms={side_rms:.4} mid_rms={mid_rms:.4}");
+    }
+    let in_rms = 0.3 / (2.0f32).sqrt();
+    let (s0, m0) = measure(0.0);
+    assert!((s0 - in_rms).abs() < 0.05, "α=0 应≈输入侧电平 {in_rms}: {s0}");
+    assert!(m0 < 0.05, "α=0 不该产生 mid: {m0}");
+    let (s1, _) = measure(1.0);
+    assert!(s1 > in_rms * 0.7, "α=1 侧能量不该塌: {s1} vs {in_rms}");
+
+    // 位置判据：α=0 必须**逐样本**等于延迟后的原信号（干路一次都不能经过
+    // 分离器——两支路各带自己的群延迟，用它当干声会让侧高频相对中置平移）。
+    let pos_err = |side_itd: f32| -> f32 {
+        // air 不能为 0：gain/air/side_itd 全零会让效果判为 inactive 直接直通，
+        // 那样测不到链路本身。中置空气对纯侧信号无影响，只用来让链路跑起来。
+        let mut f = WideFilter::new(WideParams {
+            air: 0.354331,
+            gain: 0.0,
+            side_itd,
+            ..Default::default()
+        });
+        f.initialize(48000, &["L".into(), "R".into()]);
+        let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize + 1;
+        let n = 4800usize;
+        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
+        for i in 0..n {
+            let v = 0.3 * (core::f32::consts::TAU * 5000.0 * i as f32 / 48000.0).sin();
+            s[0][i] = v;
+            s[1][i] = -v;
+        }
+        let mut out = s.clone();
+        f.process(&mut out, n);
+        let mut max_err = 0.0f32;
+        for ch in 0..2 {
+            for i in center..n {
+                max_err = max_err.max((out[ch][i] - s[ch][i - center]).abs());
+            }
+        }
+        max_err
+    };
+    let (e0, e1) = (pos_err(0.0), pos_err(0.01));
+    println!("α=0 逐样本误差={e0:.2e}  α=0.01 误差={e1:.2e}");
+    assert!(e0 < 1e-4, "α=0 必须等于延迟后的原信号: err={e0}");
+    assert!(e1 < 0.01, "α=0.01 只该有 1% 量级的差分量: err={e1}");
+}
+
+#[test]
 fn side_itd_controls_decorrelation() {
     // 侧向时间差（Side ITD）= 侧通道 1.5kHz 以上去相关的干湿比。
     // 表征用「侧输出相对干声的相位延迟」（3kHz，避开相位折叠且位于 ITD 带内）：

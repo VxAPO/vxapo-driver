@@ -407,7 +407,7 @@ air = 0.5
         // 参数指纹：驱动消费 gain/air/side_itd/crossover_hz。
         assert_eq!(
             specs[0],
-            "wide:false|gain=0.000000;air=0.500000;side_itd=0.600000;xover=200.0"
+            "wide:false|gain=0.000000;air=0.500000;side_itd=0.200000;xover=200.0"
         );
         let mut samples = vec![vec![0.3f32; 8], vec![0.2f32; 8]];
         let before = samples.clone();

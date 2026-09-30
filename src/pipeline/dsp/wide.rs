@@ -45,9 +45,10 @@ impl Default for WideParams {
     fn default() -> Self {
         Self {
             gain: 0.0,
-            // 与原 Wide32.c Quick preset 的默认距离对齐。
-            air: 0.354331,
-            side_itd: 0.6,
+            // 中置空气与侧向去相关默认都取 0.2（轻度处理）。
+            // 这里是默认值的唯一源头：specs.rs 会据此生成 app 侧参数表。
+            air: 0.2,
+            side_itd: 0.2,
             crossover_hz: 200.0,
             low_shelf_depth_db: LOW_SHELF_DEPTH_DB,
         }
@@ -633,12 +634,17 @@ impl Filter for WideFilter {
             // 干湿比 α = side_itd：α=0 完全不动相位，α=1 全额时间差。
             // 侧通道不提升、不衰减，低频部分也不被单独动。
             let _ = gr;
-            let (side_mid, side_top) = self.side_fir.split_channel(0, side_h);
+            let (_, side_top) = self.side_fir.split_channel(0, side_h);
             let side_top_dry = side_top * (1.0 - alpha);
             let side_top_l = side_top_dry + self.itd_l.process(side_top) * alpha;
             let side_top_r = side_top_dry + self.itd_r.process(side_top) * alpha;
-            let out_side_l = side_mid + side_top_l;
-            let out_side_r = side_mid + side_top_r;
+            // 干路必须用「原信号 − 高通段」，不能用分离器的低通支路：
+            // 分离器两支路各带自己的群延迟（≈2.6ms），把低通支路当干声会让
+            // 整条侧高频相对中置平移，硬左右的高频相位被打散、听感塌到中间。
+            // 这样写 α=0 时逐样本等于原始侧信号。
+            let side_low = side_h - side_top;
+            let out_side_l = side_low + side_top_l;
+            let out_side_r = side_low + side_top_r;
             // mid 走空气吸收（物理距离曲线）；不做静态负增益。
             let out_mid_h = self.air.next(mid_h);
 

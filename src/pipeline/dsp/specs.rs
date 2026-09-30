@@ -281,10 +281,10 @@ mod tests {
         // loudness 无 Default 实现：默认值来自文档典型值与解析层回退（见参数表注释）。
         assert_eq!(find("loudness", "phon"), 80.0);
         assert_eq!(find("loudness", "reference_phon"), 80.0);
-        // 本表给的是 driver 的**精确**默认值（0.354331 / 1.76993）。
+        // 本表给的是 driver 的**精确**默认值（0.2 / 1.76993）。
         // UI 侧显示精度是 app 自己的取舍（输入框放不下长浮点，正常使用也不需要
         // 这么高精度），app 按自己的显示规则就近取整即可，不属漂移。
-        assert_eq!(find("wide", "air"), q(0.354_331_f32));
+        assert_eq!(find("wide", "air"), q(0.2_f32));
         assert_eq!(find("aural", "drive"), q(1.769_93_f32));
     }
 
