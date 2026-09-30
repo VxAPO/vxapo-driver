@@ -731,7 +731,10 @@ fn hard_panned_hf_keeps_its_position() {
             ..Default::default()
         });
         f.initialize(48000, &["L".into(), "R".into()]);
-        let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize + 1;
+        // 方案 A 后总延迟 = 主分离器中心 + 1（HPF 群延迟补偿）+ 侧分离器中心 D2。
+        let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize
+            + 1
+            + (side_fir_len(48000) - 1) / 2;
         let n = 4800usize;
         let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
         for i in 0..n {
