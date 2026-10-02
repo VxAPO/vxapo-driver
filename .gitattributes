@@ -1,0 +1,11 @@
+# 行尾统一：索引与工作区都按 LF。
+#
+# 背景：全局 `core.autocrlf=true` 下，git 期望工作区是 CRLF，而编辑器/工具写出来的是 LF，
+# 于是同一个文件「内容没变却一直显示为已修改」——此前每次都要删掉文件再 git checkout 洗一遍。
+# 这里的 `eol` 按 git 规则**覆盖 core.autocrlf**：两侧都按 LF 归一，
+# 谁写 LF 谁写 CRLF 都不再被当成改动，也就不需要再洗工作区。
+#
+# `text=auto` 让 git 自己识别二进制（不碰）；下面给 Windows 批处理留 CRLF 例外（cmd 解析需要）。
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
