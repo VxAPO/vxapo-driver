@@ -202,7 +202,8 @@ APO 槽位的安装模型、以配置文件驱动 DSP 的思路、31 段 Graphic
 
 - 项目文档：[`../vxapo-docs`](../vxapo-docs)，模块规范见
   [`../vxapo-docs/driver`](../vxapo-docs/driver)。
-- 许可证：GPL-3.0-or-later。
+- 许可证：GPL-3.0-or-later（全文见 [`LICENSE`](LICENSE)）。
+  Copyright (C) 2026 VxAPO。本程序**不提供任何担保**，详见 GPL-3.0 第 15、16 条。
 
 ---
 
@@ -444,4 +445,6 @@ johnhw/dattoro_reverb (MIT). The implementation in this repository is independen
 
 - Project documentation: [`../vxapo-docs`](../vxapo-docs). Module reference:
   [`../vxapo-docs/driver`](../vxapo-docs/driver).
-- License: GPL-3.0-or-later.
+- License: GPL-3.0-or-later (full text in [`LICENSE`](LICENSE)).
+  Copyright (C) 2026 VxAPO. This program comes with **absolutely no warranty**; see
+  sections 15 and 16 of GPL-3.0.
