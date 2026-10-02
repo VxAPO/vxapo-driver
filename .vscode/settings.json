@@ -1,0 +1,10 @@
+{
+  // 本文件入库：保证任何人和 AI 打开本仓库时行为一致（见 AGENTS.md）。
+  // 格式由 cargo fmt 单一权威决定，这里只负责「保存即格式化」，不引入新规则。
+  "editor.formatOnSave": true,
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "files.eol": "\n",
+  "files.insertFinalNewline": true
+}
