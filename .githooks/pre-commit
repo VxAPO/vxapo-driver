@@ -1,0 +1,29 @@
+#!/bin/sh
+# 提交前格式门禁：拒绝未格式化的提交。
+#
+# 本 hook 不随 clone 传播 —— 新克隆的机器必须执行一次：
+#     git config core.hooksPath .githooks
+#
+# 只检查，不自动改写：自动 fmt 会把未预期的改动混进本次提交，掩盖真实内容。
+# 想格式化就自己跑 `cargo fmt`（见仓库 AGENTS.md）。
+
+set -e
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-commit: 找不到 cargo，跳过格式检查（请确认 Rust 工具链已安装）" >&2
+    exit 0
+fi
+
+if ! cargo fmt --all -- --check >/dev/null 2>&1; then
+    echo "" >&2
+    echo "✗ 未通过 cargo fmt 检查，提交被拒绝。" >&2
+    echo "" >&2
+    echo "  请先运行：  cargo fmt --all" >&2
+    echo "  然后重新 git add 并提交。" >&2
+    echo "" >&2
+    echo "  查看具体差异：cargo fmt --all -- --check" >&2
+    echo "" >&2
+    exit 1
+fi
+
+exit 0
