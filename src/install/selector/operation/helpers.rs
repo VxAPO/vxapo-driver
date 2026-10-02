@@ -174,9 +174,9 @@ pub(super) fn write_child_apo_config(
 pub(super) fn split_hklm_path(path: &str) -> Result<(windows::Win32::System::Registry::HKEY, &str)> {
     let (root_str, rest) = path
         .split_once('\\')
-        .ok_or_else(|| VxApoError::internal(&format!("路径无根键：{path}")))?;
+        .ok_or_else(|| VxApoError::internal(format!("路径无根键：{path}")))?;
     if !root_str.eq_ignore_ascii_case("HKLM") {
-        return Err(VxApoError::internal(&format!("仅支持 HKLM 根：{path}")));
+        return Err(VxApoError::internal(format!("仅支持 HKLM 根：{path}")));
     }
     Ok((HKEY_LOCAL_MACHINE, rest))
 }
@@ -196,7 +196,7 @@ pub(super) fn refresh_global_registration() -> Result<()> {
     if let Some(path) = dll_path {
         let hr = crate::object::dll_exports::register_apo_with_path(&path);
         if hr.0 != 0 {
-            return Err(VxApoError::internal(&format!(
+            return Err(VxApoError::internal(format!(
                 "刷新全局 APO 注册失败：{hr:?}"
             )));
         }
@@ -260,7 +260,7 @@ pub(super) fn write_default_processmode(
     let values = vec![default_str];
     let write = |pid: u32| -> Result<()> {
         let name = format!("{{{}}},{}", "d3993a3f-99c2-4402-b5ec-a92a0367664b", pid);
-        Ok(fx_key.write_multi_value(&name, &values)?)
+        fx_key.write_multi_value(&name, &values)
     };
     // 对齐 EAPO DeviceAPOInfo.cpp：只为实际安装的槽位写对应 ProcessingModes；
     // LFX/GFX 分支不写（旧版始终写 SFX+EFX，SfxMfx 模式会漏 MFX → 父槽位不加载）。
@@ -307,4 +307,3 @@ pub(super) fn backup_fx_properties_safe(
 // ══════════════════════════════════════════════════════════════════════════════
 // 测试
 // ══════════════════════════════════════════════════════════════════════════════
-

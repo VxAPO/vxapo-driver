@@ -138,12 +138,12 @@ pub fn migrate_install(
         let mode = primary
             .info_values
             .get(BACKUP_PREMIX_SLOT)
-            .and_then(|v| read_string(v))
+            .and_then(read_string)
             .zip(
                 primary
                     .info_values
                     .get(BACKUP_POSTMIX_SLOT)
-                    .and_then(|v| read_string(v)),
+                    .and_then(read_string),
             )
             .and_then(|(pre, post)| mode_from_slots(&pre, &post))
             .or_else(|| Some(detect_mode_for_guid(new_guid)))
@@ -382,9 +382,7 @@ pub(super) fn rename_with_retry(tmp: &Path, dst: &Path) -> std::io::Result<()> {
             Err(e) => return Err(e),
         }
     }
-    Err(last.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "rename retry exhausted")
-    }))
+    Err(last.unwrap_or_else(|| std::io::Error::other("rename retry exhausted")))
 }
 
 /// 是否为可能瞬时消失的共享/锁冲突（可重试）。

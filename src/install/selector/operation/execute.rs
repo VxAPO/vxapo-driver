@@ -210,7 +210,7 @@ pub fn install_endpoint(
         };
         let co_init_hr = co_init.0;
         if co_init_hr != 0 && co_init_hr != 1 {
-            return Err(VxApoError::internal(&format!(
+            return Err(VxApoError::internal(format!(
                 "安装自检失败：CoInitializeEx err={}",
                 co_init_hr
             )));
@@ -226,7 +226,7 @@ pub fn install_endpoint(
                 )
             };
             if hr.is_err() {
-                return Err(VxApoError::internal(&format!(
+                return Err(VxApoError::internal(format!(
                     "安装自检失败：CoCreateInstance(CLSID) err={}",
                     hr.err().unwrap()
                 )));
@@ -344,7 +344,7 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
     // （审查 #8 同族）：信息区删除失败必须返回 Err——残留会让下次安装
     // 误判为“非全量路径”；delete_tree 对“键不存在”幂等返回 Ok。
     crate::sys::registry::delete_tree(root, sub_key).map_err(|e| {
-        VxApoError::internal(&format!("卸载失败：删除安装信息区 {info_key} 失败：{e}"))
+        VxApoError::internal(format!("卸载失败：删除安装信息区 {info_key} 失败：{e}"))
     })?;
 
     // ── 删除子 APO 配置（旧遗留值，best-effort） ─────────────────────────

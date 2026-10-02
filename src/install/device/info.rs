@@ -57,7 +57,7 @@ fn flow_for_root(root_path: &str) -> Flow {
 pub fn find_endpoint_path(device_guid: &str) -> Result<String> {
     // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径。
     if parse_guid_string(device_guid).is_none() {
-        return Err(VxApoError::internal(&format!("无效的端点 GUID：{device_guid}")));
+        return Err(VxApoError::internal(format!("无效的端点 GUID：{device_guid}")));
     }
     let render = format!("{}\\{}", RENDER_PATH, device_guid);
     if RegKey::open(HKEY_LOCAL_MACHINE, &render).is_ok() {

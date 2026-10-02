@@ -847,7 +847,9 @@ impl ApoObject {
             }
 
             // 当前过渡结束条件：advance 到达上限或过渡原本未激活。
-            let finished = transition.as_ref().map_or(true, |p| p.counter() >= p.length());
+            let finished = transition
+                .as_ref()
+                .is_none_or(|p| p.counter() >= p.length());
             if finished {
                 // 保留长度（容量即长度），仅清零内容——后续过渡帧直接写入，无需 resize。
                 tbuf_old.fill(0.0);

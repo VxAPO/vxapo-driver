@@ -93,7 +93,7 @@ impl Filter for LoudnessFilter {
 
         // 简化 ISO 226 曲线拟合：低频 boost/cut + 高频微调
         // （完整查表见 CHANGELOG 的 roadmap）
-        for (_i, &freq) in ISO_FREQUENCIES.iter().enumerate() {
+        for &freq in ISO_FREQUENCIES.iter() {
             let gain = iso_226_approx(freq, diff);
             if gain.abs() > 0.05 {
                 let coeffs = compute_coeffs(

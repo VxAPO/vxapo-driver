@@ -128,7 +128,7 @@ mod tests {
         ];
         for cfg in cases {
             let f = create_from_model(&cfg, &ctx);
-            assert!(format!("{f:?}").len() > 0);
+            assert!(!format!("{f:?}").is_empty());
         }
     }
 

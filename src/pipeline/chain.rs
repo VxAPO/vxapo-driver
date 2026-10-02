@@ -106,7 +106,7 @@ impl Chain {
     pub fn validate_frame_count(&self, frame_count: usize) -> bool {
         self.filters
             .iter()
-            .all(|f| f.max_frame_count().map_or(true, |max| frame_count <= max))
+            .all(|f| f.max_frame_count().is_none_or(|max| frame_count <= max))
     }
 }
 

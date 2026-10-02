@@ -142,7 +142,7 @@ unsafe fn base_from_this(this: *mut c_void) -> *mut NApo {
     // SAFETY: this 由调用方按 COM 契约传入（NApo 内某视图字段地址）；按 COM 布局读首
     // 字段只为比较 vtable 地址，不解引用其它字段。
     let this_vtbl = unsafe { *(this as *const *const usize) };
-    if this_vtbl as usize == &ND_UNKNOWN_VTBL as *const _ as usize {
+    if std::ptr::eq(this_vtbl, &raw const ND_UNKNOWN_VTBL as *const usize) {
         base_from_iface(this, OFF_ND_UNKNOWN)
     } else {
         this as *mut NApo

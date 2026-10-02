@@ -57,7 +57,7 @@ impl<T: Copy> AlignedBuffer<T> {
     pub fn new_zeroed(len: usize, align: usize) -> Result<Self, VxApoError> {
         assert!(align.is_power_of_two(), "align must be a power of two");
         assert!(
-            align % std::mem::size_of::<T>() == 0,
+            align.is_multiple_of(std::mem::size_of::<T>()),
             "align must be a multiple of size_of::<T>()"
         );
 
@@ -78,7 +78,7 @@ impl<T: Copy> AlignedBuffer<T> {
             .checked_mul(elem_size)
             .ok_or_else(|| VxApoError::internal("AlignedBuffer size overflow"))?;
         let layout = Layout::from_size_align(total_bytes, align)
-            .map_err(|e| VxApoError::internal(&format!("AlignedBuffer layout invalid: {e}")))?;
+            .map_err(|e| VxApoError::internal(format!("AlignedBuffer layout invalid: {e}")))?;
 
         // SAFETY: layout.size() > 0（因为 len > 0 且 elem_size > 0），
         // align 是 2 的幂且 >= size_of::<T>()，由 assert 保证。

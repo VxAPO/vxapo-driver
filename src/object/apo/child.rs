@@ -76,16 +76,16 @@ impl ChildApo {
         // Step 1: CoCreateInstance → IUnknown（ref=1）。
         // SAFETY: rclsid 非空 + CLSCTX_INPROC_SERVER；函数返回 Result<IUnknown>。
         let unknown: IUnknown = unsafe { CoCreateInstance(clsid, None, CLSCTX_ALL) }
-            .map_err(|e| HRESULT::from(e))?;
+            .map_err(HRESULT::from)?;
 
         // Step 2: cast 三个接口（每次 cast 内部 QI + AddRef，ref 递增；cast 为 safe 方法）。
         // SAFETY: unknown 有效；目标接口为该 APO 真实实现的接口。
         let iapo: IAudioProcessingObject =
-            unknown.cast().map_err(|e| HRESULT::from(e))?;
+            unknown.cast().map_err(HRESULT::from)?;
         let iapo_rt: IAudioProcessingObjectRT =
-            unknown.cast().map_err(|e| HRESULT::from(e))?;
+            unknown.cast().map_err(HRESULT::from)?;
         let iapo_cfg: IAudioProcessingObjectConfiguration =
-            unknown.cast().map_err(|e| HRESULT::from(e))?;
+            unknown.cast().map_err(HRESULT::from)?;
 
         // Step 3: drop 原始 IUnknown（三个 cast 引用保持对象存活）。
         drop(unknown);

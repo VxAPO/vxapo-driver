@@ -143,7 +143,7 @@ fn slot_value_debug() {
 #[test]
 fn slot_value_clone() {
     let v = SlotValue::Guid(GUID::zeroed());
-    let v2 = v.clone();
+    let v2 = v;
     assert_eq!(v, v2);
 }
 

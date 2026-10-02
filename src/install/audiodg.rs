@@ -117,7 +117,7 @@ pub fn stop_audio_service() -> Result<()> {
 
     // SAFETY: 本函数在非 RT 控制线程调用（install/CLI），无实时约束。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenSCManagerW failed: {e}")))?;
 
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
@@ -133,7 +133,7 @@ pub fn stop_audio_service() -> Result<()> {
     // SAFETY: scm 由 OpenSCManagerW 成功返回且由 _scm_guard 持有至函数结束；
     // 服务名 HSTRING 在调用期间存活；失败经 map_err 转 Err，不会使用无效句柄。
     let svc = unsafe { OpenServiceW(scm, &service_name, SERVICE_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenServiceW(AudioSrv) failed: {e}")))?;
 
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
@@ -148,12 +148,12 @@ pub fn stop_audio_service() -> Result<()> {
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     // SAFETY: svc 有效（上方 OpenServiceW + guard 持有）；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
-        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
 
     if status.dwCurrentState == SERVICE_RUNNING {
         // SAFETY: 同上——svc 有效，status 可写，SERVICE_CONTROL_STOP 为合法控制码。
         unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
-            .map_err(|e| VxApoError::internal(&format!("ControlService(AudioSrv STOP) failed: {e}")))?;
+            .map_err(|e| VxApoError::internal(format!("ControlService(AudioSrv STOP) failed: {e}")))?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while status.dwCurrentState != SERVICE_STOPPED {
             if std::time::Instant::now() > deadline {
@@ -162,7 +162,7 @@ pub fn stop_audio_service() -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(100));
             // SAFETY: 轮询中 svc 仍由 guard 持有；status 为本地可写 POD。
             unsafe { QueryServiceStatus(svc, &mut status) }
-                .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+                .map_err(|e| VxApoError::internal(format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
         }
     }
     log::info!("AudioSrv stopped");
@@ -203,7 +203,7 @@ pub(crate) fn restart_audio_service() -> Result<()> {
             SC_MANAGER_ALL_ACCESS,
         )
     }
-    .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+    .map_err(|e| VxApoError::internal(format!("OpenSCManagerW failed: {e}")))?;
 
     // RAII：SC 句柄必须关闭（即使中途失败）。
     struct ScmGuard(SC_HANDLE);
@@ -218,7 +218,7 @@ pub(crate) fn restart_audio_service() -> Result<()> {
     let service_name = HSTRING::from("AudioSrv");
     // SAFETY: scm 有效；serviceName 为静态 "AudioSrv"。
     let svc = unsafe { OpenServiceW(scm, &service_name, SERVICE_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenServiceW(AudioSrv) failed: {e}")))?;
 
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
@@ -234,13 +234,13 @@ pub(crate) fn restart_audio_service() -> Result<()> {
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     // SAFETY: status 可变缓冲区由 SCM 填充。
     unsafe { QueryServiceStatus(svc, &mut status) }
-        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
 
     // 已在运行才停（EAPO：state==SERVICE_RUNNING 才 stop；否则直接启动）。
     if status.dwCurrentState == SERVICE_RUNNING {
         // SAFETY: 停服务。
         unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
-            .map_err(|e| VxApoError::internal(&format!("ControlService(AudioSrv STOP) failed: {e}")))?;
+            .map_err(|e| VxApoError::internal(format!("ControlService(AudioSrv STOP) failed: {e}")))?;
 
         // 轮询等 STOPPED（30 秒超时，EAPO 同款）。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -251,14 +251,14 @@ pub(crate) fn restart_audio_service() -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(100));
             // SAFETY: status 可变缓冲区由 SCM 填充。
             unsafe { QueryServiceStatus(svc, &mut status) }
-                .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+                .map_err(|e| VxApoError::internal(format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
         }
     }
 
     // 启动 AudioSrv。
     // SAFETY: 启动服务。
     unsafe { StartServiceW(svc, None) }
-        .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("StartServiceW(AudioSrv) failed: {e}")))?;
 
     log::info!("AudioSrv restarted (EAPO install 对齐)");
     Ok(())
@@ -278,7 +278,7 @@ pub fn ensure_audio_service_running() -> Result<()> {
 
     // SAFETY: 非 RT 控制线程调用（install/CLI）。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenSCManagerW failed: {e}")))?;
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
@@ -290,7 +290,7 @@ pub fn ensure_audio_service_running() -> Result<()> {
 
     // SAFETY: scm 有效且由 _scm_guard 持有；服务名 HSTRING 临时对象存活至调用结束。
     let svc = unsafe { OpenServiceW(scm, &HSTRING::from("AudioSrv"), SERVICE_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenServiceW(AudioSrv) failed: {e}")))?;
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
@@ -304,14 +304,14 @@ pub fn ensure_audio_service_running() -> Result<()> {
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     // SAFETY: svc 有效（上方 OpenServiceW）；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
-        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
     if status.dwCurrentState == SERVICE_RUNNING {
         return Ok(());
     }
 
     // SAFETY: svc 有效；None 表示无需额外参数数组，StartServiceW 允许该形式。
     unsafe { StartServiceW(svc, None) }
-        .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("StartServiceW(AudioSrv) failed: {e}")))?;
     log::info!("AudioSrv started (ensure running)");
     Ok(())
 }
@@ -418,7 +418,7 @@ pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> 
 
     // SAFETY: 非 RT 控制线程调用（install/CLI）。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenSCManagerW failed: {e}")))?;
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
@@ -436,7 +436,7 @@ pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> 
             SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_ENUMERATE_DEPENDENTS,
         )
     }
-    .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+    .map_err(|e| VxApoError::internal(format!("OpenServiceW(AudioSrv) failed: {e}")))?;
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
@@ -478,7 +478,7 @@ pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()
 
     // SAFETY: 非 RT 控制线程调用（install/CLI）。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
-        .map_err(|e| VxApoError::internal(&format!("OpenSCManagerW failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("OpenSCManagerW failed: {e}")))?;
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
@@ -496,7 +496,7 @@ pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()
             SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_ENUMERATE_DEPENDENTS,
         )
     }
-    .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
+    .map_err(|e| VxApoError::internal(format!("OpenServiceW(AudioSrv) failed: {e}")))?;
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
@@ -556,7 +556,7 @@ fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
             &mut returned,
         )
     }
-    .map_err(|e| VxApoError::internal(&format!("EnumDependentServicesW failed: {e}")))?;
+    .map_err(|e| VxApoError::internal(format!("EnumDependentServicesW failed: {e}")))?;
 
     let mut names = Vec::with_capacity(returned as usize);
     for i in 0..returned {
@@ -580,25 +580,25 @@ fn stop_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resul
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     // SAFETY: svc 由调用方保证有效（本函数只做服务控制）；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
-        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("QueryServiceStatus({name}) failed: {e}")))?;
     if status.dwCurrentState != SERVICE_RUNNING {
         return Ok(());
     }
     // SAFETY: svc 有效；SERVICE_CONTROL_STOP 为合法控制码；status 可写。
     unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
-        .map_err(|e| VxApoError::internal(&format!("ControlService({name} STOP) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("ControlService({name} STOP) failed: {e}")))?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
     while status.dwCurrentState != SERVICE_STOPPED {
         if std::time::Instant::now() > deadline {
-            return Err(VxApoError::internal(&format!(
+            return Err(VxApoError::internal(format!(
                 "{name} stop timed out ({timeout_secs}s)"
             )));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
         // SAFETY: 轮询期间 svc 仍有效；status 为本地可写 POD。
         unsafe { QueryServiceStatus(svc, &mut status) }
-            .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+            .map_err(|e| VxApoError::internal(format!("QueryServiceStatus({name}) failed: {e}")))?;
     }
     Ok(())
 }
@@ -613,7 +613,7 @@ fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resu
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     // SAFETY: svc 由调用方保证有效；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
-        .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+        .map_err(|e| VxApoError::internal(format!("QueryServiceStatus({name}) failed: {e}")))?;
     if status.dwCurrentState == SERVICE_RUNNING {
         return Ok(());
     }
@@ -627,13 +627,13 @@ fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resu
         let _ = unsafe { StartServiceW(svc, None) };
         // SAFETY: 同上轮询——svc 有效，status 为本地可写 POD。
         unsafe { QueryServiceStatus(svc, &mut status) }
-            .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
+            .map_err(|e| VxApoError::internal(format!("QueryServiceStatus({name}) failed: {e}")))?;
         if status.dwCurrentState == SERVICE_RUNNING {
             return Ok(());
         }
         let now = std::time::Instant::now();
         if now > deadline {
-            return Err(VxApoError::internal(&format!(
+            return Err(VxApoError::internal(format!(
                 "{name} start timed out ({timeout_secs}s)"
             )));
         }
@@ -680,10 +680,10 @@ pub(crate) fn restart_endpoint_device(device_guid: &str, is_capture: bool) -> Re
     let out = std::process::Command::new("pnputil")
         .args(["/restart-device", &instance_id])
         .output()
-        .map_err(|e| VxApoError::internal(&format!("pnputil 启动失败：{e}")))?;
+        .map_err(|e| VxApoError::internal(format!("pnputil 启动失败：{e}")))?;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr);
-        return Err(VxApoError::internal(&format!(
+        return Err(VxApoError::internal(format!(
             "pnputil /restart-device 失败：{}",
             msg.trim()
         )));
