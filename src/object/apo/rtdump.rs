@@ -68,15 +68,19 @@ pub(crate) unsafe fn rt_dump_push(
     for f in 0..n {
         let in_base = f * in_ch;
         let out_base = f * out_ch;
-        // SAFETY: in_ptr 指向 in_ch × frames 的交织 f32（调用方按 APO 契约保证）；
+        // in_ptr 指向 in_ch × frames 的交织 f32（调用方按 APO 契约保证）；
         // `in_ch >= 1 / >= 2` 分支保证 in_base（及 +1）落在该范围内，f < n <= frames。
+        // 说明注释必须紧贴各自的 unsafe 块：rustfmt 会把单行 `if ... { unsafe {...} }`
+        // 展开成多行，若把 SAFETY 留在 `let` 上方，就会与 unsafe 块之间隔一行 `if`，
+        // 触发 clippy::undocumented_unsafe_blocks。
         let il = if in_ch >= 1 {
+            // SAFETY: 由 in_ch >= 1 保证 in_base 在缓冲范围内（f < n <= frames）。
             unsafe { *in_ptr.add(in_base) }
         } else {
             0.0
         };
-        // SAFETY: 同上——仅当 in_ch >= 2 时访问 in_base + 1，仍在该缓冲范围内。
         let ir = if in_ch >= 2 {
+            // SAFETY: 同上——仅当 in_ch >= 2 时访问 in_base + 1，仍在该缓冲范围内。
             unsafe { *in_ptr.add(in_base + 1) }
         } else {
             0.0
