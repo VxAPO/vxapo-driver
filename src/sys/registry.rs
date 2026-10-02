@@ -28,6 +28,7 @@ fn err_from_hr(hr: windows::core::HRESULT) -> VxApoError {
 
 const SAM_READ: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0002_0019); // KEY_READ = STANDARD_RIGHTS_READ | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY
 const SAM_ALL: REG_SAM_FLAGS = REG_SAM_FLAGS(0x000F_003F); // KEY_ALL_ACCESS
+
 // KEY_SET_VALUE | KEY_QUERY_VALUE（写值/删值，不含 KEY_CREATE_SUB_KEY）。
 // MMDevices 端点 FxProperties 键 ACL 只给 Administrators SetValue,ReadKey——
 // 请求 KEY_ALL_ACCESS（含 CreateSubKey 位）会超权限被 RegCreateKeyExW 拒绝（0x80070005）。
@@ -96,6 +97,7 @@ impl RegKey {
         let sub_key = HSTRING::from(sub_key);
         let mut handle = HKEY::default();
         let opts = REG_OPEN_CREATE_OPTIONS(0); // REG_OPTION_NON_VOLATILE
+
         // SAFETY: 同 open()——root/sub_key 有效且存活；SAM_ALL 由常量给出；handle 为出参，
         // 仅在返回成功（win32_ok 校验）时被 RegKey 接管。
         let err = unsafe {
@@ -398,6 +400,7 @@ impl RegKey {
             .flat_map(|u| u.to_le_bytes())
             .collect();
         bytes.extend_from_slice(&[0, 0]); // null terminator
+
         // SAFETY: bytes 为 UTF-16LE + 单个 NUL 终止的 REG_SZ 布局，长度以字节数传入；
         // &bytes 在调用期间存活，self.handle 具备 KEY_SET_VALUE。
         let err = unsafe {
@@ -477,6 +480,7 @@ impl RegKey {
             bytes.extend_from_slice(&[0, 0]); // 每项 null 终止
         }
         bytes.extend_from_slice(&[0, 0]); // 列表结束（双 null）
+
         // SAFETY: bytes 为 REG_MULTI_SZ 布局（每项 NUL 终止 + 双 NUL 结尾），长度以字节
         // 数传入；切片在调用期间存活，self.handle 具备 KEY_SET_VALUE。
         let err = unsafe {
