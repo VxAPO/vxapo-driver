@@ -13,7 +13,7 @@
 //! - **类型化接口持有**（windows-rs `IAudioProcessingObject` 等）：windows-rs 0.62.2
 //!   为三个接口提供 safe 调用方法，无需裸 vtable 手动索引
 //! - **子 APO GUID 来源** = 端点 GUID → `HKLM\SOFTWARE\VxAPO\Child APOs\{deviceGuid}\{PreMixChild|PostMixChild}`
-//! （独立安装信息区，路径隔离；`install/device/slots` 提供读取）
+//!   （独立安装信息区，路径隔离；`install/device/slots` 提供读取）
 //! - **格式协商参数（执行端建议采纳）**：`is_input/output_format_supported` 输入参数
 //!   `Option<&IAudioMediaType>`（p_opposite 可 None=无对端；p_requested 由父转发非空）——
 //!   可空借用语义用安全引用表达，与 windows-rs `#[interface]` 可空接口参数风格一致；

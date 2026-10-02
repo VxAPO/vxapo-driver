@@ -352,7 +352,12 @@ macro_rules! forward_method {
             let f: unsafe extern "system" fn(*mut c_void $(, $pty)*) -> $ret;
             // SAFETY: vtable 槽 $slot 为该接口的对应方法，其签名与下面 f 的类型一致
             // （由各 forward_method! 调用点给出的参数表保证）。
-            f = unsafe { std::mem::transmute(*vtbl.add($slot)) };
+            f = unsafe {
+                std::mem::transmute::<
+                    usize,
+                    unsafe extern "system" fn(*mut c_void $(, $pty)*) -> $ret,
+                >(*vtbl.add($slot))
+            };
             // SAFETY: f 为上述方法指针；base.$inner 与参数由 COM 契约保证有效，
             // 本函数只做零成本转发。
             unsafe { f(base.$inner $(, $arg)*) }

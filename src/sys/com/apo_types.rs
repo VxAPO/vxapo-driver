@@ -61,6 +61,9 @@ pub use windows::Win32::Media::Audio::Apo::{
 // ── 自定义枚举（windows-rs 无） ────────────────────────────────────────────
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// 变体名沿用 Windows APO 文档的 AUDIO_FLOW_TYPE 取值拼写（PULL/PUSH），
+// 保留与 SDK 文档一致以便对照；该类型无第三方消费。
+#[allow(clippy::upper_case_acronyms)]
 pub enum AUDIO_FLOW_TYPE {
     PULL = 0,
     PUSH = 1,

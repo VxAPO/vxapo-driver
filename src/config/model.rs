@@ -1,7 +1,7 @@
 //! config/model.rs — 文件格式模型（FileModel）
 //!
 //! TOML 反序列化目标：`version` / `[meta]` / `[[effects]]`（含 APP 元数据
-//! `name` / `group`）。`into_chain_model()` 丢弃 APP 元数据并完成范围/段数/
+//! `name` / `group`）。`to_chain_model()` 丢弃 APP 元数据并完成范围/段数/
 //! 声道名校验，转换为 dsp 层 `ChainModel`——**转换是 config 层职责**，
 //! 依赖方向保持 `config → pipeline/dsp`。
 

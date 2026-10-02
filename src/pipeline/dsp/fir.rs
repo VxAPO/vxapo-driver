@@ -183,10 +183,12 @@ impl PartitionedFir {
                 &self.ifft,
                 &mut self.scratch,
                 &self.h_ffts,
-                self.blocks,
-                block_len,
-                self.fft_len,
-                self.inv_fft_len,
+                BlockGeometry {
+                    blocks: self.blocks,
+                    block_len,
+                    fft_len: self.fft_len,
+                    inv_fft_len: self.inv_fft_len,
+                },
                 ch,
             );
             ch.out_len -= 1;
@@ -225,18 +227,31 @@ impl PartitionedFir {
     }
 }
 
+/// 分块 FFT 卷积的固定几何参数（构造后不变）。
+///
+/// 打包传递以避免 `process_block` 参数过多（9 → 6）。
+#[derive(Clone, Copy)]
+struct BlockGeometry {
+    /// IR 分块数（`ir.len() / block_len` 向上取整，至少 1）。
+    blocks: usize,
+    /// 分块大小（样本）。
+    block_len: usize,
+    /// FFT 长度（= `block_len * 2`）。
+    fft_len: usize,
+    /// IFFT 归一化系数（`1 / fft_len`）。
+    inv_fft_len: f32,
+}
+
 /// 处理一个输入块：FFT → 与 IR 各块频域相乘累加 → IFFT → overlap-add。
 fn process_block(
     fft: &Arc<dyn Fft<f32>>,
     ifft: &Arc<dyn Fft<f32>>,
     scratch: &mut [Complex<f32>],
     h_ffts: &[Complex<f32>],
-    blocks: usize,
-    block_len: usize,
-    fft_len: usize,
-    inv_fft_len: f32,
+    geo: BlockGeometry,
     ch: &mut PartitionedFirChannel,
 ) {
+    let BlockGeometry { blocks, block_len, fft_len, inv_fft_len } = geo;
     for (i, &v) in ch.in_buf.iter().enumerate() {
         ch.x_work[i] = Complex::new(v, 0.0);
     }

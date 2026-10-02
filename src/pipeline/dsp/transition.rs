@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn mix_buffers_factor_one() {
-        let old = vec![1.0f32, 2.0, 3.0, 4.0];
+        let old = [1.0f32, 2.0, 3.0, 4.0];
         let new = [10.0f32, 20.0, 30.0, 40.0];
         let mut output = vec![0.0f32; 4];
 

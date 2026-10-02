@@ -77,9 +77,9 @@ pub struct ConfigWatcher {
 impl ConfigWatcher {
     /// 创建监控器并建立目录变更通知句柄。
     ///
-/// - `watch_dir`：**监控目录**（如 `Documents\VxAPO\{GUID}`），非 config.toml 文件本身
+    /// - `watch_dir`：**监控目录**（如 `Documents\VxAPO\{GUID}`），非 config.toml 文件本身
     /// - `shutdown_event`：外部持有的退出事件（APO 实例持有；UnlockForProcess 时
-    /// `SetEvent` 后 join 线程—— 生命周期随锁定周期）
+    ///   `SetEvent` 后 join 线程—— 生命周期随锁定周期）
     ///
     /// 若 `FindFirstChangeNotificationW` 失败（目录不存在等），`notify_handle`
     /// 为无效句柄，`wait_and_handle` 立即返回 `false`（等效不监控）。
@@ -128,7 +128,7 @@ impl ConfigWatcher {
     ///   1. `WaitForMultipleObjects([shutdown_event, notify_handle], false, 无限)` 异步阻塞
     ///   2. shutdown → 返回 false
     ///   3. 目录变更 → `WaitForMultipleObjects([notify_handle], false, 10ms)` 去重
-    /// （合并编辑器「写临时文件 + rename」的多次通知， 对齐 EAPO）→
+    ///      （合并编辑器「写临时文件 + rename」的多次通知， 对齐 EAPO）→
     ///      `FindNextChangeNotification` 重置通知句柄 → 返回 true
     pub fn wait_and_handle(&mut self) -> bool {
         if self.notify_handle.is_invalid() {
@@ -156,10 +156,8 @@ impl ConfigWatcher {
             // 重置失败 → 句柄保持 signaled → wait 会立即返回 → hot_reload
             // 无限自旋（audiodg CPU 持续高位、声音设置页卡顿）。失败时先尝试
             // **重建**监控句柄；重建也失败才退出（等效不监控），绝不自旋。
-            if ok.is_err() {
-                if !self.recreate_notify() {
-                    return false;
-                }
+            if ok.is_err() && !self.recreate_notify() {
+                return false;
             }
             return true;
         }

@@ -19,16 +19,19 @@ use super::config::diag_append;
 use super::rtdump::{rt_dump_open};
 
 /// watcher 运行时状态（外部驱动模型）。
+#[derive(Default)]
 pub(crate) struct WatcherState {
     pub thread: Option<std::thread::JoinHandle<()>>,
     pub shutdown_event: Option<windows::Win32::Foundation::HANDLE>,
 }
 
-impl Default for WatcherState {
-    fn default() -> Self {
-        Self { thread: None, shutdown_event: None }
-    }
-}
+// SAFETY: 两个字段都是跨线程合法的“值型”句柄——`JoinHandle` 由 std 保证 Send/Sync；
+// `HANDLE` 是 Windows 内核对象的不透明句柄值（非拥有型指针），`WaitForMultipleObjects`
+// / `SetEvent` / `CloseHandle` 均可在任意线程调用。本结构只经 `Mutex` 访问（`ApoObject`
+// 已 unsafe impl Send/Sync），故显式断言 Send + Sync。
+unsafe impl Send for WatcherState {}
+// SAFETY: 同 Send——字段无内部可变性，&WatcherState 只读共享（句柄值读取）无数据竞争。
+unsafe impl Sync for WatcherState {}
 
 /// 启动配置监控线程（object 7.1.9，外部驱动模型）。
 ///
@@ -102,6 +105,7 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
 /// 1. SetEvent(shutdown_event) → wait_and_handle 返回 false → 线程循环退出
 /// 2. join(watcher_thread) → 确保线程已退出（无泄漏）
 /// 3. watcher.shutdown() → FindCloseChangeNotification + CloseHandle
+///
 /// 幂等：watcher 为 None（未启动/启动失败）时直接返回。
 pub(crate) fn stop_watcher(apo: &ApoObject_Impl) {
     use windows::Win32::Foundation::CloseHandle;
@@ -149,7 +153,7 @@ pub(crate) fn hot_reload_impl(
             let finished = guard
                 .transition
                 .as_ref()
-                .map_or(false, |p| p.counter() >= p.length());
+                .is_some_and(|p| p.counter() >= p.length());
             if finished {
                 guard.transition = None;
             } else {

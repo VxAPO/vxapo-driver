@@ -138,7 +138,7 @@ pub(crate) fn calc_input_frames(apo: &ApoObject_Impl, output_frames: u32) -> u32
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         output_frames.saturating_add(apo.latency_frames_atomic.load(Ordering::Acquire))
     }))
-    .unwrap_or_else(|_| output_frames)
+    .unwrap_or(output_frames)
 }
 
 /// `CalcOutputFrames`：panic 保守值 = 0（可丢帧不可越界，不二次 load）。
@@ -147,7 +147,7 @@ pub(crate) fn calc_output_frames(apo: &ApoObject_Impl, input_frames: u32) -> u32
         let latency = apo.latency_frames_atomic.load(Ordering::Acquire);
         input_frames.saturating_sub(latency)
     }))
-    .unwrap_or_else(|_| 0)
+    .unwrap_or(0)
 }
 
 /// `LockForProcess`：状态机 + 双格式协商 + 链组装 + 子 APO 委托 + watcher 启动。
@@ -350,7 +350,8 @@ pub(crate) fn lock_for_process(
     {
         let mut inner = apo.mutex.lock().unwrap_or_else(|e| e.into_inner());
         if !reuse_cached {
-            inner.current_chain = Box::new(chain);
+            // 复用既有 Box 分配（仅替换内容），避免每次 Lock 新分配一次堆块。
+            *inner.current_chain = chain;
             inner.last_lock_key = lock_key;
             // active_spec 建立基线（当前生效链的配置指纹）。
             // 此后 hot_reload 与此基线比较决定是否真正切换。

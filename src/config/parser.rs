@@ -1,7 +1,7 @@
 //! config/parser.rs — TOML 配置解析
 //!
 //! 流程：读取 `config.toml` → `toml::from_str::<FileModel>`（文件格式模型）→
-//! `FileModel::into_chain_model`（校验，丢弃 APP 元数据）→
+//! `FileModel::to_chain_model`（校验，丢弃 APP 元数据）→
 //! `factory::create_from_model` 构造 Filter 链 + spec 指纹。
 //! 依赖方向：config → pipeline/dsp（model / factory / filter）。
 
@@ -101,7 +101,7 @@ impl ConfigParser {
                 file: path.display().to_string(),
                 message: e.to_string(),
             })?;
-        let chain = file_model.into_chain_model(&path.display().to_string())?;
+        let chain = file_model.to_chain_model(&path.display().to_string())?;
         build_chain(&chain, ctx, path)
     }
 }

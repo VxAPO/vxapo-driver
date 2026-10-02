@@ -51,7 +51,7 @@ fn rt_frame_calc_panic_returns_conservative_values() {
             let _ = 480u32; // 正常计算占位
             480u32.wrapping_add(0)
         }))
-        .unwrap_or_else(|_| 480) // CalcInputFrames 保守值 = output_frames
+        .unwrap_or(480) // CalcInputFrames 保守值 = output_frames
     }));
     assert_eq!(input_ret.unwrap(), 480);
 
@@ -59,7 +59,7 @@ fn rt_frame_calc_panic_returns_conservative_values() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             panic!("calc panic"); // 模拟内部 panic
         }))
-        .unwrap_or_else(|_| 0) // CalcOutputFrames 保守值 = 0（可丢帧不可越界）
+        .unwrap_or(0) // CalcOutputFrames 保守值 = 0（可丢帧不可越界）
     }));
     assert_eq!(output_ret.unwrap(), 0);
 }

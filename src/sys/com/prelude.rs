@@ -137,14 +137,16 @@ mod tests {
     fn hresult_constants_values() {
         assert_eq!(S_OK.0, 0);
         assert_eq!(S_FALSE.0, 1);
-        assert!(E_NOINTERFACE.0 < 0);
-        assert!(E_POINTER.0 < 0);
-        assert!(E_FAIL.0 < 0);
-        assert!(E_UNEXPECTED.0 < 0);
-        assert!(E_INVALIDARG.0 < 0);
-        assert!(CLASS_E_CLASSNOTAVAILABLE.0 < 0);
-        assert!(E_OUTOFMEMORY.0 < 0);
-        assert!(CLASS_E_NOAGGREGATION.0 < 0);
+        // 这些是编译期常量：用内联 const 块把符号位校验前移到编译期
+        // （同时也是 clippy::assertions_on_constants 的推荐形式）。
+        const { assert!(E_NOINTERFACE.0 < 0) };
+        const { assert!(E_POINTER.0 < 0) };
+        const { assert!(E_FAIL.0 < 0) };
+        const { assert!(E_UNEXPECTED.0 < 0) };
+        const { assert!(E_INVALIDARG.0 < 0) };
+        const { assert!(CLASS_E_CLASSNOTAVAILABLE.0 < 0) };
+        const { assert!(E_OUTOFMEMORY.0 < 0) };
+        const { assert!(CLASS_E_NOAGGREGATION.0 < 0) };
     }
 
     #[test]

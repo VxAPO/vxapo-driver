@@ -1,19 +1,19 @@
 //! config/model/convert.rs — 文件模型校验与 ChainModel 转换
 
-//! into_chain_model() 丢弃 APP 元数据并完成范围/段数/声道名校验。
+//! to_chain_model() 丢弃 APP 元数据并完成范围/段数/声道名校验。
 
 use super::*;
 use super::types::*;
 
 impl FileModel {
     /// FileModel → ChainModel（丢弃 APP 元数据 + 校验）。
-    pub fn into_chain_model(&self, file: &str) -> Result<ChainModel, ConfigError> {
+    pub fn to_chain_model(&self, file: &str) -> Result<ChainModel, ConfigError> {
         if !self.enabled {
             return Ok(ChainModel { effects: Vec::new() });
         }
         let mut effects = Vec::with_capacity(self.effects.len());
         for (idx, fe) in self.effects.iter().enumerate() {
-            effects.push(fe.into_effect_config(file, idx)?);
+            effects.push(fe.to_effect_config(file, idx)?);
         }
         // peq 段数按声道分组统计。有 `channels` 的段计入对应声道，无
         // `channels` 的段计入共享预算（各声道 / 共享分别 ≤ MAX_PEQ_BANDS）。
@@ -50,7 +50,7 @@ impl FileModel {
 }
 
 impl FileEffect {
-    fn into_effect_config(&self, file: &str, idx: usize) -> Result<EffectConfig, ConfigError> {
+    fn to_effect_config(&self, file: &str, idx: usize) -> Result<EffectConfig, ConfigError> {
         let kind = EffectType::from_str(&self.kind).ok_or_else(|| {
             model_err(
                 file,
@@ -60,15 +60,15 @@ impl FileEffect {
         self.check_keys(kind, file, idx)?;
 
         let params = match kind {
-            EffectType::Peq => EffectParams::Peq(self.into_peq(file, idx)?),
-            EffectType::Preamp => EffectParams::Preamp(self.into_preamp(file, idx)?),
-            EffectType::Aural => EffectParams::Aural(self.into_aural(file, idx)?),
-            EffectType::Reverb => EffectParams::Reverb(self.into_reverb(file, idx)?),
-            EffectType::Compressor => EffectParams::Compressor(self.into_compressor(file, idx)?),
-            EffectType::Wide => EffectParams::Wide(self.into_wide(file, idx)?),
-            EffectType::Loudness => EffectParams::Loudness(self.into_loudness(file, idx)?),
+            EffectType::Peq => EffectParams::Peq(self.to_peq(file, idx)?),
+            EffectType::Preamp => EffectParams::Preamp(self.to_preamp(file, idx)?),
+            EffectType::Aural => EffectParams::Aural(self.to_aural(file, idx)?),
+            EffectType::Reverb => EffectParams::Reverb(self.to_reverb(file, idx)?),
+            EffectType::Compressor => EffectParams::Compressor(self.to_compressor(file, idx)?),
+            EffectType::Wide => EffectParams::Wide(self.to_wide(file, idx)?),
+            EffectType::Loudness => EffectParams::Loudness(self.to_loudness(file, idx)?),
         };
-        let channels = self.into_channels(file, idx)?;
+        let channels = self.to_channels(file, idx)?;
         Ok(EffectConfig {
             kind,
             enabled: self.enabled,
@@ -200,7 +200,7 @@ impl FileEffect {
         v
     }
 
-    fn into_channels(&self, file: &str, idx: usize) -> Result<Option<Vec<String>>, ConfigError> {
+    fn to_channels(&self, file: &str, idx: usize) -> Result<Option<Vec<String>>, ConfigError> {
         let Some(channels) = &self.channels else {
             return Ok(None);
         };
@@ -230,7 +230,7 @@ impl FileEffect {
         Ok(Some(channels.clone()))
     }
 
-    fn into_peq(&self, file: &str, idx: usize) -> Result<PeqParams, ConfigError> {
+    fn to_peq(&self, file: &str, idx: usize) -> Result<PeqParams, ConfigError> {
         let crossover_hz = self
             .crossover_hz
             .unwrap_or(crate::pipeline::dsp::model::CROSSOVER_HZ);
@@ -269,7 +269,7 @@ impl FileEffect {
         Ok(PeqParams { crossover_hz, bands: out })
     }
 
-    fn into_preamp(&self, file: &str, idx: usize) -> Result<PreampParams, ConfigError> {
+    fn to_preamp(&self, file: &str, idx: usize) -> Result<PreampParams, ConfigError> {
         let gain_db = self
             .gain_db
             .ok_or_else(|| model_err(file, format!("effects[{idx}]: 'preamp' requires 'gain_db'")))?;
@@ -278,7 +278,7 @@ impl FileEffect {
         })
     }
 
-    fn into_aural(&self, file: &str, idx: usize) -> Result<AuralParams, ConfigError> {
+    fn to_aural(&self, file: &str, idx: usize) -> Result<AuralParams, ConfigError> {
         let d = AuralParams::default();
         Ok(AuralParams {
             tune_hz: match self.tune_hz {
@@ -308,7 +308,7 @@ impl FileEffect {
         })
     }
 
-    fn into_reverb(&self, file: &str, idx: usize) -> Result<ReverbParams, ConfigError> {
+    fn to_reverb(&self, file: &str, idx: usize) -> Result<ReverbParams, ConfigError> {
         let d = ReverbParams::default();
         let unit = |v: Option<f32>, name: &str| -> Result<f32, ConfigError> {
             match v {
@@ -358,7 +358,7 @@ impl FileEffect {
         })
     }
 
-    fn into_compressor(&self, file: &str, idx: usize) -> Result<CompressorParams, ConfigError> {
+    fn to_compressor(&self, file: &str, idx: usize) -> Result<CompressorParams, ConfigError> {
         let d = CompressorParams::default();
         // 旧 maximizer / leveler 字段全部忽略，走新默认值。
         Ok(CompressorParams {
@@ -397,7 +397,7 @@ impl FileEffect {
         })
     }
 
-    fn into_wide(&self, file: &str, idx: usize) -> Result<WideParams, ConfigError> {
+    fn to_wide(&self, file: &str, idx: usize) -> Result<WideParams, ConfigError> {
         let d = WideParams::default();
         Ok(WideParams {
             gain: match self.gain {
@@ -423,7 +423,7 @@ impl FileEffect {
         })
     }
 
-    fn into_loudness(&self, file: &str, idx: usize) -> Result<LoudnessParams, ConfigError> {
+    fn to_loudness(&self, file: &str, idx: usize) -> Result<LoudnessParams, ConfigError> {
         let phon = self
             .phon
             .ok_or_else(|| model_err(file, format!("effects[{idx}]: 'loudness' requires 'phon'")))?;
@@ -458,4 +458,3 @@ pub(super) fn model_err(file: &str, message: String) -> ConfigError {
         message,
     }
 }
-

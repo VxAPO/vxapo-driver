@@ -5,7 +5,7 @@ fn convert(toml: &str) -> Result<ChainModel, ConfigError> {
         file: "test.toml".into(),
         message: e.to_string(),
     })?;
-    file.into_chain_model("test.toml")
+    file.to_chain_model("test.toml")
 }
 
 #[test]

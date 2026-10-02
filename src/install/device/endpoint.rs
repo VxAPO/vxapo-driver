@@ -80,10 +80,7 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
     // MMDevices 端点键：业务数据（设备 ID/友好名/端点 GUID）在 Properties 子键
     // （PKEY_* 值名），顶层仅 DeviceState。旧实现读顶层 "Device"/"FriendlyName"
     // 失败即返回 None，导致所有端点被丢弃——修正为读 Properties + 字段缺失不丢端点。
-    let properties = match endpoint_key.open_sub_key("Properties") {
-        Ok(k) => Some(k),
-        Err(_) => None,
-    };
+    let properties = endpoint_key.open_sub_key("Properties").ok();
 
     // ── 设备 ID ───────────────────────────────────────────────────────────
     // PKEY_DeviceInstanceId 值名：{b3f8fa53-0004-438e-9003-51a46e139bfc},2（REG_SZ，Windows 11 实证）。

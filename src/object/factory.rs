@@ -112,7 +112,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // Ref<IUnknown> Deref 到接口，.as_ref() 得 Option<&IUnknown>，接口 .abi() 取裸指针。
         let outer_raw: *mut c_void = punkouter
             .as_ref()
-            .map(|u| Interface::as_raw(u))
+            .map(Interface::as_raw)
             .unwrap_or(std::ptr::null_mut());
         // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
         let na = unsafe { crate::object::apo::aggregate::create_aggregate(outer_raw, self.target_clsid) };

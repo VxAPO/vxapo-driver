@@ -12,7 +12,7 @@
 //! 本模块负责：
 //! 1. 按端点设备实例 + 节点类型定位对应的 `MSFX\N` 模板；
 //! 2. 把微软 StreamEffectClsid 替换为 VxAPO PreMix，并删除 ModeEffectClsid
-//!   （避免 VxAPO PostMix 与微软 MFX/EFX 重复处理）；
+//!    （避免 VxAPO PostMix 与微软 MFX/EFX 重复处理）；
 //! 3. 在 VxAPO 安装信息区保存原始值，卸载时恢复微软默认效果。
 
 use crate::install::device::slots::InstallMode;

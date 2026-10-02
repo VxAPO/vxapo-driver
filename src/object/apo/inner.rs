@@ -127,6 +127,24 @@ impl ApoObjectInner {
     }
 }
 
+/// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
+pub(crate) fn build_dsp_context(ctx: &PipelineContext) -> DspContext {
+    let channel_names = get_channel_names(ctx.channel_mask);
+    DspContext {
+        sample_rate: ctx.sample_rate,
+        channel_count: ctx.input_channels,
+        channel_mask: ctx.channel_mask,
+        channel_names,
+        max_frame_count: ctx.max_frame_count as u32,
+        bits_per_sample: ctx.bits_per_sample,
+        device_type: DeviceType::Render,
+        stage: ProcessingStage::None,
+        variables: std::collections::HashMap::new(),
+        loudness_enabled: std::cell::Cell::new(true),
+        rt_marker: std::marker::PhantomData,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,23 +167,5 @@ mod tests {
         let mut out2 = vec![1.0f32; 4];
         inner.apply_startup_fade(&mut out2, 2, 2);
         assert_eq!(out2, vec![1.0f32; 4]);
-    }
-}
-
-/// 从 PipelineContext 构建 DspContext（共享逻辑，LockForProcess / hot_reload 用）。
-pub(crate) fn build_dsp_context(ctx: &PipelineContext) -> DspContext {
-    let channel_names = get_channel_names(ctx.channel_mask);
-    DspContext {
-        sample_rate: ctx.sample_rate,
-        channel_count: ctx.input_channels,
-        channel_mask: ctx.channel_mask,
-        channel_names,
-        max_frame_count: ctx.max_frame_count as u32,
-        bits_per_sample: ctx.bits_per_sample,
-        device_type: DeviceType::Render,
-        stage: ProcessingStage::None,
-        variables: std::collections::HashMap::new(),
-        loudness_enabled: std::cell::Cell::new(true),
-        rt_marker: std::marker::PhantomData,
     }
 }

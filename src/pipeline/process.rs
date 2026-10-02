@@ -93,7 +93,7 @@ pub fn process_chain_interleaved(
     // 直接旁通而不是 panic，避免 audiodg 崩溃/连锁静音。
     let io_ok = frame_count
         .checked_mul(channels)
-        .map_or(false, |n| n <= input.len() && n <= output.len());
+        .is_some_and(|n| n <= input.len() && n <= output.len());
     let ready = temp.len() >= channels
         && temp[..channels].iter().all(|b| b.len() >= frame_count)
         && io_ok;
@@ -165,10 +165,10 @@ pub fn process_audio(
         // max_frame_count 分配的临时缓冲。此时直通而非 panic，避免 audiodg 崩溃。
         let input_ok = frames
             .checked_mul(in_ch)
-            .map_or(false, |n| n <= input_slice.len());
+            .is_some_and(|n| n <= input_slice.len());
         let output_ok = frames
             .checked_mul(out_ch)
-            .map_or(false, |n| n <= output_slice.len());
+            .is_some_and(|n| n <= output_slice.len());
         let deinterleave_ready = temp_buffers.len() >= in_ch
             && temp_buffers[..in_ch].iter().all(|b| b.len() >= frames)
             && input_ok
