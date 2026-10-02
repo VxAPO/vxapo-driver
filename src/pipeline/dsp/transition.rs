@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn mix_buffers_factor_zero() {
         let old = vec![1.0f32, 2.0, 3.0, 4.0];
-        let new = vec![10.0f32, 20.0, 30.0, 40.0];
+        let new = [10.0f32, 20.0, 30.0, 40.0];
         let mut output = vec![0.0f32; 4];
 
         // SAFETY: 三个 Vec 在本作用域内存活且长度均为 4（len=4 不越界）；
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn mix_buffers_factor_one() {
         let old = vec![1.0f32, 2.0, 3.0, 4.0];
-        let new = vec![10.0f32, 20.0, 30.0, 40.0];
+        let new = [10.0f32, 20.0, 30.0, 40.0];
         let mut output = vec![0.0f32; 4];
 
         // SAFETY: 同前——长度匹配（len=4）、输入输出不别名。
@@ -354,8 +354,8 @@ mod tests {
 
     #[test]
     fn mix_buffers_factor_half() {
-        let old = vec![0.0f32, 0.0, 0.0, 0.0];
-        let new = vec![2.0f32, 4.0, 6.0, 8.0];
+        let old = [0.0f32, 0.0, 0.0, 0.0];
+        let new = [2.0f32, 4.0, 6.0, 8.0];
         let mut output = vec![0.0f32; 4];
 
         // SAFETY: 同前——长度匹配（len=4）、输入输出不别名。
@@ -369,8 +369,8 @@ mod tests {
 
     #[test]
     fn mix_buffers_partial_frame() {
-        let old = vec![1.0f32; 8];
-        let new = vec![3.0f32; 8];
+        let old = [1.0f32; 8];
+        let new = [3.0f32; 8];
         let mut output = vec![0.0f32; 8];
 
         // SAFETY: 三个 Vec 长度均为 8，len=4 只触及前 4 个元素（不越界）；

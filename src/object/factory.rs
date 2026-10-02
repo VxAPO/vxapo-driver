@@ -112,7 +112,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // Ref<IUnknown> Deref 到接口，.as_ref() 得 Option<&IUnknown>，接口 .abi() 取裸指针。
         let outer_raw: *mut c_void = punkouter
             .as_ref()
-            .map(|u| Interface::as_raw(u) as *mut c_void)
+            .map(|u| Interface::as_raw(u))
             .unwrap_or(std::ptr::null_mut());
         // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
         let na = unsafe { crate::object::apo::aggregate::create_aggregate(outer_raw, self.target_clsid) };
@@ -359,7 +359,7 @@ mod tests {
             factory.CreateInstance(Some(&outer_unknown))
         }
         .expect("aggregated CreateInstance failed");
-        outer.inner = Interface::as_raw(&inner) as *mut c_void;
+        outer.inner = Interface::as_raw(&inner);
 
         // 引擎拿到返回的非委托 IUnknown 视图后 QI(IAPO)：
         // QI 成功应让 outer 引用 +1（接口视图 AddRef 委托 outer）。

@@ -275,7 +275,7 @@ fn fir_split_reconstructs_delayed_input() {
     let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
     f.initialize(48000, &["L".into(), "R".into()]);
     // 只测 FIR 分频本身：用 FIR 群延迟中心，不含 Haas 延迟。
-    let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize;
+    let center = (wide_fir_len(48000, 200.0) - 1) / 2;
     let n = 4800usize;
     let input: Vec<f32> = (0..n)
         .map(|i| {
@@ -334,7 +334,7 @@ fn fir_delays_by_center_samples() {
     // 单脉冲经低通 FIR 的主峰应出现在 center 帧（对称 FIR 群延迟）。
     let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
     f.initialize(48000, &["L".into(), "R".into()]);
-    let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize;
+    let center = (wide_fir_len(48000, 200.0) - 1) / 2;
     let n = center + 128;
     let mut best = 0usize;
     let mut best_v = 0.0f32;
@@ -732,7 +732,7 @@ fn hard_panned_hf_keeps_its_position() {
         });
         f.initialize(48000, &["L".into(), "R".into()]);
         // 方案 A 后总延迟 = 主分离器中心 + 1（HPF 群延迟补偿）+ 侧分离器中心 D2。
-        let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize
+        let center = (wide_fir_len(48000, 200.0) - 1) / 2
             + 1
             + (side_fir_len(48000) - 1) / 2;
         let n = 4800usize;
@@ -823,7 +823,7 @@ fn side_itd_controls_decorrelation() {
             s[1][i] = -v;
         }
         f.process(&mut s, n);
-        let center = ((wide_fir_len(48000, 200.0) - 1) / 2) as usize + 1;
+        let center = (wide_fir_len(48000, 200.0) - 1) / 2 + 1;
         let (mut re, mut im) = (0.0f32, 0.0f32);
         for i in 4800..n {
             let side_out = (s[0][i] - s[1][i]) * 0.5;

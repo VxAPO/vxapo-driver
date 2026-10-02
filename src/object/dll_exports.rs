@@ -160,7 +160,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 
     // SAFETY: raw_ptr 有效；riid 与 ppv 由 DllGetClassObject 契约保证有效
     // （函数入口已检查非空），调用方按 COM 规则接收引用。
-    let hr = unsafe { qi(raw_ptr, &*riid, ppv as *mut *mut c_void) };
+    let hr = unsafe { qi(raw_ptr, &*riid, ppv) };
 
     // 释放工厂的临时引用（drop 触发 Release）
     drop(factory);

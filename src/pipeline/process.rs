@@ -64,6 +64,7 @@ pub fn apply_error_policy(
                     let copy_len = input_slice.len().min(output_buffer.len());
                     // 输入输出可能是同一块 in-place 缓冲，不能用 copy_from_slice
                     // （重叠 UB）；逐元素拷贝等价 memmove。
+                    #[allow(clippy::manual_memcpy)]
                     for i in 0..copy_len {
                         output_buffer[i] = input_slice[i];
                     }
@@ -98,6 +99,9 @@ pub fn process_chain_interleaved(
         && io_ok;
     if !ready {
         let copy_len = input.len().min(output.len());
+        // 输入输出可能是同一块 in-place 缓冲，不能用 copy_from_slice（重叠 UB）；
+        // 逐元素拷贝等价 memmove。
+        #[allow(clippy::manual_memcpy)]
         for i in 0..copy_len {
             output[i] = input[i];
         }

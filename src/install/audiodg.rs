@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn missing_key_means_not_disabled() {
         let result = is_disabled_at(HKEY_CURRENT_USER, r"SOFTWARE\VxAPO_Test_Nonexistent_Audiodg");
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -746,7 +746,7 @@ mod tests {
         cleanup(&path);
         let key = RegKey::create(HKEY_CURRENT_USER, &path).unwrap();
         key.write_dword(VALUE_NAME, 1).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), true);
+        assert!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap());
         cleanup(&path);
     }
 
@@ -756,7 +756,7 @@ mod tests {
         cleanup(&path);
         let key = RegKey::create(HKEY_CURRENT_USER, &path).unwrap();
         key.write_dword(VALUE_NAME, 0).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), false);
+        assert!(!is_disabled_at(HKEY_CURRENT_USER, &path).unwrap());
         cleanup(&path);
     }
 
@@ -766,11 +766,11 @@ mod tests {
         cleanup(&path);
         let key = RegKey::create(HKEY_CURRENT_USER, &path).unwrap();
         key.write_dword(VALUE_NAME, 1).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), true);
+        assert!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap());
 
         // 模拟 delete_value（通过 key）
         key.delete_value(VALUE_NAME).unwrap();
-        assert_eq!(is_disabled_at(HKEY_CURRENT_USER, &path).unwrap(), false);
+        assert!(!is_disabled_at(HKEY_CURRENT_USER, &path).unwrap());
         cleanup(&path);
     }
 

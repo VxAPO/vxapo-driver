@@ -55,7 +55,7 @@ fn peaking_zero_gain_is_passthrough() {
     let c = compute_coeffs(BiquadType::Peaking, 1000.0, 0.0, 1.0, 48000);
     assert!(c.is_valid());
     let mut filter = BiquadFilter::new(c, BiquadStructure::DirectFormIITransposed);
-    filter.initialize(48000, &vec!["L".to_owned()]);
+    filter.initialize(48000, &["L".to_owned()]);
     let mut samples = vec![vec![0.5, -0.3, 0.8, -0.1, 0.0]];
     let input = samples[0].clone();
     filter.process(&mut samples, 5);
@@ -185,7 +185,7 @@ fn impulse_response_decays_no_whistle() {
     // +48 dB peaking（clamp 后最大合法增益）：脉冲响应必须在有限时间内衰减。
     let c = compute_coeffs(BiquadType::Peaking, 1000.0, 1000.0, 1.0, 48000);
     let mut filter = BiquadFilter::new(c, BiquadStructure::DirectFormIITransposed);
-    filter.initialize(48000, &vec!["L".to_owned()]);
+    filter.initialize(48000, &["L".to_owned()]);
 
     let mut samples = vec![vec![0.0f32; 8192]];
     samples[0][0] = 1.0;
@@ -277,26 +277,26 @@ fn stereo_simd_matches_scalar_channels() {
     let coeffs = compute_coeffs(BiquadType::Peaking, 1000.0, 6.0, 1.0, 48000);
     let len = 512;
     let input_l: Vec<f32> = (0..len)
-        .map(|i| ((i as f32 * 0.07).sin() * 0.5) as f32)
+        .map(|i| (i as f32 * 0.07).sin() * 0.5)
         .collect();
     let input_r: Vec<f32> = (0..len)
-        .map(|i| ((i as f32 * 0.13).cos() * 0.4) as f32)
+        .map(|i| (i as f32 * 0.13).cos() * 0.4)
         .collect();
 
     // SIMD 路径：2 通道 BiquadFilter。
     let mut stereo = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
-    stereo.initialize(48000, &vec!["L".to_owned(), "R".to_owned()]);
+    stereo.initialize(48000, &["L".to_owned(), "R".to_owned()]);
     let mut samples = vec![input_l.clone(), input_r.clone()];
     stereo.process(&mut samples, len);
 
     // 标量路径：每通道一个 1 通道 BiquadFilter。
     let mut mono_l = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
-    mono_l.initialize(48000, &vec!["L".to_owned()]);
+    mono_l.initialize(48000, &["L".to_owned()]);
     let mut sl = vec![input_l.clone()];
     mono_l.process(&mut sl, len);
 
     let mut mono_r = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
-    mono_r.initialize(48000, &vec!["R".to_owned()]);
+    mono_r.initialize(48000, &["R".to_owned()]);
     let mut sr = vec![input_r.clone()];
     mono_r.process(&mut sr, len);
 
@@ -344,7 +344,7 @@ fn single_channel_scope_leaves_other_channel_untouched() {
     // 即使 samples 是 2 缓冲也不触发 SIMD，且作用域外通道必须保持原样。
     let coeffs = compute_coeffs(BiquadType::Peaking, 1000.0, 6.0, 1.0, 48000);
     let mut filter = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
-    filter.initialize(48000, &vec!["L".to_owned()]);
+    filter.initialize(48000, &["L".to_owned()]);
 
     let mut samples = vec![vec![0.5f32; 64], vec![0.25f32; 64]];
     let r_orig = samples[1].clone();
@@ -363,7 +363,7 @@ fn channel_indices_route_to_non_leading_slot() {
     let coeffs = compute_coeffs(BiquadType::Peaking, 1000.0, 6.0, 1.0, 48000);
     let mut filter = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
     filter.set_channel_indices(&[1]);
-    filter.initialize(48000, &vec!["R".to_owned()]);
+    filter.initialize(48000, &["R".to_owned()]);
 
     let mut samples = vec![vec![0.5f32; 64], vec![0.5f32; 64]];
     let l_orig = samples[0].clone();
@@ -382,13 +382,13 @@ fn stereo_simd_with_non_leading_slots_matches_scalar() {
     // 选中槽位 [2, 1]（如 `Channel: C R`）：SIMD 两路必须作用于正确槽位。
     let coeffs = compute_coeffs(BiquadType::Peaking, 1000.0, 6.0, 1.0, 48000);
     let len = 256;
-    let input_c: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.05).sin() * 0.3) as f32).collect();
-    let input_r: Vec<f32> = (0..len).map(|i| ((i as f32 * 0.11).cos() * 0.4) as f32).collect();
+    let input_c: Vec<f32> = (0..len).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+    let input_r: Vec<f32> = (0..len).map(|i| (i as f32 * 0.11).cos() * 0.4).collect();
 
     // SIMD 路径：2 通道作用域，槽位 [2, 1]。
     let mut stereo = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
     stereo.set_channel_indices(&[2, 1]);
-    stereo.initialize(48000, &vec!["C".to_owned(), "R".to_owned()]);
+    stereo.initialize(48000, &["C".to_owned(), "R".to_owned()]);
     let mut samples = vec![vec![0.5f32; len], input_r.clone(), input_c.clone()];
     let l_orig = samples[0].clone();
     stereo.process(&mut samples, len);
@@ -396,7 +396,7 @@ fn stereo_simd_with_non_leading_slots_matches_scalar() {
     // 标量参考：单通道滤波器分别作用在槽位 2 和槽位 1。
     let mut mono_c = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
     mono_c.set_channel_indices(&[2]);
-    mono_c.initialize(48000, &vec!["C".to_owned()]);
+    mono_c.initialize(48000, &["C".to_owned()]);
     let mut sc = vec![
         vec![0.0f32; len],
         vec![0.0f32; len],
@@ -406,7 +406,7 @@ fn stereo_simd_with_non_leading_slots_matches_scalar() {
 
     let mut mono_r = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
     mono_r.set_channel_indices(&[1]);
-    mono_r.initialize(48000, &vec!["R".to_owned()]);
+    mono_r.initialize(48000, &["R".to_owned()]);
     let mut sr = vec![vec![0.0f32; len], input_r.clone()];
     mono_r.process(&mut sr, len);
 
@@ -439,7 +439,7 @@ fn three_structures_same_output() {
         BiquadStructure::DirectFormIITransposed,
     ] {
         let mut filter = BiquadFilter::new(coeffs, *structure);
-        filter.initialize(48000, &vec!["L".to_owned()]);
+        filter.initialize(48000, &["L".to_owned()]);
         let mut samples = vec![input.clone()];
         filter.process(&mut samples, input.len());
         results.push(samples[0].clone());

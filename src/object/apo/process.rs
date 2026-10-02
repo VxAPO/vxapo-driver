@@ -709,6 +709,7 @@ impl ApoObject {
                 };
                 let copy_len = src.len().min(dst.len());
                 // in-place 场景 src/dst 可能重叠，逐元素拷贝（memmove 语义）。
+                #[allow(clippy::manual_memcpy)]
                 for i in 0..copy_len {
                     dst[i] = src[i];
                 }

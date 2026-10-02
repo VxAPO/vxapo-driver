@@ -490,7 +490,7 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
     // 5. ★ 返回**非委托 IUnknown 视图**（offset 32，EAPO ClassFactory.cpp:73 语义）——
     //    引擎对返回值调 QI(IAPO) → na_qi（NonDQI，不委托）→ 直接返回 NApo 的 IAPO 视图。
     //    （旧实现返回基址 = IAPO 视图（委托 QI）→ 引擎 QI 走 outer→ 外壳不认 → 弃用零方法）
-    let base = Box::into_raw(apo_box) as *mut NApo;
+    let base = Box::into_raw(apo_box);
     AGG_CREATED.fetch_add(1, Ordering::Relaxed);
     (base as usize + OFF_ND_UNKNOWN) as *mut c_void
 }

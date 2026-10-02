@@ -347,7 +347,7 @@ fn sine_waveform_preserved_chunked_real_config() {
         let freq = 1000.0f32;
         let chunk = 480usize;
         let total = 48000usize; // 1 秒
-        let mut out = vec![vec![0.0f32; total], vec![0.0f32; total]];
+        let mut out = [vec![0.0f32; total], vec![0.0f32; total]];
         for start in (0..total).step_by(chunk) {
             let n = chunk.min(total - start);
             let mut block = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -432,7 +432,7 @@ fn sine_waveform_preserved_per_band_blocks_cascaded() {
     let freq = 1000.0f32;
     let chunk = 480usize;
     let total = 48000usize;
-    let mut out = vec![vec![0.0f32; total], vec![0.0f32; total]];
+    let mut out = [vec![0.0f32; total], vec![0.0f32; total]];
     for start in (0..total).step_by(chunk) {
         let n = chunk.min(total - start);
         let mut block = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -516,8 +516,8 @@ fn reset_clears_stale_fir_tail_before_reuse() {
     // 新流：小音量 1kHz，分块喂入（真实引擎帧型）。
     let total = 4000usize;
     let chunk = 480usize;
-    let mut out_a = vec![vec![0.0f32; total], vec![0.0f32; total]];
-    let mut out_b = vec![vec![0.0f32; total], vec![0.0f32; total]];
+    let mut out_a = [vec![0.0f32; total], vec![0.0f32; total]];
+    let mut out_b = [vec![0.0f32; total], vec![0.0f32; total]];
     for start in (0..total).step_by(chunk) {
         let n = chunk.min(total - start);
         let mut a = vec![vec![0.0f32; n], vec![0.0f32; n]];
