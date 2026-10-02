@@ -1,3 +1,7 @@
+// 测试用例按帧索引并行双声道缓冲并复用 `i` 计算相位：索引形式与公式一一对应；
+// 迭代器化需 split_at_mut + zip + enumerate 组合，反而降低可读性。
+#![allow(clippy::needless_range_loop)]
+
 use super::*;
 
 /// 临时诊断：Kaiser 分频在各采样率的停带表现（500Hz 衰减应 ≥-55dB）。

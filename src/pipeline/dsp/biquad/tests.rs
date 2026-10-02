@@ -1,3 +1,6 @@
+// 测试用例按帧索引并行双声道缓冲：索引形式与采样/断言一一对应。
+#![allow(clippy::needless_range_loop)]
+
 use super::*;
 
 fn stereo_channels() -> Vec<String> {

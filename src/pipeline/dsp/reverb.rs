@@ -546,6 +546,9 @@ impl Filter for ReverbFilter {
         None
     }
 
+    // 逐帧同时读写 samples[l] / samples[r]：单声道时 r == l，拆分成迭代器需要
+    // split_at_mut + l==r 特判，索引循环更清晰且与算法逐帧对应。
+    #[allow(clippy::needless_range_loop)]
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
         if self.channel_indices.is_empty() {
             return;

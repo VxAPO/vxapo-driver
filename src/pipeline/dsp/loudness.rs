@@ -198,8 +198,8 @@ mod tests {
         let mut samples = vec![vec![0.0f32; 200]; 2];
         filter.process(&mut samples, 200);
 
-        for f in 0..200 {
-            assert!(samples[0][f].abs() < 1e-10);
+        for &v in samples[0].iter().take(200) {
+            assert!(v.abs() < 1e-10);
         }
     }
 

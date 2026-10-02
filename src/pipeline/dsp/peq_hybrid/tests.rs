@@ -1,3 +1,6 @@
+// 测试用例按帧索引并行双声道缓冲并复用 `i` 计算相位：索引形式与公式一一对应。
+#![allow(clippy::needless_range_loop)]
+
 use super::*;
 use crate::pipeline::dsp::model::{PeqBand, PeqBandType};
 

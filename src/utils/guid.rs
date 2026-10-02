@@ -48,11 +48,10 @@ pub fn parse_guid_string(s: &str) -> Option<GUID> {
     // 每 2 个 hex 字符 = 1 字节；旧实现按每字符 1 字节写 data4[i+4] 越界
     // （data4 仅 [u8; 8]）——EAPO REG_SZ 真实 GUID 解析触发后 panic，已修正。
     let hex4 = format!("{}{}", parts[3], parts[4]);
+    let hex = hex4.as_bytes();
     let mut data4 = [0u8; 8];
-    for i in 0..8 {
-        let hi = hex4.as_bytes()[i * 2];
-        let lo = hex4.as_bytes()[i * 2 + 1];
-        data4[i] = (hex_val(hi)? << 4) | hex_val(lo)?;
+    for (i, b) in data4.iter_mut().enumerate() {
+        *b = (hex_val(hex[i * 2])? << 4) | hex_val(hex[i * 2 + 1])?;
     }
     Some(GUID { data1, data2, data3, data4 })
 }

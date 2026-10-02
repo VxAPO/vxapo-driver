@@ -600,8 +600,8 @@ impl Filter for BiquadFilter {
                     if slot >= samples.len() {
                         continue;
                     }
-                    for f in 0..frame_count {
-                        samples[slot][f] = self.process_df1(k, samples[slot][f]);
+                    for x in &mut samples[slot][..frame_count] {
+                        *x = self.process_df1(k, *x);
                     }
                 }
             }
@@ -611,8 +611,8 @@ impl Filter for BiquadFilter {
                     if slot >= samples.len() {
                         continue;
                     }
-                    for f in 0..frame_count {
-                        samples[slot][f] = self.process_df2(k, samples[slot][f]);
+                    for x in &mut samples[slot][..frame_count] {
+                        *x = self.process_df2(k, *x);
                     }
                 }
             }
@@ -657,8 +657,8 @@ impl Filter for BiquadFilter {
                     }
                     let state = &mut self.df2t_states[k];
                     let coeffs = &self.coeffs;
-                    for f in 0..frame_count {
-                        samples[slot][f] = state.process_sample(coeffs, samples[slot][f]);
+                    for x in &mut samples[slot][..frame_count] {
+                        *x = state.process_sample(coeffs, *x);
                     }
                 }
             }

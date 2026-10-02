@@ -554,12 +554,11 @@ mod tests {
         // 但因为 advance 在 counter > length 时才返回 1.0 并停止，
         // 最后一次有效 factor 是 counter=100 时的值
         // 所以最终 mixed 应该接近 new_output
-        for c in 0..2 {
-            for f in 0..frames {
+        for (c, ch) in mixed.iter().enumerate() {
+            for (f, &v) in ch.iter().enumerate().take(frames) {
                 assert!(
-                    (mixed[c][f] - 2.0).abs() < 0.01,
-                    "expected ~2.0 at [{c}][{f}], got {}",
-                    mixed[c][f]
+                    (v - 2.0).abs() < 0.01,
+                    "expected ~2.0 at [{c}][{f}], got {v}"
                 );
             }
         }

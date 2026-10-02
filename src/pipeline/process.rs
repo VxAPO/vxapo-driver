@@ -207,9 +207,9 @@ pub fn process_audio(
             }
         }
         if in_ch == 1 && out_ch >= 2 {
-            for f in 0..frames {
-                temp_buffers[1][f] = temp_buffers[0][f];
-            }
+            // mono → 立体声上混：第 0 路复制到第 1 路（两路为独立分配，无别名）。
+            let (first, rest) = temp_buffers.split_at_mut(1);
+            rest[0][..frames].copy_from_slice(&first[0][..frames]);
         }
 
         // Step 4: DSP 处理（先取长度避免借用冲突）

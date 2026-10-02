@@ -459,7 +459,7 @@ fn design_lowpass_ir(fc_hz: f32, sample_rate: u32, n: usize) -> Vec<f32> {
     let mut ir = vec![0.0f32; n];
     let mut sum = 0.0f32;
     let i0_beta = kaiser_i0(KAISER_BETA);
-    for i in 0..n {
+    for (i, tap) in ir.iter_mut().enumerate() {
         let m = i as f32 - center;
         let sinc = if m.abs() < 1.0e-6 {
             2.0 * fc / sr
@@ -468,8 +468,8 @@ fn design_lowpass_ir(fc_hz: f32, sample_rate: u32, n: usize) -> Vec<f32> {
         };
         let arg = (1.0 - ((i as f32 - center) / center).powi(2)).max(0.0).sqrt() * KAISER_BETA;
         let w = kaiser_i0(arg) / i0_beta;
-        ir[i] = sinc * w;
-        sum += ir[i];
+        *tap = sinc * w;
+        sum += *tap;
     }
     for v in ir.iter_mut() {
         *v /= sum;
@@ -628,6 +628,9 @@ impl Filter for WideFilter {
         None
     }
 
+    // 逐帧同时读写 samples[l] / samples[r] 两条通道缓冲：索引循环无需
+    // split_at_mut 索引重映射，与算法公式逐帧对应。
+    #[allow(clippy::needless_range_loop)]
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
         if !self.active || self.channel_indices.len() < 2 {
             return;

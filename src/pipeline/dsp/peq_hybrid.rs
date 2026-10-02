@@ -521,7 +521,7 @@ fn build_min_phase_ir(
     // 1) F(f) = T(f) − L(f)（dB），转幅值 log。
     let sr = sample_rate.max(1) as f32;
     let mut spectrum = vec![Complex::new(0.0, 0.0); n];
-    for k in 0..=n / 2 {
+    for (k, sp) in spectrum.iter_mut().take(n / 2 + 1).enumerate() {
         let freq = k as f32 * sr / n as f32;
         let mut t_db = 0.0f32;
         for b in bands {
@@ -532,7 +532,7 @@ fn build_min_phase_ir(
             l_db += bq.response_db(freq, sample_rate);
         }
         let mag = 10.0f32.powf((t_db - l_db) / 20.0).max(MIN_MAG);
-        spectrum[k] = Complex::new(mag.ln(), 0.0);
+        *sp = Complex::new(mag.ln(), 0.0);
     }
     for k in 1..n / 2 {
         spectrum[n - k] = spectrum[k];

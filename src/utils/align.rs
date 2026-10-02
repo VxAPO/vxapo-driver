@@ -220,9 +220,8 @@ mod tests {
     #[test]
     fn u8_buffer() {
         let mut buf = AlignedBuffer::<u8>::new(16).unwrap();
-        let slice = buf.as_mut_slice();
-        for i in 0..16 {
-            slice[i] = i as u8;
+        for (i, b) in buf.as_mut_slice().iter_mut().enumerate() {
+            *b = i as u8;
         }
         assert_eq!(buf.as_slice(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     }
