@@ -12,6 +12,10 @@ VxAPO Driver 在 Windows 音频引擎（`audiodg`）内做逐端点的实时音�
 阅读顺序：实现要点 → 与 Equalizer APO 的差异 → 架构 → 实时契约 → 配置 → 效果器与支持面 →
 性能 → 上手 → 三端契约 → 测试与排障 → 参考。
 
+> **在本仓工作前先读 [`AGENTS.md`](AGENTS.md)**（面向人与 AI）：格式由 `cargo fmt` 单一
+> 权威决定、提交前须 `git config core.hooksPath .githooks`、`dead_code` 标注的处理约定、
+> 实时契约接入点、以及改动前后不得回退的质量基线。
+
 ## 1 · 实现要点
 
 本项目围绕一个问题展开：**驱动级实时音频处理能否完整用 Rust 实现，同时遵守既有
@@ -219,6 +223,11 @@ DLL never modifies them.
 Reading order: implementation notes → differences from Equalizer APO → architecture →
 real-time contracts → configuration → effects and support surface → performance →
 getting started → cross-component contracts → testing and troubleshooting → references.
+
+> **Read [`AGENTS.md`](AGENTS.md) before working in this repository** (for humans and AI):
+> formatting is decided solely by `cargo fmt`, run `git config core.hooksPath .githooks`
+> once per clone, the `dead_code` annotation policy, the real-time contract integration
+> points, and the quality baselines that must not regress.
 
 ## 1 · Implementation notes
 
