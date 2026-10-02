@@ -1,0 +1,14 @@
+# 纯格式化提交清单：git blame / git log -L 会跳过这些提交，从而保留「这行是谁、
+# 为什么这么写」的可追溯性。
+#
+# 每台机器需执行一次（GitHub 网页端会自动识别本文件）：
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# 新增规则：每次升级 rustc 后单独跑 `cargo fmt --all`，若输出有变化，
+# 把该提交的**完整** hash 追加到本文件（保持一行一条、按时间顺序）。
+#
+# 注意：只登记「纯格式化」提交。任何夹带逻辑改动或依赖升级的提交都不得写进来，
+# 否则会掩盖真实改动。
+
+# style: cargo fmt --all（无逻辑改动）
+79b8729115a6fcfe85db73eb14db039bdbc6ef84
