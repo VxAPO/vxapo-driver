@@ -22,9 +22,9 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置。
 | 按标准 APO 契约实现并被引擎加载 | 实现 `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`，在聚合模式（`pUnkOuter` 非空）下工作；导出 `DllGetClassObject` / `DllRegisterServer`，自维护实例与锁计数以支撑 `DllCanUnloadNow` | `object/apo/`、`object/apo/dll_exports.rs`；注册项 `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
 | 安装/卸载走事务，并带安装后自检 | `install --verify`：停/启音频服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` 回环；卸载后槽位与 `childApoKeyExists` 复原，设备配置与起始逐字节一致 | `install/selector/operation.rs`；CLI `vxapo-cli install --verify` |
 | 用 windows-rs 类型化绑定代替手写 COM 样板 | APO 接口取自 windows-rs 0.62 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 由 `#[implement]` 生成 vtable 与引用计数 | `object/apo/factory.rs` |
-| `unsafe` 收敛在 FFI 边界并逐处注明 | 392 处 / 27 个文件（`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27 …），配 126 处 SAFETY 说明；唯一手写 vtable 偏移在 COM 聚合外壳（引擎要求多接口固定 offset 布局），该处注明布局依据 | `src/`（搜索 `unsafe`）、`object/apo/aggregate.rs` |
+| `unsafe` 收敛在 FFI 边界并逐处注明 | 391 处 / 26 个文件（`aggregate.rs` 109 · `audiodg.rs` 51 · `child.rs` 31 · `process.rs` 29 · `factory.rs` 27 …），配 315 处 `// SAFETY:` 说明；唯一手写 vtable 偏移在 COM 聚合外壳（引擎要求多接口固定 offset 布局），该处注明布局依据 | `src/`（搜索 `unsafe`）、`object/apo/aggregate.rs` |
 | 实时约束写进类型系统 | `unsafe trait RtSafe` / `RtCopy` 约束「无分配、无锁、无 I/O、无 panic」；`RealtimeContext` 为零尺寸编译期见证；发布构建 `panic = "abort"`；链上零分配 | `pipeline/realtime/` |
-| 以测试与告警作为回归基线 | 491 个测试 / 57 个源文件；`cargo build` 与 `cargo build --tests` 均 0 告警 | `cargo test`、`cargo build --tests` |
+| 以测试与告警作为回归基线 | **481** 个测试（release 471）；`cargo build` 与 `cargo build --tests` 均 0 告警；`cargo clippy --all-targets -- -D warnings` 退出码 0 | `cargo test`、`cargo build --tests`、`cargo clippy` |
 
 ## 2 · 与 Equalizer APO 的差异
 
@@ -164,8 +164,9 @@ App / CLI / Driver 共享同一份配置契约，三者的行为必须一致：
 测试规模与运行方式：
 
 ```bash
-cargo test              # 491 个测试，覆盖 57 个源文件
+cargo test              # 481 个测试（release 471）
 cargo build --tests     # 构建测试目标（预期 0 告警）
+cargo clippy --all-targets -- -D warnings   # 预期退出码 0
 ```
 
 - 部分用例写入 `HKCU\SOFTWARE\VxAPO`（注册表往返），因此需要写权限。它们不触碰 `HKLM` 与
@@ -230,9 +231,9 @@ them.** This section lists the practices and where each can be checked.
 | Implements the standard APO contracts and is loaded by the engine | Implements `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`, works in aggregated mode (`pUnkOuter` non-null); exports `DllGetClassObject` / `DllRegisterServer` and tracks instance/lock counts for `DllCanUnloadNow` | `object/apo/`, `object/apo/dll_exports.rs`; registry entry `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
 | Install/uninstall as transactions with a post-install self-check | `install --verify`: stop/start audio service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe`; after uninstall the slots and `childApoKeyExists` are restored and the device config is byte-identical to its starting state | `install/selector/operation.rs`; CLI `vxapo-cli install --verify` |
 | Typed windows-rs bindings instead of hand-written COM plumbing | APO interfaces from windows-rs 0.62 `Win32::Media::Audio::Apo` (incl. `*_Impl` traits); `ClassFactory` uses `#[implement]` for vtables and reference counting | `object/apo/factory.rs` |
-| `unsafe` confined to the FFI boundary, documented per site | 392 occurrences / 27 files (`aggregate.rs` 108 · `audiodg.rs` 57 · `process.rs` 31 · `child.rs` 30 · `factory.rs` 27 …) with 126 SAFETY notes; the only hand-written vtable offsets are in the COM aggregate shell (the engine requires fixed multi-interface offsets there), with the layout rationale documented on site | `src/` (search `unsafe`), `object/apo/aggregate.rs` |
+| `unsafe` confined to the FFI boundary, documented per site | 391 occurrences / 26 files (`aggregate.rs` 109 · `audiodg.rs` 51 · `child.rs` 31 · `process.rs` 29 · `factory.rs` 27 …) with 315 `// SAFETY:` notes; the only hand-written vtable offsets are in the COM aggregate shell (the engine requires fixed multi-interface offsets there), with the layout rationale documented on site | `src/` (search `unsafe`), `object/apo/aggregate.rs` |
 | Real-time constraints encoded in the type system | `unsafe trait RtSafe` / `RtCopy` require no allocation, no locking, no I/O and no panics; `RealtimeContext` is a zero-sized compile-time witness; release builds use `panic = "abort"`; zero-allocation chain | `pipeline/realtime/` |
-| Tests and warning-free builds as the regression baseline | 491 tests / 57 source files; `cargo build` and `cargo build --tests` report zero warnings | `cargo test`, `cargo build --tests` |
+| Tests and warning-free builds as the regression baseline | **481** tests (release 471); `cargo build` and `cargo build --tests` report zero warnings; `cargo clippy --all-targets -- -D warnings` exits 0 | `cargo test`, `cargo build --tests`, `cargo clippy` |
 
 ## 2 · Differences from Equalizer APO
 
@@ -398,8 +399,9 @@ App, CLI and Driver share one configuration contract and must stay consistent:
 Scale and invocation:
 
 ```bash
-cargo test              # 491 tests across 57 source files
+cargo test              # 481 tests (release 471)
 cargo build --tests     # build test targets (expect zero warnings)
+cargo clippy --all-targets -- -D warnings   # expect exit 0
 ```
 
 - Some cases write `HKCU\SOFTWARE\VxAPO` (registry round trips) and need write access. They

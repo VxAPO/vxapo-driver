@@ -94,13 +94,14 @@ rustfmt 的输出随版本漂移。**不要**把升级和格式化混在一起�
 ## 7. 质量基线（改动前后都不得回退）
 
 ```sh
-cargo test                                   # 491 passed; 0 failed; 1 ignored
-cargo test --release                         # 483 passed; 0 failed; 1 ignored
+cargo test                                   # 481 passed; 0 failed; 1 ignored
+cargo test --release                         # 471 passed; 0 failed; 1 ignored
 cargo clippy --all-targets -- -D warnings    # 退出码 0
 cargo fmt --all -- --check                   # 退出码 0
 ```
 
-`1 ignored` 是真机用例 `active_dependents_enumerates_active_dependents`，
+`1 ignored` 是真机用例
+`install::audiodg::tests::active_dependents_enumerates_active_dependents`，
 需显式 `cargo test -- --ignored` 才会跑（依赖真实机器状态）。
 
 **clippy 这条线是从 222 条 warning 清到 0 的，不要回退。**
@@ -110,3 +111,97 @@ cargo fmt --all -- --check                   # 退出码 0
 > 踩过的坑（2026-10，本仓实证）：把单行 `if x { unsafe { .. } } else { .. }`
 > 交给 rustfmt 展开成多行后，原本写在 `let` 上方的 `SAFETY` 注释与 `unsafe` 块之间
 > 会多出一行 `if`，于是触发上述 deny。**SAFETY 注释必须放在 `unsafe` 块的正上方。**
+
+---
+
+## 8. 公开 API 只经 `lib.rs` 的 facade
+
+**所有模块都是 `pub(crate)`**，对外只经 `src/lib.rs` 末尾的 facade（约 20 个 `pub use`）
+暴露：`pub(crate) mod pipeline;` … + `pub use crate::pipeline::dsp::specs::{...}`。
+
+**新增对外 API 必须同时在此登记**（`lib.rs` 顶部已注明），否则实现细节会随模块路径泄漏。
+
+### 这直接决定了 `dead_code` 的语义（**容易误解，务必读**）
+
+在这些 `pub(crate)` 模块里，**一个 `pub fn` 若无人调用，它就确实没被使用**——
+既没有 crate 内消费者，也不构成对外 API（模块本身对外不可达）。
+
+`dead_code` 判定只看**crate 内的可见性可达性**，与 `.def` 导出表或 `cdylib` **无关**
+（最小实验实证）：
+
+| `lib.rs` 写法 | 里面的 `pub fn` 无人调用时 |
+|---|---|
+| `pub(crate) mod inner;` | **报** dead_code（外面够不着 → `pub` 不构成豁免） |
+| `pub mod inner;` | **不报**（模块对外可达 → 属公开 API，rustc 不能假设外部不用） |
+
+**推论**：源码里的 `pub` 在 `pub(crate) mod` 之下只是「crate 内可见」的同义词。
+**真正决定对外可见性的是 facade，不是 `pub` 关键字。**
+
+---
+
+## 9. `dead_code` 标注的处理约定
+
+本仓有约 **45 处** `#[allow(dead_code)]`。它们**都带理由注释**，且经实证**诚实**
+（剥离全部 allow 后 `cargo check` 仍为 0，报出的正是这些条目）。分四类：
+
+| 类别 | 处理 |
+|---|---|
+| 「死簇：仅被已死的调用链引用」 | 需**逐簇整链评估**，属独立重构任务，勿顺手删 |
+| 规范对表常量（`sys/consts.rs`、`sys/com/*` 的 `APOERR_*` / `*_SIGNATURE`） | **有意保留**，删了会削弱与 Windows SDK 对照能力 |
+| 规范承诺的公开 API（`pipeline/realtime/contract.rs` 的 `RtSafe`/`RtCopy`/`rt_index*`） | **保留**（规范 4.7） |
+| `#[cfg(test)]` 且测试都不用 | 可删（语义最明确） |
+
+### 删死代码前必读的三条
+
+1. **`never constructed` ≠ 无人使用。** 例如 `biquad.rs` 的 `BandPass`/`Notch`/`AllPass`
+   有完整实现**且被测试构造并通过**，只是生产不调用。照 rustc 清单批量删会**连测试覆盖
+   一起删掉**。
+2. **同名陷阱会误删。** `MAX_FRAME_COUNT`（常量）vs `max_frame_count`（字段/方法）；
+   `RegKey::value_exists`（方法，**有活调用**）vs 自由函数 `value_exists(root,..)`（已删）。
+   **删前必须用 `\b` 全词匹配逐处确认。**
+3. **判断「是否被用」只能靠 rustc，不能靠 grep。** `.method(` 形式会严重误判——
+   实测 `initialize` 全仓 102 处「调用点」，但 `ChildApo::initialize` 零调用。
+
+**另注**：`#[cfg(test)]` 的条目在 `cargo check --lib` 下**不报**（根本不编译），
+必须用 `--all-targets` 才看得见全貌。
+
+---
+
+## 10. RT-safety 契约已接入生产路径（规范 4.5）
+
+`pipeline/realtime/contract.rs` 的契约**已在生产路径生效**（此前是未接线的死设施）：
+
+| 侧 | 位置 | 机制 |
+|---|---|---|
+| RT 入口 | `object/apo/process.rs::apo_process` | 创建 `RtGuard` 建立 RT 上下文 |
+| RT 核心 | `apo_process_inner` | `rt_assert_in_rt!` — 只允许经 RT 入口调用 |
+| 非 RT | `object/apo/reload.rs::hot_reload_impl`（取锁 / 文件 I/O） | `rt_require_non_rt!` |
+
+release 下全部编译为空操作（零开销）。**改动这两条路径时注意**：若在 RT 路径上引入
+取锁、分配或 I/O，debug 构建会**当场 panic**——这是设计意图，不是 bug。
+
+### 两个已修的历史缺陷（勿回退）
+
+原实现是**全局 `AtomicBool` + 无计数**，接入后实测暴露两个真缺陷，现已改为
+**thread-local 深度计数**：
+
+1. **嵌套守卫提前清除上下文**：内层 `RtGuard` Drop 会连带清掉外层仍有效的上下文。
+2. **上下文跨线程泄漏**：全局标志会被并发的 watcher 线程读到 → `rt_require_non_rt!`
+   抛**假**违例。
+
+回归测试：`rt_context_is_thread_local`、`rt_depth_does_not_underflow`，以及
+`rt_guard_nested` 中补上的「内层 Drop 后外层仍应有效」断言。
+
+---
+
+## 11. 测试全局状态的串行化
+
+`INST_COUNT`（`object/ref_count.rs`）与 `LOCK_COUNT`（`object/factory.rs`）是**进程级
+全局量**，被 `object/dll_exports.rs` 与 `object/factory.rs` **两个测试模块**的用例读写，
+各自先 `reset_for_test()` 再断言精确值。
+
+**锁必须放在共享位置**：`crate::object::ref_count::serial_lock()`。
+任何读写这两个计数的测试，第一条语句取此锁。
+
+> 曾经的错误做法：在两个测试模块里**各放一把锁**——跨模块竞态依然存在，实测 release 下
+> 仍会失败。锁必须共享。
