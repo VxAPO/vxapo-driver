@@ -76,6 +76,13 @@ pub struct StaleInstall {
     pub target_guid: Option<String>,
     pub target_name: Option<String>,
     pub target_state: String,
+    /// **可自动修复**（App 启动时无需询问即可执行 `stale migrate`）：
+    /// 目标唯一命中（非歧义）+ 旧记录有**有意义**的配置（>64B）+ 目标目录**没有**
+    /// 有意义的配置（缺失或仍是 APO 写的默认占位）。
+    ///
+    /// 判据由 driver 给出（单一事实源）：目标目录已有真实配置时不自动，避免覆盖
+    /// 用户在新设备上已经调好的音；歧义/无源配置/未命中同样不自动（交横幅处理）。
+    pub auto_repairable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

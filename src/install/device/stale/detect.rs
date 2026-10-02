@@ -60,6 +60,19 @@ pub fn list_stale_installs() -> Result<Vec<StaleInstall>> {
         } else {
             record.device_instance_id.clone()
         };
+        // 可自动修复判据（driver 单一事实源，App 只消费标志位）：
+        // 目标唯一命中 + 旧记录配置有意义 + 目标目录没有有意义的配置。
+        let source_meaningful = record
+            .config_path
+            .as_ref()
+            .map(|p| config_is_meaningful(p))
+            .unwrap_or(false);
+        let target_meaningful = target_guid
+            .as_ref()
+            .map(|g| config_is_meaningful(&Path::new(CONFIG_ROOT).join(g).join("config.toml")))
+            .unwrap_or(false);
+        let auto_repairable =
+            target_guid.is_some() && matched_by.is_some() && source_meaningful && !target_meaningful;
         result.push(StaleInstall {
             guid: record.guid.clone(),
             device_instance_id,
@@ -94,6 +107,7 @@ pub fn list_stale_installs() -> Result<Vec<StaleInstall>> {
             target_guid,
             target_name,
             target_state: target_state.to_string(),
+            auto_repairable,
         });
     }
     Ok(result)
@@ -281,4 +295,3 @@ pub(super) fn validate_guid(guid: &str) -> Result<()> {
         .map(|_| ())
         .ok_or_else(|| VxApoError::internal(format!("无效的端点 GUID：{guid}")))
 }
-
