@@ -31,18 +31,31 @@ pub unsafe trait RtSafe {}
 /// 类型必须是 `Copy`，不包含任何非 `RtSafe` 的字段。
 pub unsafe trait RtCopy: Copy {}
 
+// SAFETY: f32 是 Copy、无堆分配、无 Drop、方法无副作用，满足 RtCopy 约束。
 unsafe impl RtCopy for f32 {}
+// SAFETY: f64 同上（Copy + 无副作用）。
 unsafe impl RtCopy for f64 {}
+// SAFETY: i8 同上（Copy + 无副作用）。
 unsafe impl RtCopy for i8 {}
+// SAFETY: i16 同上（Copy + 无副作用）。
 unsafe impl RtCopy for i16 {}
+// SAFETY: i32 同上（Copy + 无副作用）。
 unsafe impl RtCopy for i32 {}
+// SAFETY: i64 同上（Copy + 无副作用）。
 unsafe impl RtCopy for i64 {}
+// SAFETY: u8 同上（Copy + 无副作用）。
 unsafe impl RtCopy for u8 {}
+// SAFETY: u16 同上（Copy + 无副作用）。
 unsafe impl RtCopy for u16 {}
+// SAFETY: u32 同上（Copy + 无副作用）。
 unsafe impl RtCopy for u32 {}
+// SAFETY: u64 同上（Copy + 无副作用）。
 unsafe impl RtCopy for u64 {}
+// SAFETY: usize 同上（Copy + 无副作用）。
 unsafe impl RtCopy for usize {}
+// SAFETY: isize 同上（Copy + 无副作用）。
 unsafe impl RtCopy for isize {}
+// SAFETY: bool 同上（Copy + 无副作用）。
 unsafe impl RtCopy for bool {}
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -245,6 +258,7 @@ mod tests {
     // ── RtGuard 基础 ────────────────────────────────────────────────────────
 
     #[test]
+    #[cfg(debug_assertions)]
     fn rt_guard_sets_context() {
         let _l = serial_lock();
         assert!(!is_rt_context());
@@ -256,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     fn rt_guard_nested() {
         let _l = serial_lock();
         assert!(!is_rt_context());
@@ -271,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     fn rt_guard_drop_restores() {
         let _l = serial_lock();
         let g = RtGuard::new();
@@ -320,6 +336,7 @@ mod tests {
     #[test]
     fn rt_index_reads_correctly() {
         let data = vec![10.0, 20.0, 30.0];
+        // SAFETY: 索引 1 落在 data.len()=3 内，引用在本次调用内使用。
         let val = unsafe { rt_index(&data, 1) };
         assert_eq!(*val, 20.0);
     }
@@ -327,6 +344,7 @@ mod tests {
     #[test]
     fn rt_index_mut_writes_correctly() {
         let mut data = vec![10.0, 20.0, 30.0];
+        // SAFETY: 索引 2 落在 data.len()=3 内；&mut data 保证独占访问。
         let val = unsafe { rt_index_mut(&mut data, 2) };
         *val = 99.0;
         assert_eq!(data[2], 99.0);
@@ -337,6 +355,8 @@ mod tests {
     #[should_panic(expected = "out of bounds")]
     fn rt_index_panics_on_out_of_bounds_debug() {
         let data = vec![1.0, 2.0];
+        // SAFETY: 刻意越界（5 >= len=2）——本用例就是要触发 debug 断言 panic，
+        // 不产生任何解引用后的读写。
         unsafe { rt_index(&data, 5); }
     }
 
@@ -360,12 +380,17 @@ mod tests {
         let _l = serial_lock();
         let mut buffer = vec![0.0f32; 128];
         let _guard = RtGuard::new();
+        // RT 上下文跟踪是 debug-only 设施（release 下 is_rt_context 恒 false，零开销）：
+        // 这里只断言 debug 下的标记行为，索引/平滑逻辑在两种 profile 下都验。
+        #[cfg(debug_assertions)]
         assert!(is_rt_context());
         for i in 0..128 {
+            // SAFETY: i ∈ 0..128 且 buffer.len()=128，索引恒在范围内。
             let sample = unsafe { rt_index_mut(&mut buffer, i) };
             *sample *= 0.5;
         }
         drop(_guard);
+        #[cfg(debug_assertions)]
         assert!(!is_rt_context());
         assert!(buffer.iter().all(|&v| v == 0.0));
     }
