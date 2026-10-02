@@ -40,6 +40,26 @@ pub fn is_zero() -> bool {
     get() == 0
 }
 
+/// 进程级全局状态的**测试串行化锁**。
+///
+/// `INST_COUNT`（本模块）与 `LOCK_COUNT`（`object/factory.rs`）都是进程级全局量，
+/// 而被**两个不同测试模块**（`object/dll_exports.rs`、`object/factory.rs`）的用例
+/// 读写；这些用例各自先 `reset_for_test()` 再断言精确值。并行执行时一个用例的 reset
+/// 会清掉另一个刚刚建立的计数，产生低频假失败（`left == right` 不匹配）。
+///
+/// 因此锁必须放在**共享位置**（本模块）而非各测试模块内——放在各自模块里，
+/// 跨模块的用例之间依然会互相干扰。
+///
+/// 用法：任何读写 `INST_COUNT` / `LOCK_COUNT` 的测试，第一条语句取此锁。
+#[cfg(test)]
+pub(crate) static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取得全局状态锁；前序用例 panic 污染锁时沿用内部值继续（与仓库其余测试惯例一致）。
+#[cfg(test)]
+pub(crate) fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
+    GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 pub fn reset_for_test() {
     INST_COUNT.store(0, Ordering::SeqCst);

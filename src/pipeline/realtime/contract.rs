@@ -1,9 +1,13 @@
 //! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（规范 4.5）
-// 本模块是 RT-safety 契约设施（守卫/标记 trait/线程局部状态）：生产路径经宏展开引用，仓内直接消费者少。
-#![allow(dead_code, unused_imports)]
+//!
+//! 生产路径的接入点：`object/apo/process.rs::apo_process`（RT 线程入口，创建
+//! `RtGuard`）与热重载线程的 `hot_reload_impl`（用 `rt_require_non_rt!` 断言
+//! 自己不在 RT 上下文）。二者是**不同线程**并发运行，因此本模块的上下文状态
+//! 必须是 **thread-local** 而非全局：全局标志会被 RT 线程置位，让并发的非 RT
+//! 线程误判并抛出假的 RT-SAFETY 违例。
 
 #[cfg(debug_assertions)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // RtSafe marker trait
@@ -21,13 +25,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// - 不调用任何非 `RtSafe` 标记的方法
 ///
 /// `initialize` / `new` 等构造方法不受此约束——它们在非实时路径中调用。
-pub unsafe trait RtSafe {}
+///
+/// `Send + Sync` 上界（规范 4.7）：RT 类型要能在实时线程与构造线程之间传递/共享，
+/// 缺少这两个 auto trait 的标记没有意义。
+#[allow(dead_code)] // 规范 4.7 承诺的公开标记 trait：暂无仓内实现者，按规范保留
+pub unsafe trait RtSafe: Send + Sync {}
 
 /// 标记类型可以在实时路径中使用（值语义，无副作用）。
 ///
 /// # Safety
 ///
 /// 类型必须是 `Copy`，不包含任何非 `RtSafe` 的字段。
+#[allow(dead_code)] // 规范 4.7 承诺的公开标记 trait：暂无仓内消费者，按规范保留
 pub unsafe trait RtCopy: Copy {}
 
 // SAFETY: f32 是 Copy、无堆分配、无 Drop、方法无副作用，满足 RtCopy 约束。
@@ -84,36 +93,49 @@ impl RealtimeContext {
 // RT 上下文跟踪（Debug 模式）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 全局 RT 上下文标志（仅 debug 模式使用）。
+// 当前线程的 RT 上下文嵌套深度（仅 debug 模式使用）。
+//
+// 必须 thread-local：RT 线程与非 RT 线程（配置热重载 watcher）并发运行，
+// 全局标志会互相污染。
+//
+// 用**深度计数**而非布尔量：嵌套守卫（如 RT 函数内部再取一次守卫）在
+// 内层 Drop 时不能把外层仍在的 RT 上下文清掉。
 #[cfg(debug_assertions)]
-static RT_ACTIVE: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static RT_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
 
 /// 进入实时处理上下文。
+///
+/// 可重入：每次调用使深度 +1，须与 `exit_rt_context` 一一配对。
 #[inline(always)]
 pub fn enter_rt_context() {
     #[cfg(debug_assertions)]
-    {
-        RT_ACTIVE.store(true, Ordering::SeqCst);
-    }
+    RT_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
 }
 
 /// 离开实时处理上下文。
+///
+/// 深度归零才算真正离开；内层守卫 Drop 不会清掉外层仍有效的上下文。
 #[inline(always)]
 pub fn exit_rt_context() {
     #[cfg(debug_assertions)]
-    {
-        RT_ACTIVE.store(false, Ordering::SeqCst);
-    }
+    RT_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
 }
 
-/// 检查当前是否在 RT 上下文中。
+/// 检查当前是否在 RT 上下文中（**仅当前线程**）。
 ///
 /// Release 模式下始终返回 `false`（零开销）。
+///
+/// `dead_code` 只在 release 下出现：debug 下由 `RT_DEPTH` 的读写与断言宏使用；
+/// release 下断言宏整体编译为空操作，本函数除被宏引用外暂无直接调用者。
+/// 它是规范 4.7 承诺的公开 API，故保留。
+#[allow(dead_code)] // 规范 4.7 承诺的公开 API：release 下断言宏编译为空，故暂无调用者
 #[inline(always)]
 pub fn is_rt_context() -> bool {
     #[cfg(debug_assertions)]
     {
-        RT_ACTIVE.load(Ordering::SeqCst)
+        RT_DEPTH.with(|d| d.get() > 0)
     }
     #[cfg(not(debug_assertions))]
     {
@@ -211,6 +233,7 @@ macro_rules! rt_require_non_rt {
 /// # Safety
 ///
 /// `index` 必须在 `[0, slice.len())` 范围内。
+#[allow(dead_code)] // 规范 4.7 承诺的公开 API：DSP 逐采样索引的 RT 安全替代，按规范保留
 #[inline(always)]
 pub unsafe fn rt_index<T>(slice: &[T], index: usize) -> &T {
     debug_assert!(
@@ -227,6 +250,7 @@ pub unsafe fn rt_index<T>(slice: &[T], index: usize) -> &T {
 /// # Safety
 ///
 /// `index` 必须在 `[0, slice.len())` 范围内。
+#[allow(dead_code)] // 规范 4.7 承诺的公开 API：DSP 逐采样索引的 RT 安全替代，按规范保留
 #[inline(always)]
 pub unsafe fn rt_index_mut<T>(slice: &mut [T], index: usize) -> &mut T {
     debug_assert!(
@@ -280,7 +304,53 @@ mod tests {
                 let _g2 = RtGuard::new();
                 assert!(is_rt_context());
             }
+            // 回归（缺陷 A）：内层守卫 Drop 后，外层仍在 ⇒ 必须仍处于 RT 上下文。
+            // 原实现用布尔量 + 无计数，这里会假性退出，故该断言曾长期缺失。
+            assert!(
+                is_rt_context(),
+                "内层守卫 Drop 不得清掉外层仍有效的 RT 上下文"
+            );
         }
+        assert!(!is_rt_context());
+    }
+
+    /// 回归（缺陷 B）：RT 上下文是**线程局部**的，不得泄漏到其它线程。
+    ///
+    /// 生产上 RT 线程与配置热重载线程并发；若用全局标志，watcher 线程会看到
+    /// RT 线程置位的状态，从而在 `rt_require_non_rt!` 上抛假违例。
+    #[test]
+    #[cfg(debug_assertions)]
+    fn rt_context_is_thread_local() {
+        let _l = serial_lock();
+        assert!(!is_rt_context());
+
+        let guard = RtGuard::new();
+        assert!(is_rt_context(), "本线程应处于 RT 上下文");
+
+        // 另一个线程必须看不到本线程的 RT 状态。
+        let seen_elsewhere = std::thread::spawn(is_rt_context).join().unwrap();
+        drop(guard);
+
+        assert!(
+            !seen_elsewhere,
+            "RT 上下文泄漏到其它线程（说明用了全局标志而非 thread-local）"
+        );
+        assert!(!is_rt_context());
+    }
+
+    /// 深度计数不得下溢（多余的 exit 调用应被饱和保护）。
+    #[test]
+    #[cfg(debug_assertions)]
+    fn rt_depth_does_not_underflow() {
+        let _l = serial_lock();
+        assert!(!is_rt_context());
+        exit_rt_context(); // 多余的退出调用
+        exit_rt_context();
+        assert!(!is_rt_context(), "多余的 exit 不得变成负数而误报在 RT 中");
+        // 之后再正常进入仍应工作。
+        let g = RtGuard::new();
+        assert!(is_rt_context());
+        drop(g);
         assert!(!is_rt_context());
     }
 

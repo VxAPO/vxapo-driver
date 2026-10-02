@@ -22,6 +22,8 @@ use crate::pipeline::format::{extract_format, AudioFormat};
 use crate::pipeline::process::{
     process_audio, process_chain_interleaved, ErrorPolicy, ProcessParams,
 };
+use crate::pipeline::realtime::contract::RtGuard;
+use crate::rt_assert_in_rt;
 use crate::sys::audio_defs::get_channel_names;
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{
@@ -108,6 +110,12 @@ pub(crate) fn apo_process(
 ) {
     // RT 线程入口：硬件 FTZ/DAZ（thread_local 幂等，重复调用零开销）。
     init_audio_thread();
+
+    // RT 上下文守卫（规范 4.5）：本函数即实时线程入口，在此建立 RT 上下文，
+    // 使 `rt_require_non_rt!` / `rt_assert_in_rt!` 在 debug 下能真正生效——
+    // 任何被 RT 路径间接触达的非 RT 操作（取锁、分配、I/O）都会当场 panic，
+    // 而不是留到实机上表现为爆音或死锁。release 下为空操作、零开销。
+    let _rt = RtGuard::new();
 
     if apo.state_cell.current() != ApoState::Locked {
         return;
@@ -602,6 +610,11 @@ impl ApoObject {
         num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
+        // RT-safety 契约（规范 4.5）：本函数是实时处理核心，只允许经 RT 入口
+        // `apo_process` 的 RtGuard 建立上下文后被调用。debug 下若不成立即 panic，
+        // 把「谁把 RT 核心接错了路径」当场暴露，而不是留到实机表现为爆音/死锁。
+        rt_assert_in_rt!("apo_process_inner must run under the RT context guard");
+
         // （D1）：childRT->APOProcess **前置每帧一次**（object 7.1.11 Step 3）。
         // 双链共享同一份 child 输出作输入；child 不在 current/outgoing 任一链内。
         // 锁 inner **前**调（避免持 inner 锁调 child——child 是独立 COM 对象，无循环依赖）。

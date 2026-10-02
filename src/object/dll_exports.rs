@@ -378,6 +378,12 @@ mod tests {
     use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
     use crate::sys::com::prelude::{IUnknown, Interface, GUID};
 
+    /// 本模块测试读写**进程级**全局计数（`inst_count` / `factory` 锁计数），
+    /// 且各自先 `reset_for_test()` 再断言精确值。锁必须与 `object/factory.rs` 的
+    /// 测试模块**共用同一把**——否则跨模块并行时仍会互相清零（见
+    /// `object/ref_count.rs::GLOBAL_STATE_LOCK` 的说明）。
+    use crate::object::ref_count::serial_lock;
+
     /// 释放 COM 接口指针（通过 vtable 调用 Release）。
     ///
     /// `#[implement]` COM 智能指针在 windows-interface 0.59.3 下方法不可见，
@@ -401,6 +407,7 @@ mod tests {
 
     #[test]
     fn can_unload_when_empty() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
         assert_eq!(DllCanUnloadNow(), S_OK);
@@ -408,6 +415,7 @@ mod tests {
 
     #[test]
     fn cannot_unload_with_instance() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
 
@@ -423,6 +431,7 @@ mod tests {
 
     #[test]
     fn cannot_unload_with_lock() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
 
@@ -435,6 +444,7 @@ mod tests {
 
     #[test]
     fn cannot_unload_with_both() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
 
@@ -455,6 +465,7 @@ mod tests {
 
     #[test]
     fn get_class_object_premix() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         let clsid = CLSID_VXAPO_PRE_MIX;
         let iid = IUnknown::IID;
@@ -483,6 +494,7 @@ mod tests {
 
     #[test]
     fn get_class_object_postmix() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         let clsid = CLSID_VXAPO_POST_MIX;
         let iid = IUnknown::IID;
@@ -567,6 +579,7 @@ mod tests {
 
     #[test]
     fn full_lifecycle_simulation() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         factory::lock_reset_for_test();
 

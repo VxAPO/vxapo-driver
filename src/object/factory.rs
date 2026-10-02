@@ -189,12 +189,14 @@ mod tests {
     use super::*;
     use crate::object::apo::ApoObject;
     use crate::object::ref_count as inst_count;
+    use crate::object::ref_count::serial_lock;
     use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 
     // ── LOCK_COUNT ──────────────────────────────────────────────────────────
 
     #[test]
     fn lock_count_initial() {
+        let _l = serial_lock();
         lock_reset_for_test();
         assert_eq!(lock_count(), 0);
         assert!(lock_is_zero());
@@ -202,6 +204,7 @@ mod tests {
 
     #[test]
     fn lock_count_cycle() {
+        let _l = serial_lock();
         lock_reset_for_test();
         assert_eq!(lock_increment(), 1);
         assert_eq!(lock_increment(), 2);
@@ -214,6 +217,7 @@ mod tests {
 
     #[test]
     fn lock_decrement_zero_is_noop() {
+        let _l = serial_lock();
         // 回归：LockServer(false) 在计数已为 0 时不得下溢为 u32::MAX
         // （否则 DllCanUnloadNow 永久 S_FALSE）。
         lock_reset_for_test();
@@ -246,6 +250,7 @@ mod tests {
 
     #[test]
     fn create_instance_inst_count() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         lock_reset_for_test();
 
@@ -266,6 +271,7 @@ mod tests {
 
     #[test]
     fn full_lifecycle() {
+        let _l = serial_lock();
         inst_count::reset_for_test();
         lock_reset_for_test();
 
