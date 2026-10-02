@@ -414,8 +414,13 @@ mod simd_df2t {
         let s2 = _mm_set_pd(st1.s2, st0.s2);
 
         let (out, new_s1, new_s2) = if use_fma {
+            // SAFETY: use_fma 由 std::is_x86_feature_detected!("fma") 求得，
+            // 满足 step_fma 的 #[target_feature(enable = "fma")] 前提；
+            // coeffs/st1/st2 均为有效引用（借用期内不会被释放或别名改写）。
             unsafe { step_fma(coeffs, s1, s2, x) }
         } else {
+            // SAFETY: SSE2 是 x86_64 的基线指令集，任何 x86_64 CPU 均支持；
+            // coeffs/st1/st2 均为有效引用。
             unsafe { step_sse2(coeffs, s1, s2, x) }
         };
 

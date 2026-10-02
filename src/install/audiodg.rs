@@ -122,28 +122,36 @@ pub fn stop_audio_service() -> Result<()> {
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenSCManagerW 成功返回并交由本 guard 独占持有，
+            // Drop 每个实例只执行一次。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _scm_guard = ScmGuard(scm);
 
     let service_name = HSTRING::from("AudioSrv");
+    // SAFETY: scm 由 OpenSCManagerW 成功返回且由 _scm_guard 持有至函数结束；
+    // 服务名 HSTRING 在调用期间存活；失败经 map_err 转 Err，不会使用无效句柄。
     let svc = unsafe { OpenServiceW(scm, &service_name, SERVICE_ALL_ACCESS) }
         .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
 
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
+            // SAFETY: svc 由 OpenServiceW 成功返回并交由本 guard 独占持有，只关闭一次。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _svc_guard = SvcGuard(svc);
 
+    // SAFETY: SERVICE_STATUS 是 POD，全零位模式合法（仅作初值，随后被 SCM 覆写）。
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    // SAFETY: svc 有效（上方 OpenServiceW + guard 持有）；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
         .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
 
     if status.dwCurrentState == SERVICE_RUNNING {
+        // SAFETY: 同上——svc 有效，status 可写，SERVICE_CONTROL_STOP 为合法控制码。
         unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
             .map_err(|e| VxApoError::internal(&format!("ControlService(AudioSrv STOP) failed: {e}")))?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -152,6 +160,7 @@ pub fn stop_audio_service() -> Result<()> {
                 return Err(VxApoError::internal("AudioSrv stop timed out (30s)"));
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
+            // SAFETY: 轮询中 svc 仍由 guard 持有；status 为本地可写 POD。
             unsafe { QueryServiceStatus(svc, &mut status) }
                 .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
         }
@@ -221,6 +230,7 @@ pub(crate) fn restart_audio_service() -> Result<()> {
     let _svc_guard = SvcGuard(svc);
 
     // 当前状态。
+    // SAFETY: SERVICE_STATUS 为 POD，全零位模式合法（初值，随即被 SCM 覆写）。
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     // SAFETY: status 可变缓冲区由 SCM 填充。
     unsafe { QueryServiceStatus(svc, &mut status) }
@@ -272,28 +282,34 @@ pub fn ensure_audio_service_running() -> Result<()> {
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenSCManagerW 成功返回并交由本 guard 独占持有。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _scm_guard = ScmGuard(scm);
 
+    // SAFETY: scm 有效且由 _scm_guard 持有；服务名 HSTRING 临时对象存活至调用结束。
     let svc = unsafe { OpenServiceW(scm, &HSTRING::from("AudioSrv"), SERVICE_ALL_ACCESS) }
         .map_err(|e| VxApoError::internal(&format!("OpenServiceW(AudioSrv) failed: {e}")))?;
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
+            // SAFETY: svc 由 OpenServiceW 成功返回并交由本 guard 独占持有。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _svc_guard = SvcGuard(svc);
 
+    // SAFETY: SERVICE_STATUS 为 POD，全零位模式合法（初值，随即被 SCM 覆写）。
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    // SAFETY: svc 有效（上方 OpenServiceW）；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
         .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus(AudioSrv) failed: {e}")))?;
     if status.dwCurrentState == SERVICE_RUNNING {
         return Ok(());
     }
 
+    // SAFETY: svc 有效；None 表示无需额外参数数组，StartServiceW 允许该形式。
     unsafe { StartServiceW(svc, None) }
         .map_err(|e| VxApoError::internal(&format!("StartServiceW(AudioSrv) failed: {e}")))?;
     log::info!("AudioSrv started (ensure running)");
@@ -379,6 +395,8 @@ fn audiodg_pids() -> Vec<u32> {
         if name.eq_ignore_ascii_case("audiodg.exe") {
             pids.push(entry.th32ProcessID);
         }
+        // SAFETY: entry 的 dwSize 已按 API 约定设为结构大小（首次调用前设置）；
+        // snapshot 由本函数创建并独占，循环内复用同一个 entry。
         ok = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
     }
     // SAFETY: 快照句柄由本函数独占。
@@ -404,11 +422,13 @@ pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> 
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenSCManagerW 成功返回并交由本 guard 独占持有。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _scm_guard = ScmGuard(scm);
 
+    // SAFETY: scm 有效且由 _scm_guard 持有；服务名 HSTRING 临时对象存活至调用结束。
     let svc = unsafe {
         OpenServiceW(
             scm,
@@ -420,12 +440,15 @@ pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> 
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
+            // SAFETY: svc 由 OpenServiceW 成功返回并交由本 guard 独占持有。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _svc_guard = SvcGuard(svc);
 
     for dep in active_dependents(svc)? {
+        // SAFETY: scm 有效；dep 是 active_dependents 枚举出的服务名，其临时 HSTRING
+        // 存活至本次调用结束；失败经 if let Ok 跳过该依赖。
         if let Ok(dep_svc) = unsafe {
             OpenServiceW(
                 scm,
@@ -434,6 +457,7 @@ pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> 
             )
         } {
             let result = stop_service_and_wait(dep_svc, &dep, stop_timeout_secs);
+            // SAFETY: dep_svc 由上方 OpenServiceW 成功返回（if let Ok 分支），此处释放一次。
             let _ = unsafe { CloseServiceHandle(dep_svc) };
             result?;
         }
@@ -458,11 +482,13 @@ pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()
     struct ScmGuard(SC_HANDLE);
     impl Drop for ScmGuard {
         fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenSCManagerW 成功返回并交由本 guard 独占持有。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
     let _scm_guard = ScmGuard(scm);
 
+    // SAFETY: scm 有效且由 _scm_guard 持有；服务名 HSTRING 临时对象存活至调用结束。
     let svc = unsafe {
         OpenServiceW(
             scm,
@@ -474,6 +500,7 @@ pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()
     struct SvcGuard(SC_HANDLE);
     impl Drop for SvcGuard {
         fn drop(&mut self) {
+            // SAFETY: svc 由 OpenServiceW 成功返回并交由本 guard 独占持有。
             let _ = unsafe { CloseServiceHandle(self.0) };
         }
     }
@@ -481,10 +508,12 @@ pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()
 
     start_service_and_wait(svc, "AudioSrv", start_timeout_secs)?;
     for dep in active_dependents(svc)? {
+        // SAFETY: scm 有效；dep 为枚举出的依赖服务名（临时 HSTRING 存活至调用结束）。
         if let Ok(dep_svc) = unsafe {
             OpenServiceW(scm, &HSTRING::from(&dep), SERVICE_START | SERVICE_QUERY_STATUS)
         } {
             let result = start_service_and_wait(dep_svc, &dep, start_timeout_secs);
+            // SAFETY: dep_svc 由上方 OpenServiceW 成功返回，此处释放一次。
             let _ = unsafe { CloseServiceHandle(dep_svc) };
             result?;
         }
@@ -506,6 +535,8 @@ fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
 
     let mut needed = 0u32;
     let mut returned = 0u32;
+    // SAFETY: svc 有效；lpServices=None 且 cbBufSize=0 表示“只查询所需缓冲大小”，
+    // 该调用不写入任何缓冲区，只回填 needed/returned。
     let _ = unsafe {
         EnumDependentServicesW(svc, SERVICE_ACTIVE, None, 0, &mut needed, &mut returned)
     };
@@ -513,6 +544,8 @@ fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let mut buf = vec![0u8; needed as usize + 32];
+    // SAFETY: buf 按 needed+32 字节分配并以其长度作为 cbBufSize 传入；svc 有效；
+    // API 只会写入该缓冲（结果数量不超过 needed/returned）。
     unsafe {
         EnumDependentServicesW(
             svc,
@@ -527,6 +560,9 @@ fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
 
     let mut names = Vec::with_capacity(returned as usize);
     for i in 0..returned {
+        // SAFETY: buf 已由上面的 EnumDependentServicesW 填充 returned 个
+        // ENUM_SERVICE_STATUSW（API 契约），i < returned 故落在有效范围内；
+        // Vec<u8> 的分配由 malloc 提供，满足该结构的对齐要求。
         let entry = unsafe { &*(buf.as_ptr() as *const ENUM_SERVICE_STATUSW).add(i as usize) };
         names.push(string_from_wide(entry.lpServiceName));
     }
@@ -540,12 +576,15 @@ fn stop_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resul
         SERVICE_STOPPED, SERVICE_STATUS,
     };
 
+    // SAFETY: SERVICE_STATUS 为 POD，全零位模式合法（初值，随即被 SCM 覆写）。
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    // SAFETY: svc 由调用方保证有效（本函数只做服务控制）；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
         .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
     if status.dwCurrentState != SERVICE_RUNNING {
         return Ok(());
     }
+    // SAFETY: svc 有效；SERVICE_CONTROL_STOP 为合法控制码；status 可写。
     unsafe { ControlService(svc, SERVICE_CONTROL_STOP, &mut status) }
         .map_err(|e| VxApoError::internal(&format!("ControlService({name} STOP) failed: {e}")))?;
 
@@ -557,6 +596,7 @@ fn stop_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resul
             )));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+        // SAFETY: 轮询期间 svc 仍有效；status 为本地可写 POD。
         unsafe { QueryServiceStatus(svc, &mut status) }
             .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
     }
@@ -569,7 +609,9 @@ fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resu
         QueryServiceStatus, StartServiceW, SERVICE_RUNNING, SERVICE_STATUS,
     };
 
+    // SAFETY: SERVICE_STATUS 为 POD，全零位模式合法（初值，随即被 SCM 覆写）。
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    // SAFETY: svc 由调用方保证有效；status 为本地可写 POD。
     unsafe { QueryServiceStatus(svc, &mut status) }
         .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
     if status.dwCurrentState == SERVICE_RUNNING {
@@ -581,7 +623,9 @@ fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resu
     loop {
         // StartServiceW 对“已启动/启动中”可能返回 ERROR_SERVICE_ALREADY_RUNNING——
         // 忽略错误，继续轮询状态。
+        // SAFETY: svc 有效；None 表示无额外参数数组。
         let _ = unsafe { StartServiceW(svc, None) };
+        // SAFETY: 同上轮询——svc 有效，status 为本地可写 POD。
         unsafe { QueryServiceStatus(svc, &mut status) }
             .map_err(|e| VxApoError::internal(&format!("QueryServiceStatus({name}) failed: {e}")))?;
         if status.dwCurrentState == SERVICE_RUNNING {
@@ -594,6 +638,7 @@ fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resu
             )));
         }
         if now > next_retry {
+            // SAFETY: svc 有效；重试语义同上（已启动/启动中会返回错误，忽略即可）。
             let _ = unsafe { StartServiceW(svc, None) };
             next_retry = now + std::time::Duration::from_secs(5);
         }
@@ -607,11 +652,15 @@ fn string_from_wide(p: PWSTR) -> String {
         return String::new();
     }
     let mut len = 0usize;
+    // SAFETY: p.0 是服务 API 返回的 NUL 结尾宽字符串（调用方已检查非空）；
+    // 循环只逐字读取直到终止符，不越过终止符读取。
     unsafe {
         while *p.0.add(len) != 0 {
             len += 1;
         }
     }
+    // SAFETY: len 为上面的扫描结果（不含终止符），p.0 至少有 len+1 个有效的 u16；
+    // 切片只在本函数内使用，不逃逸。
     let slice = unsafe { std::slice::from_raw_parts(p.0, len) };
     String::from_utf16_lossy(slice)
 }

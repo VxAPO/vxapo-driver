@@ -60,10 +60,14 @@ pub struct RegKey {
 // SAFETY: HKEY 为值语义句柄（内部无借用状态），Windows 注册表句柄跨线程
 // 传递/使用合法；RAII Drop 只在句柄最后持有者释放时 RegCloseKey。
 unsafe impl Send for RegKey {}
+// SAFETY: Windows 注册表句柄本身可跨线程使用；本类型的 &self 方法只把 handle 传给
+// Reg* 读写 API，不暴露无同步的可变状态，句柄释放只发生在 Drop（独占 &mut self）。
 unsafe impl Sync for RegKey {}
 
 impl Drop for RegKey {
     fn drop(&mut self) {
+        // SAFETY: handle 由 open/create 成功返回并只在本结构持有；Drop 每个实例只跑一次，
+        // RegCloseKey 的失败（句柄已无效）无害，故忽略返回值。
         unsafe {
             let _ = RegCloseKey(self.handle);
         }
@@ -75,6 +79,8 @@ impl RegKey {
     pub fn open(root: HKEY, sub_key: &str) -> Result<Self> {
         let sub_key = HSTRING::from(sub_key);
         let mut handle = HKEY::default();
+        // SAFETY: root 为预定义 HKEY 或本进程持有的有效句柄；sub_key 是存活至调用结束的
+        // NUL 结尾 HSTRING；&mut handle 仅为出参，成功后由 RegKey 接管其所有权。
         let err = unsafe { RegOpenKeyExW(root, &sub_key, None, SAM_READ, &mut handle) };
         win32_ok(err)?;
         Ok(Self { handle })
@@ -90,6 +96,8 @@ impl RegKey {
         let sub_key = HSTRING::from(sub_key);
         let mut handle = HKEY::default();
         let opts = REG_OPEN_CREATE_OPTIONS(0); // REG_OPTION_NON_VOLATILE
+        // SAFETY: 同 open()——root/sub_key 有效且存活；SAM_ALL 由常量给出；handle 为出参，
+        // 仅在返回成功（win32_ok 校验）时被 RegKey 接管。
         let err = unsafe {
             RegCreateKeyExW(
                 root,
@@ -114,6 +122,8 @@ impl RegKey {
     pub fn open_for_write(root: HKEY, sub_key: &str) -> Result<Self> {
         let sub_key = HSTRING::from(sub_key);
         let mut handle = HKEY::default();
+        // SAFETY: 同 open()——root 有效、sub_key 为存活 HSTRING、handle 为出参；
+        // 仅申请 KEY_SET_VALUE|KEY_QUERY_VALUE，不触发 ACL 超权限问题。
         let err = unsafe { RegOpenKeyExW(root, &sub_key, None, SAM_SET_VALUE, &mut handle) };
         win32_ok(err)?;
         Ok(Self { handle })
@@ -135,6 +145,8 @@ impl RegKey {
         let mut value_type = REG_VALUE_TYPE(0);
         let mut size = 0u32;
         // 第一次查询获取类型和大小
+        // SAFETY: self.handle 有效（RegKey 不变量）；name 为存活 HSTRING；
+        // 本调用只查询类型/大小（缓冲区传 None），不写入任何内存。
         let err = unsafe {
             RegQueryValueExW(
                 self.handle,
@@ -148,6 +160,8 @@ impl RegKey {
         win32_ok(err)?;
 
         let mut buf: Vec<u8> = vec![0u8; size as usize];
+        // SAFETY: buf 按上一次查询返回的 size 精确分配，且 size 传入时同步更新；
+        // name 与 self.handle 均有效，API 只会写入 buf 的前 size 字节。
         let err = unsafe {
             RegQueryValueExW(
                 self.handle,
@@ -245,6 +259,8 @@ impl RegKey {
     /// - `Err`：访问失败等其它错误（审查 #6：不得把 ERROR_ACCESS_DENIED 当不存在）。
     pub fn value_exists(&self, name: &str) -> Result<bool> {
         let name = HSTRING::from(name);
+        // SAFETY: 只做存在性探测——句柄与 name 有效，所有输出参数为 None，
+        // 不涉及任何缓冲区读写。
         let err = unsafe { RegQueryValueExW(self.handle, &name, None, None, None, None) };
         if err.0 == 0 {
             Ok(true)
@@ -273,6 +289,8 @@ impl RegKey {
             let mut buf = vec![0u16; 512];
             loop {
                 let mut len = buf.len() as u32;
+                // SAFETY: buf 为 512 个 u16 的独立栈外缓冲，len 以其容量初始化（API 输入
+                // 上限、输出实际长度）；self.handle 有效，index 由循环递增。
                 let err = unsafe {
                     RegEnumKeyExW(
                         self.handle,
@@ -316,6 +334,8 @@ impl RegKey {
             let mut buf = vec![0u16; 512];
             loop {
                 let mut len = buf.len() as u32;
+                // SAFETY: 同 enum_sub_keys——buf 容量足够且以 len 传入，句柄有效；
+                // API 只写 buf 与其长度，不越界。
                 let err = unsafe {
                     RegEnumValueW(
                         self.handle,
@@ -378,6 +398,8 @@ impl RegKey {
             .flat_map(|u| u.to_le_bytes())
             .collect();
         bytes.extend_from_slice(&[0, 0]); // null terminator
+        // SAFETY: bytes 为 UTF-16LE + 单个 NUL 终止的 REG_SZ 布局，长度以字节数传入；
+        // &bytes 在调用期间存活，self.handle 具备 KEY_SET_VALUE。
         let err = unsafe {
             RegSetValueExW(self.handle, &name, None, REG_SZ, Some(&bytes))
         };
@@ -388,6 +410,8 @@ impl RegKey {
     pub fn write_dword(&self, name: &str, value: u32) -> Result<()> {
         let name = HSTRING::from(name);
         let data = value.to_le_bytes();
+        // SAFETY: data 是 4 字节 LE 布局、与 REG_DWORD 类型一致；切片在调用期间存活，
+        // self.handle 具备 KEY_SET_VALUE。
         let err = unsafe {
             RegSetValueExW(
                 self.handle,
@@ -406,6 +430,7 @@ impl RegKey {
     pub fn write_qword(&self, name: &str, value: u64) -> Result<()> {
         let name = HSTRING::from(name);
         let data = value.to_le_bytes();
+        // SAFETY: data 是 8 字节 LE 布局、与 REG_QWORD 类型一致；其余同 write_dword。
         let err = unsafe {
             RegSetValueExW(
                 self.handle,
@@ -421,6 +446,8 @@ impl RegKey {
     /// 写入 REG_BINARY。
     pub fn write_binary(&self, name: &str, data: &[u8]) -> Result<()> {
         let name = HSTRING::from(name);
+        // SAFETY: data 为调用方提供的字节切片，长度按字节数传递；切片与 name 在调用
+        // 期间存活，self.handle 具备 KEY_SET_VALUE。
         let err = unsafe {
             RegSetValueExW(
                 self.handle,
@@ -450,6 +477,8 @@ impl RegKey {
             bytes.extend_from_slice(&[0, 0]); // 每项 null 终止
         }
         bytes.extend_from_slice(&[0, 0]); // 列表结束（双 null）
+        // SAFETY: bytes 为 REG_MULTI_SZ 布局（每项 NUL 终止 + 双 NUL 结尾），长度以字节
+        // 数传入；切片在调用期间存活，self.handle 具备 KEY_SET_VALUE。
         let err = unsafe {
             RegSetValueExW(
                 self.handle,
@@ -465,6 +494,8 @@ impl RegKey {
     /// 删除值（幂等）。
     pub fn delete_value(&self, name: &str) -> Result<()> {
         let name = HSTRING::from(name);
+        // SAFETY: name 为存活 HSTRING，self.handle 由本结构持有；值不存在时返回
+        // ERROR_FILE_NOT_FOUND，由调用方按幂等成功处理。
         let err = unsafe { RegDeleteValueW(self.handle, &name) };
         if err.0 == 0 || is_not_found(err) {
             Ok(())
@@ -481,6 +512,8 @@ impl RegKey {
     /// [`delete_tree`]。
     pub fn delete_sub_key(&self, relative_child: &str) -> Result<()> {
         let relative_child = HSTRING::from(relative_child);
+        // SAFETY: relative_child 是相对 self.handle 的子键路径且为存活 HSTRING；
+        // RegDeleteTreeW 递归删除该子树，键不存在时按幂等成功处理。
         let err = unsafe { RegDeleteTreeW(self.handle, &relative_child) };
         if err.0 == 0 || is_not_found(err) {
             Ok(())
@@ -568,6 +601,8 @@ pub fn value_exists(root: HKEY, sub_key: &str, name: &str) -> Result<bool> {
 /// 递归删除子树（幂等，不需要已打开的句柄）。
 pub fn delete_tree(root: HKEY, sub_key: &str) -> Result<()> {
     let sub_key = HSTRING::from(sub_key);
+    // SAFETY: root 为调用方保证有效的 HKEY，sub_key 为存活 HSTRING 且是相对 root 的
+    // 完整子键路径；键不存在时按幂等成功处理。
     let err = unsafe { RegDeleteTreeW(root, &sub_key) };
     if err.0 == 0 || is_not_found(err) {
         Ok(())

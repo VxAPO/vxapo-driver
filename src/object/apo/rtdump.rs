@@ -73,7 +73,10 @@ pub(crate) unsafe fn rt_dump_push(
     for f in 0..n {
         let in_base = f * in_ch;
         let out_base = f * out_ch;
+        // SAFETY: in_ptr 指向 in_ch × frames 的交织 f32（调用方按 APO 契约保证）；
+        // `in_ch >= 1 / >= 2` 分支保证 in_base（及 +1）落在该范围内，f < n <= frames。
         let il = if in_ch >= 1 { unsafe { *in_ptr.add(in_base) } } else { 0.0 };
+        // SAFETY: 同上——仅当 in_ch >= 2 时访问 in_base + 1，仍在该缓冲范围内。
         let ir = if in_ch >= 2 { unsafe { *in_ptr.add(in_base + 1) } } else { 0.0 };
         let ol = if out_ch >= 1 { out_slice[out_base] } else { 0.0 };
         let or_ = if out_ch >= 2 { out_slice[out_base + 1] } else { 0.0 };

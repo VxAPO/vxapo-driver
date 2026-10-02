@@ -123,6 +123,8 @@ pub unsafe extern "system" fn DllGetClassObject(
     }
 
     // 预置 null，调用方可以据此判断失败
+    // SAFETY: DllGetClassObject 的 COM 契约保证 ppv 非空且可写（上方已做 null 检查）；
+    // 失败前写入 null 是 COM 惯例。
     unsafe { *ppv = std::ptr::null_mut(); }
 
     // 惰性安装 telemetry（首次 DllGetClassObject，Loader Lock 之外）。
@@ -144,14 +146,20 @@ pub unsafe extern "system" fn DllGetClassObject(
     // ── QueryInterface 获取请求的接口 ──────────────────────
     // windows-interface 0.59.3 跨模块方法不可见，使用原始 vtable 调用 QI
     // （升级 windows-rs 后可改为 factory.query(&riid, ppv)，见 CHANGELOG）。
+    // SAFETY: factory 是 `#[implement]` 生成的 COM 智能指针，其内存布局首字段即接口
+    // 指针；transmute_copy 只复制出该指针（factory 仍在本作用域内负责释放）。
     let raw_ptr: *mut c_void = unsafe { std::mem::transmute_copy(&factory) };
+    // SAFETY: raw_ptr 指向有效的 COM 对象；COM 布局保证首字段为 vtable 指针。
     let vtbl = unsafe { *(raw_ptr as *const *const usize) };
     type QIFn = unsafe extern "system" fn(
         *mut c_void, *const GUID, *mut *mut c_void,
     ) -> HRESULT;
     // vtable[0] = QueryInterface
+    // SAFETY: COM 契约规定 vtable 第 0 项即 QueryInterface，其签名与 QIFn 一致。
     let qi: QIFn = unsafe { std::mem::transmute(*vtbl.add(0)) };
 
+    // SAFETY: raw_ptr 有效；riid 与 ppv 由 DllGetClassObject 契约保证有效
+    // （函数入口已检查非空），调用方按 COM 规则接收引用。
     let hr = unsafe { qi(raw_ptr, &*riid, ppv as *mut *mut c_void) };
 
     // 释放工厂的临时引用（drop 触发 Release）
@@ -160,6 +168,7 @@ pub unsafe extern "system" fn DllGetClassObject(
     // QI 失败时 ref_count 1 → 0，对象自动释放
 
     if hr.is_err() {
+        // SAFETY: 同入口处——ppv 可写；QI 失败按 COM 惯例把出参置 null。
         unsafe { *ppv = std::ptr::null_mut() };
     }
 
@@ -453,6 +462,8 @@ mod tests {
         let iid = IUnknown::IID;
         let mut ppv: *mut c_void = std::ptr::null_mut();
 
+        // SAFETY: 导出函数调用——clsid/iid 为本地存活 GUID，ppv 为本地出参；
+        // 参数均满足 DllGetClassObject 的契约（非空且对齐）。
         let hr = unsafe {
             DllGetClassObject(
                 &clsid as *const GUID,
@@ -465,6 +476,8 @@ mod tests {
         assert!(!ppv.is_null());
 
         // 通过 vtable 调用 Release 释放
+        // SAFETY: ppv 由上面的 DllGetClassObject 成功返回（已断言非空），持有 +1 引用，
+        // 按 COM 规则释放；release_com_ptr 内部走 vtable[2]。
         unsafe { release_com_ptr(ppv); }
     }
 
@@ -475,6 +488,7 @@ mod tests {
         let iid = IUnknown::IID;
         let mut ppv: *mut c_void = std::ptr::null_mut();
 
+        // SAFETY: 同上——本地存活的 clsid/iid 与本地出参 ppv，契约满足。
         let hr = unsafe {
             DllGetClassObject(
                 &clsid as *const GUID,
@@ -487,6 +501,7 @@ mod tests {
         assert!(!ppv.is_null());
 
         // 通过 vtable 调用 Release 释放
+        // SAFETY: 同上——ppv 为成功返回的接口指针，持有 +1 引用，此处释放。
         unsafe { release_com_ptr(ppv); }
     }
 
@@ -496,6 +511,8 @@ mod tests {
         let iid = IUnknown::IID;
         let mut ppv: *mut c_void = std::ptr::null_mut();
 
+        // SAFETY: GUID::zeroed() 是合法的“未注册 CLSID”，用于验证 E_INVALIDARG 分支；
+        // clsid/iid 与 ppv 均为本地存活对象。
         let hr = unsafe {
             DllGetClassObject(
                 &clsid as *const GUID,
@@ -510,6 +527,8 @@ mod tests {
 
     #[test]
     fn get_class_object_null_pointers() {
+        // SAFETY: 本用例专门验证空指针入参——DllGetClassObject 在入口先做 null 检查
+        // 并返回 E_POINTER，不会解引用传入的空指针。
         let hr = unsafe {
             DllGetClassObject(
                 std::ptr::null(),
@@ -525,6 +544,8 @@ mod tests {
     #[test]
     fn dll_main_attach_returns_true() {
         // DLL_PROCESS_ATTACH = 1
+        // SAFETY: DllMain 允许以默认 HMODULE 与 null 保留参数直接调用（实现不使用它们），
+        // 本用例验证返回值语义。
         let result = unsafe {
             DllMain(HMODULE::default(), 1, std::ptr::null_mut())
         };
@@ -534,6 +555,7 @@ mod tests {
     #[test]
     fn dll_main_detach_returns_true() {
         // DLL_PROCESS_DETACH = 0
+        // SAFETY: 同上——默认 HMODULE + null 保留参数，实现不访问它们。
         let result = unsafe {
             DllMain(HMODULE::default(), 0, std::ptr::null_mut())
         };
@@ -543,6 +565,7 @@ mod tests {
     #[test]
     fn dll_main_unknown_reason() {
         // 未定义的 reason 值也始终返回 TRUE
+        // SAFETY: 同上——未定义 reason 同样只走返回值分支，不解引用任何指针。
         let result = unsafe {
             DllMain(HMODULE::default(), 999, std::ptr::null_mut())
         };
@@ -561,6 +584,7 @@ mod tests {
         let iid = IUnknown::IID;
         let mut ppv: *mut c_void = std::ptr::null_mut();
 
+        // SAFETY: 本地存活的 clsid/iid 与本地出参 ppv，满足导出函数契约。
         let hr = unsafe {
             DllGetClassObject(
                 &clsid as *const GUID,
@@ -572,6 +596,8 @@ mod tests {
         assert!(!ppv.is_null());
 
         // 2. 释放工厂（#[implement] COM 智能指针）
+        // SAFETY: ppv 为 DllGetClassObject 成功返回的 +1 引用，此处按 COM 规则释放，
+        // 之后 DllCanUnloadNow 才可能返回可卸载。
         unsafe { release_com_ptr(ppv); }
 
         // 3. 确认可卸载

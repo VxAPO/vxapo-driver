@@ -149,7 +149,12 @@ pub fn process_audio(
         // 残留的可能是我们自己上一帧的输出；若按有效数据处理会形成
         // “输出→下一帧输入”的自我反馈爆音（日志实证 in_peak≈30 @ in_flags=2）。
         let input_silent = input_prop.u32BufferFlags == BUFFER_SILENT;
+        // SAFETY: BufferInfo 由引擎传来的 APO_CONNECTION_PROPERTY 构造，
+        // pBuffer 指向 u32ValidFrameCount 帧的交织数据（APO 契约），
+        // 满足 as_slice/as_slice_mut 的“至少 total_samples() 个 f32”前提；
+        // 输入输出分别来自不同的 CONNECTION_PROPERTY，不构成别名。
         let input_slice = unsafe { input_info.as_slice() };
+        // SAFETY: 同上（输出侧）；&mut output_info 保证对这段输出的独占访问。
         let output_slice = unsafe { output_info.as_slice_mut() };
 
         // 防御（多流崩溃根因）：引擎传入的帧数偶尔会超过按

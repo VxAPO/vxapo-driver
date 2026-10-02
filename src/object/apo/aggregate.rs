@@ -139,6 +139,8 @@ unsafe fn base_from_this(this: *mut c_void) -> *mut NApo {
     // `this == base`。因此运行时唯一可能走到本函数的“非基址视图”只有
     // `vtbl_nondeg_unknown`（offset 32）——用 vtable 静态地址唯一性区分。
     // 新增直接以 RT/CFG/ASE 视图调用 `na_qi` 的路径前，必须重新论证此不变式。
+    // SAFETY: this 由调用方按 COM 契约传入（NApo 内某视图字段地址）；按 COM 布局读首
+    // 字段只为比较 vtable 地址，不解引用其它字段。
     let this_vtbl = unsafe { *(this as *const *const usize) };
     if this_vtbl as usize == &ND_UNKNOWN_VTBL as *const _ as usize {
         base_from_iface(this, OFF_ND_UNKNOWN)
@@ -163,7 +165,9 @@ unsafe fn delegate_qi_at(base: *mut NApo, riid: *const GUID, ppv: *mut *mut c_vo
     // SAFETY: COM 聚合契约保证 p_unk_outer 是有效 IUnknown 实现（引擎外壳，
     // 生命周期由引擎管理）；vtable 槽 0 为该对象的 QI。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
+    // SAFETY: vtable 槽 0 为该 outer 的 QueryInterface，签名与 QiFn 一致。
     let qi: QiFn = unsafe { std::mem::transmute(*outer_vtbl) };
+    // SAFETY: qi 为上述 QueryInterface；p_unk_outer 有效，riid/ppv 由 COM 契约保证有效。
     unsafe { qi(apo.p_unk_outer, riid, ppv) }
 }
 
@@ -175,7 +179,9 @@ unsafe fn delegate_addref_at(base: *mut NApo) -> u32 {
     }
     // SAFETY: 同 delegate_qi_at——p_unk_outer 为有效聚合外壳，槽 1 为 AddRef。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
+    // SAFETY: vtable 槽 1 为该 outer 的 AddRef，签名与 RefFn 一致。
     let addref: RefFn = unsafe { std::mem::transmute(*outer_vtbl.add(1)) };
+    // SAFETY: addref 为上述 AddRef，参数为有效的 outer 指针（p_unk_outer）。
     unsafe { addref(apo.p_unk_outer) }
 }
 
@@ -187,7 +193,9 @@ unsafe fn delegate_release_at(base: *mut NApo) -> u32 {
     }
     // SAFETY: 同 delegate_qi_at——p_unk_outer 为有效聚合外壳，槽 2 为 Release。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
+    // SAFETY: vtable 槽 2 为该 outer 的 Release，签名与 RefFn 一致。
     let release: RefFn = unsafe { std::mem::transmute(*outer_vtbl.add(2)) };
+    // SAFETY: release 为上述 Release，参数为有效且持有引用的 outer 指针。
     unsafe { release(apo.p_unk_outer) }
 }
 
@@ -242,7 +250,9 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
     if riid.is_null() || ppv.is_null() {
         return E_POINTER;
     }
+    // SAFETY: ppv 非空已在上方检查；按 COM 惯例预置 null 供调用方判断失败。
     unsafe { *ppv = std::ptr::null_mut() };
+    // SAFETY: riid 非空已在入口检查，读取一次 GUID 值（只读）。
     let iid = unsafe { *riid };
 
     // 判断当前视图：this 指向的 vtable 地址 = ND_UNKNOWN_VTBL → 非委托 IUnknown 视图（offset 32）。
@@ -256,7 +266,11 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
     // 引擎对它的 QI 走委托 outer → 外壳不认 → 弃用零方法（实测根因）。
     if iid == IUnknown::IID {
         let nd_view = &raw const apo.vtbl_nondeg_unknown as *const IUnknownVtbl as *mut c_void;
+        // SAFETY: ppv 非空已检查；nd_view 指向本对象内的 vtable 字段，
+        // 其生命周期与 NApo 对象一致。
         unsafe { *ppv = nd_view };
+        // SAFETY: nd_view 是刚构造的合法视图指针，NonDelegating AddRef 会经
+        // base_from_this 回退到同一 NApo 基址自增计数。
         unsafe { na_addref(nd_view) }; // NonDAddRef（自维护，base_from_this 自动回退）
         return S_OK;
     }
@@ -273,10 +287,13 @@ unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut 
     } else {
         return E_NOINTERFACE;
     };
+    // SAFETY: ppv 非空已检查；target 是本对象内的 vtable 字段地址，偏移与所选接口一致。
     unsafe { *ppv = target };
     // EAPO:519-538 对齐——QI 成功后调用「返回视图」的 AddRef：
     // IUnknown 视图 = NonDAddRef；IAPO/RT/CFG/ASE 视图 = 该视图自己的 AddRef
     // （聚合时委托 outer->AddRef，非聚合时 na_addref）。
+    // SAFETY: target 有效（本对象 vtable 字段）；其 vtable 槽 1 为该视图的 AddRef，
+    // 签名与 RefFn 一致；QI 成功后对返回视图 AddRef 是 COM 契约要求。
     unsafe {
         let vtbl = *(target as *const *const usize);
         let addref: RefFn = std::mem::transmute(*vtbl.add(1));
@@ -301,8 +318,13 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
         let apo = as_apo(base);
         let release_inner = |p: *mut c_void| {
             if !p.is_null() {
+                // SAFETY: p 非空（上面刚判空）；create_aggregate 保存的接口指针，
+                // COM 布局保证首字段为 vtable。
                 let vtbl = unsafe { *(p as *const *const usize) };
+                // SAFETY: vtable 槽 2 为该接口的 Release，签名与 RefFn 一致。
                 let release: RefFn = unsafe { std::mem::transmute(*vtbl.add(2)) };
+                // SAFETY: p 有效且本对象持有其 +1 引用（create_aggregate 中取得），
+                // 此处按 COM 规则释放。
                 unsafe { release(p) };
             }
         };
@@ -310,6 +332,8 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
         release_inner(apo.i_apo_rt);
         release_inner(apo.i_cfg);
         release_inner(apo.i_ase);
+        // SAFETY: base 由 create_aggregate 用 Box::into_raw 交出所有权，且引用计数已
+        // 归零（上面 r==0 分支），此处是唯一一次回收，随后不再使用 base。
         drop(Box::from_raw(base));
     }
     r
@@ -321,9 +345,16 @@ macro_rules! forward_method {
      ($($param:ident: $pty:ty),*), ($($arg:ident),*)) => {
         unsafe extern "system" fn $name(this: *mut c_void $(, $param: $pty)*) -> $ret {
             let base = $base(this);
+            // SAFETY: $base(this) 由各 stub 的定位闭包给出有效对象基址；$inner 是
+            // create_aggregate 中取得并保持 +1 引用的有效接口指针；COM 布局保证
+            // 其首字段为 vtable。
             let vtbl = unsafe { *(base.$inner as *const *const usize) };
-            let f: unsafe extern "system" fn(*mut c_void $(, $pty)*) -> $ret =
-                unsafe { std::mem::transmute(*vtbl.add($slot)) };
+            let f: unsafe extern "system" fn(*mut c_void $(, $pty)*) -> $ret;
+            // SAFETY: vtable 槽 $slot 为该接口的对应方法，其签名与下面 f 的类型一致
+            // （由各 forward_method! 调用点给出的参数表保证）。
+            f = unsafe { std::mem::transmute(*vtbl.add($slot)) };
+            // SAFETY: f 为上述方法指针；base.$inner 与参数由 COM 契约保证有效，
+            // 本函数只做零成本转发。
             unsafe { f(base.$inner $(, $arg)*) }
         }
     };
@@ -483,85 +514,116 @@ mod tests {
     #[test]
     fn non_aggregated_qi_unknown_succeeds() {
         // obj 现在是「非委托 IUnknown 视图」（base+OFF_ND_UNKNOWN），与 EAPO 一致。
+        // SAFETY: 测试创建——pUnkOuter=null 表示非聚合；返回指针随即断言非空，
+        // 并在用例末尾用 release_aggregate 释放。
         let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
 
+        // SAFETY: obj 已断言非空，是 create_aggregate 返回的 COM 视图；
+        // COM 布局保证首字段为 vtable 指针。
         let vtbl = unsafe { *(obj as *const *const usize) };
+        // SAFETY: 该非委托 IUnknown 视图的 vtable 槽 0 为 QueryInterface，
+        // 签名与 QiFn 一致。
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
         let mut ppv: *mut c_void = std::ptr::null_mut();
+        // SAFETY: qi 与 obj 有效；IUnknown::IID 与 &mut ppv 均为本地存活对象。
         let hr = unsafe { qi(obj, &IUnknown::IID as *const GUID, &mut ppv) };
         assert_eq!(hr.0, 0);
         // QI(IUnknown) 应返回非委托视图自身（base+OFF_ND_UNKNOWN），且等于 obj。
         assert_eq!(ppv as usize, obj as usize);
+        // SAFETY: obj 持有 create_aggregate 的 +1 引用（非委托视图），用例结束释放一次。
         unsafe { release_aggregate(obj) };
     }
 
     #[test]
     fn qi_rt_returns_rt_interface() {
+        // SAFETY: 同前——非聚合创建，返回值断言非空且由本用例释放。
         let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
 
+        // SAFETY: obj 非空且为有效 COM 视图；首字段为 vtable。
         let vtbl = unsafe { *(obj as *const *const usize) };
+        // SAFETY: 槽 0 为 QueryInterface，签名与 QiFn 一致。
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
         let rtid = IID_IAPO_RT;
         let mut rt: *mut c_void = std::ptr::null_mut();
+        // SAFETY: qi/obj 有效；rtid 与 &mut rt 为本地存活对象。
         let hr = unsafe { qi(obj, &rtid, &mut rt) };
         assert_eq!(hr.0, 0);
         assert!(!rt.is_null());
         // RT 接口指针应等于 NApo + OFF_RT（多接口偏移）；obj = base+OFF_ND_UNKNOWN。
         let base = base_from_iface(obj, OFF_ND_UNKNOWN);
         assert_eq!((rt as usize) - (base as usize), OFF_RT);
+        // SAFETY: obj 的 +1 引用由本用例释放。
         unsafe { release_aggregate(obj) };
     }
 
     #[test]
     fn qi_cfg_returns_cfg_interface() {
+        // SAFETY: 同前——非聚合创建，返回值断言非空且由本用例释放。
         let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
 
+        // SAFETY: obj 非空且为有效 COM 视图；首字段为 vtable。
         let vtbl = unsafe { *(obj as *const *const usize) };
+        // SAFETY: 槽 0 为 QueryInterface，签名与 QiFn 一致。
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
         let cfgid = IID_IAPO_CONFIG;
         let mut cfg: *mut c_void = std::ptr::null_mut();
+        // SAFETY: qi/obj 有效；cfgid 与 &mut cfg 为本地存活对象。
         let hr = unsafe { qi(obj, &cfgid, &mut cfg) };
         assert_eq!(hr.0, 0);
         assert!(!cfg.is_null());
         let base = base_from_iface(obj, OFF_ND_UNKNOWN);
         assert_eq!((cfg as usize) - (base as usize), OFF_CFG);
+        // SAFETY: obj 的 +1 引用由本用例释放。
         unsafe { release_aggregate(obj) };
     }
 
     #[test]
     fn qi_ase_returns_ase_interface() {
+        // SAFETY: 同前——非聚合创建，返回值断言非空且由本用例释放。
         let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
 
+        // SAFETY: obj 非空且为有效 COM 视图；首字段为 vtable。
         let vtbl = unsafe { *(obj as *const *const usize) };
+        // SAFETY: 槽 0 为 QueryInterface，签名与 QiFn 一致。
         let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
         let aseid = IID_IAUDIO_SYSTEM_EFFECTS;
         let mut ase: *mut c_void = std::ptr::null_mut();
+        // SAFETY: qi/obj 有效；aseid 与 &mut ase 为本地存活对象。
         let hr = unsafe { qi(obj, &aseid, &mut ase) };
         assert_eq!(hr.0, 0);
         assert!(!ase.is_null());
         let base = base_from_iface(obj, OFF_ND_UNKNOWN);
         assert_eq!((ase as usize) - (base as usize), OFF_ASE);
+        // SAFETY: obj 的 +1 引用由本用例释放。
         unsafe { release_aggregate(obj) };
     }
 
     #[test]
     fn nondelegating_addref_release_handles_offset_view() {
+        // SAFETY: 同前——非聚合创建，返回值断言非空且由本用例释放。
         let obj = unsafe { create_aggregate(std::ptr::null_mut(), CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
 
+        // SAFETY: obj 非空且为有效 COM 视图；首字段为 vtable。
         let vtbl = unsafe { *(obj as *const *const usize) };
+        // SAFETY: 槽 1 为 AddRef，签名与 RefFn 一致。
         let addref: RefFn = unsafe { std::mem::transmute(*vtbl.add(1)) };
+        // SAFETY: 槽 2 为 Release，签名与 RefFn 一致。
         let release: RefFn = unsafe { std::mem::transmute(*vtbl.add(2)) };
 
         // obj 是非委托 IUnknown 视图（base+OFF_ND_UNKNOWN）；AddRef/Release 必须
         // 先回退到 NApo 基址再改 cref，否则会在错误偏移上读写。
+        // SAFETY: addref 为上述槽位函数，obj 有效（实现会经 base_from_this 回退基址
+        // 再改 cref，不会在错误偏移上读写）。
         assert_eq!(unsafe { addref(obj) }, 2);
+        // SAFETY: 同上——release 为槽 2 的函数指针，obj 有效。
         assert_eq!(unsafe { release(obj) }, 1);
 
+        // SAFETY: 用例结束释放 create_aggregate 的 +1 引用。
         unsafe { release_aggregate(obj) };
     }
 
@@ -588,16 +650,23 @@ mod tests {
             ppv: *mut *mut c_void,
         ) -> HRESULT {
             let outer = &mut *(this as *mut Outer);
+            // SAFETY: 本函数是测试用 outer 的 QueryInterface；COM 契约保证 riid 有效
+            // （用例传入 &IUnknown::IID），只读一次。
             let iid = unsafe { *riid };
             if iid == IUnknown::IID {
+                // SAFETY: ppv 由用例传入（&mut unk），this 指向栈上存活的 Outer。
                 unsafe { *ppv = this };
                 outer_addref(this);
                 S_OK
             } else if outer.inner.is_null() {
                 E_NOINTERFACE
             } else {
+                // SAFETY: outer.inner 在上方分支已排除 null，是本用例赋值的有效 COM 视图；
+                // 首字段为 vtable。
                 let vtbl = unsafe { *(outer.inner as *const *const usize) };
+                // SAFETY: 槽 0 为 QueryInterface，签名与 QiFn 一致。
                 let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
+                // SAFETY: outer.inner 有效；riid/ppv 由 COM 契约保证有效。
                 unsafe { qi(outer.inner, riid, ppv) }
             }
         }
@@ -626,39 +695,56 @@ mod tests {
         let outer_ptr = (&mut outer as *mut Outer) as *mut c_void;
 
         // 模拟 CoCreateInstance(pUnkOuter)：inner 返回非委托 IUnknown 视图。
+        // SAFETY: outer_ptr 指向本用例栈上存活、已按 COM 布局（#[repr(C)]）初始化的
+        // Outer；pUnkOuter 非空即聚合创建。
         let obj = unsafe { create_aggregate(outer_ptr, CLSID_VXAPO_PRE_MIX) };
         assert!(!obj.is_null());
         outer.inner = obj;
 
         let before = outer.refs.load(Ordering::SeqCst);
+        // SAFETY: obj 已断言非空，是聚合创建的返回视图；首字段为 vtable。
         let nd_vtbl = unsafe { *(obj as *const *const usize) };
+        // SAFETY: 非委托 IUnknown 视图的槽 0 为 QueryInterface，签名与 QiFn 一致。
         let nd_qi: QiFn = unsafe { std::mem::transmute(*nd_vtbl) };
 
         // 引擎对返回的 inner 调 QI(IAPO)：NonDQI 返回 IAPO 视图，AddRef 应委托 outer。
         let iapoid = IID_IAPO;
         let mut iao: *mut c_void = std::ptr::null_mut();
+        // SAFETY: nd_qi 有效；obj 有效；iapoid 与 &mut iao 为本地存活对象。
         let hr = unsafe { nd_qi(obj, &iapoid, &mut iao) };
         assert_eq!(hr.0, 0);
         assert!(!iao.is_null());
         assert_eq!(outer.refs.load(Ordering::SeqCst), before + 1);
 
         // 身份检查：IAPO->QI(IUnknown) 必须返回 outer（聚合身份）。
+        // SAFETY: iao 已断言非空，是该视图的有效 COM 指针；首字段为 vtable。
         let iao_vtbl = unsafe { *(iao as *const *const usize) };
+        // SAFETY: 槽 0 为 QueryInterface，签名与 QiFn 一致。
         let iao_qi: QiFn = unsafe { std::mem::transmute(*iao_vtbl) };
         let mut unk: *mut c_void = std::ptr::null_mut();
+        // SAFETY: iao_qi 与 iao 有效；IUnknown::IID 与 &mut unk 为本地存活对象。
         let hr2 = unsafe { iao_qi(iao, &IUnknown::IID as *const GUID, &mut unk) };
         assert_eq!(hr2.0, 0);
         assert_eq!(unk as usize, outer_ptr as usize);
         // QI(IUnknown) 的返回值也要 Release，否则 outer 计数会多 1。
+        // SAFETY: unk 是上一步 QI 成功返回的 outer 视图（已断言等于 outer_ptr），
+        // 持有一个引用；其首字段为 vtable。
         let unk_vtbl = unsafe { *(unk as *const *const usize) };
+        // SAFETY: 槽 2 为 Release，签名与 RefFn 一致。
         let unk_release: RefFn = unsafe { std::mem::transmute(*unk_vtbl.add(2)) };
+        // SAFETY: unk_release 为上述 Release，unk 持有 +1 引用，此处释放。
         unsafe { unk_release(unk) };
 
         // 释放 IAPO 视图：委托 outer->Release，计数回到 QI 前。
+        // SAFETY: iao_vtbl 有效（iao 非空）；槽 2 为 Release，签名与 RefFn 一致。
         let iao_release: RefFn = unsafe { std::mem::transmute(*iao_vtbl.add(2)) };
+        // SAFETY: iao_release 为上述 Release，iao 持有 +1 引用（QI 成功后 AddRef 委托
+        // outer），此处释放使其回到 QI 前的计数。
         unsafe { iao_release(iao) };
         assert_eq!(outer.refs.load(Ordering::SeqCst), before);
 
+        // SAFETY: 用例结束释放 create_aggregate 的 +1 引用（对象此时引用计数归零，
+        // 由 na_release 内部回收）。
         unsafe { release_aggregate(obj) };
     }
 }

@@ -13,6 +13,9 @@ pub struct RingBuffer<T: Copy + Default> {
 
 // SAFETY: SPSC 设计，push/pop 由不同线程调用，原子操作提供内存同步。
 unsafe impl<T: Copy + Default> Send for RingBuffer<T> {}
+// SAFETY: `Sync` 的前提是 &self 接口不给出跨界别名——本类型的 &self 方法只有
+// push/pop/len 等，槽位的写权限按 SPSC 协议限定在 push 侧、读权限限定在 pop 侧，
+// 且 T: Copy 保证读出的值不携带对内部槽位的引用。
 unsafe impl<T: Copy + Default> Sync for RingBuffer<T> {}
 
 impl<T: Copy + Default> RingBuffer<T> {
@@ -35,6 +38,8 @@ impl<T: Copy + Default> RingBuffer<T> {
         if write.wrapping_sub(read) >= self.capacity {
             return false;
         }
+        // SAFETY: `data` 是 UnsafeCell；本函数是唯一的写者（SPSC），`write` 位掩码
+        // 落在已初始化容量内，且该槽位此刻不被读者持有（read 侧未推进到这里）。
         unsafe {
             (*self.data.get())[write & (self.capacity - 1)] = value;
         }
@@ -50,6 +55,8 @@ impl<T: Copy + Default> RingBuffer<T> {
         if read == write {
             return None;
         }
+        // SAFETY: 同上——本函数是唯一的读者（SPSC），`read` 位掩码落在容量内，
+        // 且该槽位必已由 push 侧写入并发布（write_pos 的 Release/Acquire 配对）。
         let value = unsafe { (*self.data.get())[read & (self.capacity - 1)] };
         self.read_pos.store(read.wrapping_add(1), Ordering::Release);
         Some(value)

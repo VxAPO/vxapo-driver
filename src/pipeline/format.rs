@@ -34,6 +34,8 @@ pub(crate) fn format_from_wave_format(wf: &WAVEFORMATEX) -> AudioFormat {
         // SAFETY: GetAudioFormat 返回指向 WAVEFORMATEX 的指针；当 cbSize>=22 时
         // 它实际是 WAVEFORMATEXTENSIBLE 前缀，可安全扩展读取。
         let ext = wf as *const WAVEFORMATEX as *const WAVEFORMATEXTENSIBLE;
+        // SAFETY: 见上——cbSize>=22 已由调用方校验，dwChannelMask 落在
+        // WAVEFORMATEXTENSIBLE 内；read_unaligned 不要求指针对齐。
         unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*ext).dwChannelMask)) }
     } else {
         crate::sys::audio_defs::default_channel_mask(channels)
@@ -52,6 +54,8 @@ pub(crate) fn is_float_wave_format(wf: &WAVEFORMATEX) -> bool {
     if wf.wFormatTag == WAVE_FORMAT_EXTENSIBLE && wf.cbSize >= 22 {
         // SAFETY: 同上，cbSize>=22 表示可安全读取 WAVEFORMATEXTENSIBLE 的 SubFormat。
         let ext = wf as *const WAVEFORMATEX as *const WAVEFORMATEXTENSIBLE;
+        // SAFETY: 见上——cbSize>=22 保证 SubFormat 字段在有效范围内；
+        // read_unaligned 处理任意对齐的 GUID 拷贝。
         let sub: GUID =
             unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*ext).SubFormat)) };
         return sub == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
@@ -128,6 +132,7 @@ mod tests {
 
     #[test]
     fn extensible_ieee_float_is_float_and_reads_mask() {
+        // SAFETY: WAVEFORMATEXTENSIBLE 是 repr(C) POD，全零位模式合法（随后逐字段赋值）。
         let mut ext: WAVEFORMATEXTENSIBLE = unsafe { std::mem::zeroed() };
         ext.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
         ext.Format.nChannels = 6;
@@ -140,6 +145,8 @@ mod tests {
         ext.dwChannelMask = 0x3F;
         ext.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 
+        // SAFETY: WAVEFORMATEXTENSIBLE 的首字段即 WAVEFORMATEX（repr(C)），
+        // 因此按前缀指针读取合法；ext 在本作用域内存活，不存在悬垂。
         let wf = unsafe { &*(&ext as *const WAVEFORMATEXTENSIBLE as *const WAVEFORMATEX) };
         assert!(is_float_wave_format(wf));
         let f = format_from_wave_format(wf);
@@ -149,6 +156,7 @@ mod tests {
 
     #[test]
     fn extensible_pcm_is_not_float() {
+        // SAFETY: 同上前缀用法——全零 POD 初始化后再逐字段赋值。
         let mut ext: WAVEFORMATEXTENSIBLE = unsafe { std::mem::zeroed() };
         ext.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
         ext.Format.nChannels = 2;
@@ -164,18 +172,22 @@ mod tests {
             [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71],
         );
 
+        // SAFETY: 同上前缀用法——ext 存活、WAVEFORMATEX 为其首字段。
         let wf = unsafe { &*(&ext as *const WAVEFORMATEXTENSIBLE as *const WAVEFORMATEX) };
         assert!(!is_float_wave_format(wf));
     }
 
     #[test]
     fn extract_format_null_pointer_is_error() {
+        // SAFETY: extract_format 的契约即接受空指针并返回 Err——本用例正是校验该分支，
+        // 空指针不会在函数内被解引用。
         let r = unsafe { extract_format(std::ptr::null_mut()) };
         assert!(r.is_err());
     }
 
     #[test]
     fn is_float_format_null_pointer_is_error() {
+        // SAFETY: 同上——is_float_format 对空指针返回 Err，不解引用。
         let r = unsafe { is_float_format(std::ptr::null_mut()) };
         assert!(r.is_err());
     }

@@ -140,7 +140,12 @@ impl<T: Copy> Drop for AlignedBuffer<T> {
 
 // 禁止 Send + Sync 以外的隐式跨线程使用——
 // 实时线程通过 Arc/裸指针显式传递所有权。
+// SAFETY: `AlignedBuffer<T>` 独占持有 alloc_zeroed 分配的内存（无别名句柄，
+// 内部只有 ptr/len/layout 三个字段），跨线程移动等于转移这块分配的所有权；
+// T: Copy + Send 保证缓冲区内容可安全转移。
 unsafe impl<T: Copy + Send> Send for AlignedBuffer<T> {}
+// SAFETY: 除 `as_mut_slice`/`as_mut_ptr` 等需要 &mut self 的接口外，本类型不通过
+// &self 暴露可变访问；T: Copy + Send + Sync 保证 &[T] 可跨线程共享。
 unsafe impl<T: Copy + Send + Sync> Sync for AlignedBuffer<T> {}
 
 // ══════════════════════════════════════════════════════════════════════════════

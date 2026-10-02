@@ -59,6 +59,8 @@ pub struct ChildApo {
 // ApoObject 含 ChildApo 且 unsafe impl Send/Sync——COM 接口引用跨线程合法
 // （Windows 音频引擎保证 APO 方法的线程亲和）。
 unsafe impl Send for ChildApo {}
+// SAFETY: 与 Send 同理——本类型只持有 COM 接口引用与不可变配置，&self 方法都转发到
+// 子 APO 自身的 COM 调用（由 COM 引用计数与引擎的方法亲和性保证线程安全）。
 unsafe impl Sync for ChildApo {}
 
 impl ChildApo {
@@ -109,6 +111,8 @@ impl ChildApo {
     /// 失败返回 0（保守——延迟未知按无延迟处理，不阻断父流程）。
     pub fn get_latency(&self) -> REFERENCE_TIME {
         // windows-rs: GetLatency() -> Result<i64>（i64 = REFERENCE_TIME）。
+        // SAFETY: self.iapo 是本结构持有的有效 COM 接口引用（引用计数保证调用期存活），
+        // 无参数、无出参，仅转调子 APO。
         unsafe { self.iapo.GetLatency() }.unwrap_or(0)
     }
 
@@ -118,6 +122,7 @@ impl ChildApo {
     /// 用于 Unlock 失败后的重置防御（下次 Lock 前调用）。
     pub fn reset(&self) -> HRESULT {
         // windows-rs: Reset() -> Result<()>。
+        // SAFETY: 同上——self.iapo 有效，Reset 无参数无出参。
         unsafe { self.iapo.Reset() }
             .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
@@ -137,8 +142,11 @@ impl ChildApo {
             return E_POINTER;
         }
         // windows-rs: GetRegistrationProperties() -> Result<*mut APO_REG_PROPERTIES>。
+        // SAFETY: self.iapo 有效；返回的注册属性指针由子 APO 拥有，调用方不得释放。
         match unsafe { self.iapo.GetRegistrationProperties() } {
             Ok(ptr) => {
+                // SAFETY: pp_props 已在上方做非空检查（E_POINTER 分支），COM 契约保证
+                // 它指向可写的 *mut APO_REG_PROPERTIES。
                 unsafe { *pp_props = ptr };
                 S_OK
             }
@@ -161,8 +169,11 @@ impl ChildApo {
         let data = if cb_data_size == 0 {
             &[][..]
         } else {
+            // SAFETY: 调用方（引擎）保证 pby_data 指向 cb_data_size 个已初始化字节；
+            // 这里只构造只读切片，生命周期不超过本次 Initialize 调用。
             unsafe { std::slice::from_raw_parts(pby_data, cb_data_size as usize) }
         };
+        // SAFETY: self.iapo 有效；data 为上述只读切片，调用期间存活。
         unsafe { self.iapo.Initialize(data) }
             .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
@@ -185,6 +196,8 @@ impl ChildApo {
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
         self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
+            // SAFETY: self.iapo 有效；a/b 由 resolve_supported 保证是引擎传入的
+            // 有效 IAudioMediaType 引用。
             unsafe { self.iapo.IsInputFormatSupported(a, b) }
         })
     }
@@ -204,6 +217,7 @@ impl ChildApo {
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
         self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
+            // SAFETY: 同上（输出侧）——self.iapo 与 a/b 均由 COM 契约保证有效。
             unsafe { self.iapo.IsOutputFormatSupported(a, b) }
         })
     }
@@ -234,6 +248,8 @@ impl ChildApo {
                 // 返回的接口引用 +1（from_abi）；ManuallyDrop 防泄漏，as_raw 取指针移交调用方
                 // （调用方负责最终 Release）。
                 let leaked = std::mem::ManuallyDrop::new(supported);
+                // SAFETY: pp_supported 由调用方保证非空可写（resolve_supported 已检查）；
+                // ManuallyDrop 表示该接口引用的所有权移交调用方，不再由本处释放。
                 unsafe { *pp_supported = Interface::as_raw(&*leaked) as *mut _ };
                 S_OK
             }
@@ -247,8 +263,10 @@ impl ChildApo {
         if p_count.is_null() {
             return E_POINTER;
         }
+        // SAFETY: self.iapo 是本结构持有的有效 COM 接口引用；无参数、返回值即通道数。
         match unsafe { self.iapo.GetInputChannelCount() } {
             Ok(count) => {
+                // SAFETY: p_count 已在上方做非空检查，COM 契约保证其可写。
                 unsafe { *p_count = count };
                 S_OK
             }
@@ -260,12 +278,14 @@ impl ChildApo {
 
     /// 子 APO 计算输入帧数（`CalcInputFrames`）。
     pub fn calc_input_frames(&self, output_frames: u32) -> u32 {
+        // SAFETY: self.iapo_rt 是本结构持有的有效实时接口引用；纯数值入参/返回值。
         unsafe { self.iapo_rt.CalcInputFrames(output_frames) }
     }
 
     /// 子 APO 计算输出帧数（`CalcOutputFrames`）。
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn calc_output_frames(&self, input_frames: u32) -> u32 {
+        // SAFETY: 同上——self.iapo_rt 有效，纯数值入参/返回值。
         unsafe { self.iapo_rt.CalcOutputFrames(input_frames) }
     }
 
@@ -284,6 +304,8 @@ impl ChildApo {
         num_output: u32,
         pp_outputs: *mut *mut APO_CONNECTION_PROPERTY,
     ) {
+        // SAFETY: self.iapo_rt 有效；num_input/num_output 与 pp_inputs/pp_outputs 由
+        // 父 APO 的 Process 按引擎契约原样转发（指针数组长度与帧数一致）。
         unsafe { self.iapo_rt.APOProcess(num_input, pp_inputs, num_output, pp_outputs) }
     }
 
@@ -308,12 +330,16 @@ impl ChildApo {
         if num_input == 0 || pp_inputs.is_null() || num_output == 0 || pp_outputs.is_null() {
             return E_POINTER;
         }
+        // SAFETY: 上方已检查指针非空且数量非零；引擎保证 pp_inputs 指向 num_input 个
+        // 有效的 *const APO_CONNECTION_DESCRIPTOR；切片只在本次调用内使用。
         let inputs = unsafe {
             std::slice::from_raw_parts(pp_inputs as *const *const APO_CONNECTION_DESCRIPTOR, num_input as usize)
         };
+        // SAFETY: 同输入侧——非空/非零已检查，指针数组长度与 num_output 一致。
         let outputs = unsafe {
             std::slice::from_raw_parts(pp_outputs as *const *const APO_CONNECTION_DESCRIPTOR, num_output as usize)
         };
+        // SAFETY: self.iapo_cfg 有效；inputs/outputs 为上述切片，调用期间存活。
         unsafe { self.iapo_cfg.LockForProcess(inputs, outputs) }
             .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())
@@ -324,6 +350,7 @@ impl ChildApo {
     /// 失败**不阻塞父**解锁（object 7.1.10 容错语义——UnlockForProcess 无重试语义，
     /// 子 APO 可能已部分解锁，父继续自身流程 + 日志；child 标记需重置，下次 Lock 前 reset）。
     pub fn unlock_for_process(&self) -> HRESULT {
+        // SAFETY: self.iapo_cfg 有效；UnlockForProcess 无参数无出参。
         unsafe { self.iapo_cfg.UnlockForProcess() }
             .map(|_| S_OK)
             .unwrap_or_else(|e| e.into())

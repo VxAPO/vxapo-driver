@@ -36,6 +36,8 @@ pub(crate) fn extract_endpoint_guid(init: &APOInitSystemEffects) -> Option<GUID>
     // windows-rs 管理内存（含 puuid/pwszVal 指针有效期内读取）。
     // PROPVARIANT 是 union（Anonymous.Anonymous.Anonymous），读取/比较均在 unsafe 内。
     let pv: PROPVARIANT = unsafe { props.GetValue(&PKEY_AudioEndpoint_GUID) }.ok()?;
+    // SAFETY: 读取 PROPVARIANT 的 union 字段必须在 unsafe 内；pv 由 windows-rs 管理，
+    // 其 puuid / pwszVal 指向的内存在 pv 存活期内有效，本块只读不改、不保存指针。
     unsafe {
         // PROPVARIANT_0_0: { vt: VARENUM, wReserved1-3, Anonymous: PROPVARIANT_0_0_0 }
         match pv.Anonymous.Anonymous.vt {

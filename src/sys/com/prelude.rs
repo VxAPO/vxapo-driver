@@ -118,7 +118,8 @@ pub use crate::sys::consts::{
 /// `StringFromGUID2` 需要至少 39 个 WCHAR（38 字符 + null 终止符）。
 pub fn guid_to_string(g: &GUID) -> String {
     let mut buf = [0u16; 40];
-    // FFI：buf 长度足够，StringFromGUID2 保证 null 终止并返回写入字符数（含 null）。
+    // SAFETY: buf 是 40 个 u16 的栈缓冲，满足 StringFromGUID2 要求的 ≥39 WCHAR
+    // （38 字符 + null）；API 保证 null 终止并返回写入字符数（含 null）。
     let len = unsafe { StringFromGUID2(g, &mut buf) };
     if len <= 0 {
         return String::new();

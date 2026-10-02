@@ -203,6 +203,8 @@ impl ConfigWatcher {
 
     /// 重建目录变更通知句柄（`FindNextChangeNotification` 失败后的自愈路径）。
     fn recreate_notify(&mut self) -> bool {
+        // SAFETY: notify_handle 由 FindFirstChangeNotificationW 创建、此处尚未关闭；
+        // 自愈路径下先关闭旧句柄再重建，关闭后立即置为无效句柄，不会重复关闭。
         let _ = unsafe { FindCloseChangeNotification(self.notify_handle) };
         self.notify_handle = HANDLE(std::ptr::null_mut());
         // Safety: watch_dir 为所有权 PathBuf 转 HSTRING 借用（存活至调用返回）。

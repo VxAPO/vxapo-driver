@@ -80,6 +80,9 @@ impl BufferInfo {
 
     /// 清零缓冲区。
     pub fn zero(&mut self) {
+        // SAFETY: ptr 由构造方保证指向 total_samples() 个已初始化的 f32（见
+        // as_slice/as_slice_mut 的契约），&mut self 保证此处独占访问；
+        // write_bytes 只写不读，对全零写入 f32 是有效位模式。
         unsafe {
             std::ptr::write_bytes(self.ptr, 0, self.total_samples());
         }

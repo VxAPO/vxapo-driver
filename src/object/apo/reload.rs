@@ -66,7 +66,10 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     let mut watcher = ConfigWatcher::new(watch_dir, shutdown_event);
     if watcher.notify_handle().is_invalid() {
         // 目录不存在（FindFirstChangeNotificationW 失败）→ 释放事件，降级。
+        // SAFETY: shutdown_event 由本函数上方的 CreateEventW 创建，且此刻尚未交给
+        // watcher 线程（启动失败路径），因此本处是唯一持有者，置位合法。
         let _ = unsafe { SetEvent(shutdown_event) };
+        // SAFETY: 同上——关闭的是本函数自己创建、尚未移交的句柄，且只关闭一次。
         let _ = unsafe { CloseHandle(shutdown_event) };
         log::warn!("start_watcher: watch dir unavailable — config hot-reload disabled");
         return Ok(());

@@ -327,6 +327,8 @@ mod tests {
         let new = vec![10.0f32, 20.0, 30.0, 40.0];
         let mut output = vec![0.0f32; 4];
 
+        // SAFETY: 三个 Vec 在本作用域内存活且长度均为 4（len=4 不越界）；
+        // output 与 old/new 是不同分配，不存在别名。
         unsafe {
             mix_buffers(old.as_ptr(), new.as_ptr(), output.as_mut_ptr(), 4, 0.0);
         }
@@ -341,6 +343,7 @@ mod tests {
         let new = vec![10.0f32, 20.0, 30.0, 40.0];
         let mut output = vec![0.0f32; 4];
 
+        // SAFETY: 同前——长度匹配（len=4）、输入输出不别名。
         unsafe {
             mix_buffers(old.as_ptr(), new.as_ptr(), output.as_mut_ptr(), 4, 1.0);
         }
@@ -355,6 +358,7 @@ mod tests {
         let new = vec![2.0f32, 4.0, 6.0, 8.0];
         let mut output = vec![0.0f32; 4];
 
+        // SAFETY: 同前——长度匹配（len=4）、输入输出不别名。
         unsafe {
             mix_buffers(old.as_ptr(), new.as_ptr(), output.as_mut_ptr(), 4, 0.5);
         }
@@ -369,6 +373,8 @@ mod tests {
         let new = vec![3.0f32; 8];
         let mut output = vec![0.0f32; 8];
 
+        // SAFETY: 三个 Vec 长度均为 8，len=4 只触及前 4 个元素（不越界）；
+        // output 与 old/new 是不同分配，不存在别名。
         unsafe {
             mix_buffers(old.as_ptr(), new.as_ptr(), output.as_mut_ptr(), 4, 0.5);
         }

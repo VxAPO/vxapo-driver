@@ -176,7 +176,10 @@ pub(crate) fn lock_for_process(
     }
 
     // Step 1: 从输入/输出连接描述符提取格式（pFormat 为 ManuallyDrop<Option<IAudioMediaType>>）。
+    // SAFETY: pp_inputs / pp_outputs 由引擎按 APO 契约传入（指向 APO_CONNECTION_DESCRIPTOR
+    // 的有效指针数组），本函数只借用其内容，不解引用空指针、不移动或不释放描述符。
     let input_descriptor = unsafe { &**pp_inputs };
+    // SAFETY: 同上（输出侧）。两处借用都只在本次 Process 调用内使用。
     let output_descriptor = unsafe { &**pp_outputs };
     let extract_descriptor_format =
         |desc: &APO_CONNECTION_DESCRIPTOR| -> Result<AudioFormat> {
@@ -184,6 +187,8 @@ pub(crate) fn lock_for_process(
                 Some(media_type) => {
                     let mt_ptr: *mut IAudioMediaType =
                         media_type as *const IAudioMediaType as *mut IAudioMediaType;
+                    // SAFETY: media_type 是描述符 pFormat 中的 IAudioMediaType 引用，
+                    // 引擎保证其在本帧内有效；转成可变指针只为匹配签名，extract_format 只读。
                     unsafe { extract_format(mt_ptr) }
                         .map_err(|e| windows::core::Error::from(HRESULT::from(e)))
                 }
@@ -637,8 +642,10 @@ impl ApoObject {
             // output(in-place reuse); processing them re-enters the DSP and creates
             // the self-feedback buzz. For transition frames, output silence and keep
             // the in-flight transition state untouched.
+            // SAFETY: pp_inputs 为引擎传入的有效指针数组（APO 契约），此处只读 flags。
             let input_silent = unsafe { (&**pp_inputs).u32BufferFlags == BUFFER_SILENT };
             if input_silent {
+                // SAFETY: 同上——引擎保证连接属性在本帧内有效且不被并发修改。
                 let ip = unsafe { &**pp_inputs };
                 let frames = (ip.u32ValidFrameCount as usize).min(max_frames);
                 let in_peak = if frames > 0 && in_ch > 0 {
@@ -651,6 +658,8 @@ impl ApoObject {
                 } else {
                     0.0
                 };
+                // SAFETY: 输出连接属性由本 APO 独占写入（引擎契约：每个输出连接只有一个
+                // 写者），&mut 借用不与其他别名冲突。
                 let op = unsafe { &mut **pp_outputs };
                 if frames > 0 && out_ch > 0 {
                     // SAFETY: 同输入缓冲（输出由引擎按 u32MaxFrameCount × ch 分配）。
@@ -683,13 +692,18 @@ impl ApoObject {
             // 被其它路径消费）→ 无混合器。此时**必须写出**（APO 契约：每帧写输出）：
             // 直接复制输入到输出（bypass），恢复状态、旧链退役；若可重载则触发补重载。
             if transition.is_none() {
+                // SAFETY: pp_inputs / pp_outputs 为引擎传入的有效指针数组（APO 契约）；
+                // 输入只读、输出由本 APO 独占写入。
                 let input_prop = unsafe { &**pp_inputs };
+                // SAFETY: 同上（输出侧，独占写）。
                 let output_prop = unsafe { &mut **pp_outputs };
                 let frames = (input_prop.u32ValidFrameCount as usize).min(max_frames);
                 // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
                 let src = unsafe {
                     checked_interleaved_slice(input_prop.pBuffer as *const f32, frames, in_ch, max_frames)
                 };
+                // SAFETY: 输出缓冲由引擎按 u32MaxFrameCount × 通道数分配，helper 已把帧数
+                // clamp 到 max_frames；pBuffer 非空且长度足够。
                 let dst = unsafe {
                     checked_interleaved_slice_mut(output_prop.pBuffer as *mut f32, frames, out_ch, max_frames)
                 };
@@ -736,7 +750,10 @@ impl ApoObject {
                 }
                 return;
             }
+            // SAFETY: 同上面的 bypass 分支——引擎保证两个连接属性指针有效，
+            // 输入只读、输出独占写。
             let input_prop = unsafe { &**pp_inputs };
+            // SAFETY: 同上（输出侧，独占写）。
             let output_prop = unsafe { &mut **pp_outputs };
             let frames = (input_prop.u32ValidFrameCount as usize).min(max_frames);
 
@@ -870,6 +887,7 @@ impl ApoObject {
         let in_ch = inner.pipeline_context.input_channels;
         let out_ch = inner.pipeline_context.output_channels;
         let frames =
+            // SAFETY: pp_inputs 为引擎传入的有效指针数组；只读取帧数，不涉及缓冲区。
             (unsafe { (**pp_inputs).u32ValidFrameCount as usize }).min(max_frames);
         let params = ProcessParams {
             input_channels: in_ch,
@@ -881,8 +899,10 @@ impl ApoObject {
             allow_silent_buffer: true,
         };
         // pp_inputs / pp_outputs 是 APO_CONNECTION_PROPERTY**（指针数组）。
+        // SAFETY: 引擎契约保证元素有效；此处借用单个输入连接属性做单流处理。
         let input_one = unsafe { &**pp_inputs };
         let inputs = std::slice::from_ref(input_one);
+        // SAFETY: 同上（输出侧）；输出由本 APO 独占写入，故取 &mut 借用。
         let output_one = unsafe { &mut **pp_outputs };
         let outputs = std::slice::from_mut(output_one);
         // MutexGuard 的 Deref 不参与字段拆分，先取 `&mut *inner` 再拆字段。
@@ -920,6 +940,7 @@ impl ApoObject {
         // 流启动淡入（静音保持 + 线性淡入，见 LockForProcess）。
         // 引擎在设备切换后可能边加载目标链边开播，首段断续慢速；
         // 淡入把听感变为“加载完再播”。仅 PreMix 实例启用（PostMix 直通）。
+        // SAFETY: 淡入写输出缓冲——输出连接属性由本 APO 独占写入（引擎契约）。
         let output_one = unsafe { &mut **pp_outputs };
         // SAFETY: 输出缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
         let out_slice = unsafe {

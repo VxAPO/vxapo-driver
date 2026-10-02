@@ -31,8 +31,10 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         .map_err(|e| windows::core::Error::from(HRESULT::from(e)))?;
 
     // 3. 解析 APOInitSystemEffects → 端点 GUID + 子 APO（object 7.1.8）。
-    //    Safety: pby_data 已验证非空 + 尺寸足够；APOInitSystemEffects 为 repr(C) 结构。
     let endpoint_guid = if valid_init_data {
+        // SAFETY: valid_init_data 为真表示 pby_data 非空且 cb_data_size 足够容纳
+        // APOInitSystemEffects（上方校验），该结构为 repr(C) 且由引擎按此布局写入；
+        // 引用只在本次调用内使用，不跨帧保存。
         let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
         extract_endpoint_guid(init)
     } else {
@@ -97,6 +99,8 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
 
     // 5. per-device 配置路径（object 7.1.8）。
     let path = if valid_init_data {
+        // SAFETY: 同上——valid_init_data 保证指针与尺寸有效；此处只是再次解释同一块
+        // 内存以解析 per-device 配置路径，引用不逃逸出本函数。
         let init = unsafe { &*(pby_data as *const APOInitSystemEffects) };
         resolve_config_path(Some(init))
     } else {
@@ -126,6 +130,8 @@ pub(crate) fn get_registration_properties(apo: &ApoObject_Impl) -> Result<*mut A
     };
     let size = std::mem::size_of::<APO_REG_PROPERTIES>();
     // 分配并对齐（alignment_of<APO_REG_PROPERTIES>）。
+    // SAFETY: CoTaskMemAlloc 是 COM 分配器，允许任意非零尺寸；本调用随后立即做
+    // null 检查，成功时指向 size 字节可写内存，最终由 CoTaskMemFree（同分配器）释放。
     let alloc = unsafe { CoTaskMemAlloc(size) };
     if alloc.is_null() {
         return Err(windows::core::Error::from(E_OUTOFMEMORY));

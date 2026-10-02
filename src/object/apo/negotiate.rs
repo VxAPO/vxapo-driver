@@ -42,6 +42,8 @@ pub(crate) fn check_format_supported(
     };
     let mt_ptr = req as *const IAudioMediaType as *mut IAudioMediaType;
     // 浮点格式检查（WAVE_FORMAT_IEEE_FLOAT）。
+    // SAFETY: req 是引擎传入的 IAudioMediaType 引用（COM 契约保证调用期间有效）；
+    // 转成可变指针只为满足 API 签名，is_float_format 内部只读不写。
     let is_float = unsafe { is_float_format(mt_ptr) }
         .map_err(|_| windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED))?;
     if !is_float {

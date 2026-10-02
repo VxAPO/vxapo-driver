@@ -199,6 +199,8 @@ impl IAudioProcessingObjectConfiguration_Impl for ApoObject_Impl {
 // `Arc<Mutex<...>>` / `AtomicU32` / `StateCell`（内部同步），`#[implement]`
 // 对象生命周期由 COM 引用计数管理（规范 7.1 原文语义）。
 unsafe impl Send for ApoObject {}
+// SAFETY: 内部可变状态全部经由 `Arc<Mutex<...>>` / `AtomicU32` / `StateCell` 同步，
+// &self 接口不暴露无同步的可变访问；COM 引用计数保证对象在共享期内不被释放。
 unsafe impl Sync for ApoObject {}
 
 // ═══ 测试 ═══
@@ -212,6 +214,8 @@ mod tests {
     /// 构造「无 IPropertyStore」的最低有效 APOInitSystemEffects（zeroed 后仅设置 APOInit.cbSize）。
     /// 提取端点 GUID 会因属性存储缺失返回 None → 走 `_default` 兜底。
     fn empty_init() -> APOInitSystemEffects {
+        // SAFETY: APOInitSystemEffects 是 repr(C) POD，全零位模式合法；本用例随后
+        // 只设置 APOInit.cbSize，用作“属性存储缺失”的降级输入。
         let mut init: APOInitSystemEffects = unsafe { std::mem::zeroed() };
         init.APOInit.cbSize = std::mem::size_of::<APOInitSystemEffects>() as u32;
         init
