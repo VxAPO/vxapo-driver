@@ -30,7 +30,11 @@ pub struct TransitionError {
 
 impl TransitionError {
     pub(crate) fn new(expected: ApoState, attempted: ApoState, actual: ApoState) -> Self {
-        Self { expected, attempted, actual }
+        Self {
+            expected,
+            attempted,
+            actual,
+        }
     }
 }
 
@@ -58,7 +62,9 @@ pub struct StateCell {
 
 impl StateCell {
     pub fn new() -> Self {
-        Self { state: AtomicU8::new(ApoState::Created as u8) }
+        Self {
+            state: AtomicU8::new(ApoState::Created as u8),
+        }
     }
 
     /// CAS 转换：成功返回 Ok，失败返回 `TransitionError{expected, attempted, actual}`。
@@ -83,7 +89,7 @@ impl StateCell {
     }
 
     /// release：任意状态 → Created，返回旧状态。DLL 卸载终态复位用。
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn release(&self) -> ApoState {
         let old = self.state.swap(ApoState::Created as u8, Ordering::AcqRel);
@@ -91,17 +97,17 @@ impl StateCell {
     }
 
     // ── 语义化便捷转换（失败即 TransitionError） ──
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn initialize(&self) -> std::result::Result<(), TransitionError> {
         self.transition(ApoState::Created, ApoState::Initialized)
     }
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn lock(&self) -> std::result::Result<(), TransitionError> {
         self.transition(ApoState::Initialized, ApoState::Locked)
     }
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn unlock(&self) -> std::result::Result<(), TransitionError> {
         self.transition(ApoState::Locked, ApoState::Initialized)
@@ -124,7 +130,10 @@ pub struct LockGuard<'a> {
 
 impl<'a> LockGuard<'a> {
     pub fn new(state_cell: &'a StateCell) -> Self {
-        Self { state_cell, armed: true }
+        Self {
+            state_cell,
+            armed: true,
+        }
     }
     pub fn disarm(mut self) {
         self.armed = false;
@@ -134,8 +143,9 @@ impl<'a> LockGuard<'a> {
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _: std::result::Result<(), TransitionError> =
-                self.state_cell.transition(ApoState::Locked, ApoState::Initialized);
+            let _: std::result::Result<(), TransitionError> = self
+                .state_cell
+                .transition(ApoState::Locked, ApoState::Initialized);
         }
     }
 }

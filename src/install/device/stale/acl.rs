@@ -4,8 +4,8 @@
 //! 授予 config/snapshot 的 Modify 权限。
 //! 共享常量与公开类型见父模块 `install/device/stale.rs`。
 
-use super::*;
 use super::detect::*;
+use super::*;
 
 /// 清理一个无法匹配到活跃端点的旧 GUID 记录。
 pub fn cleanup_orphan(guid: &str) -> Result<()> {
@@ -52,7 +52,8 @@ pub(super) fn grant_interactive_modify(path: &Path) {
 
 pub(super) fn archive_guid_files(guid: &str) -> Result<()> {
     let backup = Path::new(MIGRATION_BACKUP_DIR).join(guid);
-    fs::create_dir_all(&backup).map_err(|e| VxApoError::internal(format!("创建归档目录失败：{e}")))?;
+    fs::create_dir_all(&backup)
+        .map_err(|e| VxApoError::internal(format!("创建归档目录失败：{e}")))?;
     let config_dir = Path::new(CONFIG_ROOT).join(guid);
     if config_dir.exists() {
         let dst = backup.join("config_dir");

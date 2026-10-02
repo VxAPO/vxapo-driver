@@ -13,8 +13,8 @@
 //! 当前为简化实现：以 1/3 倍频程 GraphicEq 近似 ISO 226 等响曲线；
 //! 完整查表与曲线拟合见 CHANGELOG 的 roadmap。
 
+use crate::pipeline::dsp::biquad::{compute_coeffs, BiquadFilter, BiquadStructure, BiquadType};
 use crate::pipeline::dsp::filter::Filter;
-use crate::pipeline::dsp::biquad::{BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
 use crate::pipeline::dsp::math::clamp_gain_db;
 
 // ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────
@@ -43,10 +43,9 @@ pub struct LoudnessFilter {
 
 /// ISO 226 标准 1/3 倍频程中心频率。
 const ISO_FREQUENCIES: [f32; 29] = [
-    20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0,
-    200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0,
-    1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,
-    10000.0, 12500.0,
+    20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0,
+    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0,
+    8000.0, 10000.0, 12500.0,
 ];
 
 impl LoudnessFilter {
@@ -70,7 +69,7 @@ impl LoudnessFilter {
     }
 
     /// 当前开关状态。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn enabled(&self) -> bool {
         self.enabled
     }

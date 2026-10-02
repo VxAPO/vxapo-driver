@@ -1,4 +1,4 @@
-﻿//! object/dll_exports.rs — 四个 COM DLL 导出函数 + DllMain
+//! object/dll_exports.rs — 四个 COM DLL 导出函数 + DllMain
 //!
 //! 导出函数：
 //! - `DllRegisterServer`：注册 COM 类与 APO
@@ -30,9 +30,9 @@ use windows::core::BOOL;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Registry::HKEY_CLASSES_ROOT;
 
-use crate::sys::com::prelude::*;
 use crate::object::factory;
 use crate::object::ref_count as inst_count;
+use crate::sys::com::prelude::*;
 
 use crate::object::vx_reg_props;
 
@@ -125,7 +125,9 @@ pub unsafe extern "system" fn DllGetClassObject(
     // 预置 null，调用方可以据此判断失败
     // SAFETY: DllGetClassObject 的 COM 契约保证 ppv 非空且可写（上方已做 null 检查）；
     // 失败前写入 null 是 COM 惯例。
-    unsafe { *ppv = std::ptr::null_mut(); }
+    unsafe {
+        *ppv = std::ptr::null_mut();
+    }
 
     // 惰性安装 telemetry（首次 DllGetClassObject，Loader Lock 之外）。
     // P2：此前 log 宏与 panic hook 全项目未接线，实际为 no-op。
@@ -151,9 +153,7 @@ pub unsafe extern "system" fn DllGetClassObject(
     let raw_ptr: *mut c_void = unsafe { std::mem::transmute_copy(&factory) };
     // SAFETY: raw_ptr 指向有效的 COM 对象；COM 布局保证首字段为 vtable 指针。
     let vtbl = unsafe { *(raw_ptr as *const *const usize) };
-    type QIFn = unsafe extern "system" fn(
-        *mut c_void, *const GUID, *mut *mut c_void,
-    ) -> HRESULT;
+    type QIFn = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
     // vtable[0] = QueryInterface
     // SAFETY: COM 契约规定 vtable 第 0 项即 QueryInterface，其签名与 QIFn 一致。
     let qi: QIFn = unsafe { std::mem::transmute(*vtbl.add(0)) };
@@ -358,9 +358,7 @@ fn register_com_class(
 /// 注销单个 CLSID 的 COM 类。
 ///
 /// 先删 `InprocServer32` 子键，再删 `CLSID\{GUID}` 父键；键不存在视为成功（幂等）。
-fn unregister_com_class(
-    entry: &vx_reg_props::ClsidEntry,
-) -> crate::utils::vx_error::Result<()> {
+fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> crate::utils::vx_error::Result<()> {
     // 删除 InprocServer32 子键（幂等）
     crate::sys::registry::delete_tree(HKEY_CLASSES_ROOT, &entry.inproc_server_path())?;
     // 删除 AudioEngine APO 注册键（与注册对称；键不存在视为成功）
@@ -376,9 +374,9 @@ fn unregister_com_class(
 
 #[cfg(test)]
 mod tests {
-    use crate::sys::com::prelude::{GUID, Interface, IUnknown};
-    use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
     use super::*;
+    use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
+    use crate::sys::com::prelude::{IUnknown, Interface, GUID};
 
     /// 释放 COM 接口指针（通过 vtable 调用 Release）。
     ///
@@ -478,7 +476,9 @@ mod tests {
         // 通过 vtable 调用 Release 释放
         // SAFETY: ppv 由上面的 DllGetClassObject 成功返回（已断言非空），持有 +1 引用，
         // 按 COM 规则释放；release_com_ptr 内部走 vtable[2]。
-        unsafe { release_com_ptr(ppv); }
+        unsafe {
+            release_com_ptr(ppv);
+        }
     }
 
     #[test]
@@ -502,7 +502,9 @@ mod tests {
 
         // 通过 vtable 调用 Release 释放
         // SAFETY: 同上——ppv 为成功返回的接口指针，持有 +1 引用，此处释放。
-        unsafe { release_com_ptr(ppv); }
+        unsafe {
+            release_com_ptr(ppv);
+        }
     }
 
     #[test]
@@ -529,13 +531,8 @@ mod tests {
     fn get_class_object_null_pointers() {
         // SAFETY: 本用例专门验证空指针入参——DllGetClassObject 在入口先做 null 检查
         // 并返回 E_POINTER，不会解引用传入的空指针。
-        let hr = unsafe {
-            DllGetClassObject(
-                std::ptr::null(),
-                std::ptr::null(),
-                std::ptr::null_mut(),
-            )
-        };
+        let hr =
+            unsafe { DllGetClassObject(std::ptr::null(), std::ptr::null(), std::ptr::null_mut()) };
         assert_eq!(hr, E_POINTER);
     }
 
@@ -546,9 +543,7 @@ mod tests {
         // DLL_PROCESS_ATTACH = 1
         // SAFETY: DllMain 允许以默认 HMODULE 与 null 保留参数直接调用（实现不使用它们），
         // 本用例验证返回值语义。
-        let result = unsafe {
-            DllMain(HMODULE::default(), 1, std::ptr::null_mut())
-        };
+        let result = unsafe { DllMain(HMODULE::default(), 1, std::ptr::null_mut()) };
         assert!(result.as_bool());
     }
 
@@ -556,9 +551,7 @@ mod tests {
     fn dll_main_detach_returns_true() {
         // DLL_PROCESS_DETACH = 0
         // SAFETY: 同上——默认 HMODULE + null 保留参数，实现不访问它们。
-        let result = unsafe {
-            DllMain(HMODULE::default(), 0, std::ptr::null_mut())
-        };
+        let result = unsafe { DllMain(HMODULE::default(), 0, std::ptr::null_mut()) };
         assert!(result.as_bool());
     }
 
@@ -566,9 +559,7 @@ mod tests {
     fn dll_main_unknown_reason() {
         // 未定义的 reason 值也始终返回 TRUE
         // SAFETY: 同上——未定义 reason 同样只走返回值分支，不解引用任何指针。
-        let result = unsafe {
-            DllMain(HMODULE::default(), 999, std::ptr::null_mut())
-        };
+        let result = unsafe { DllMain(HMODULE::default(), 999, std::ptr::null_mut()) };
         assert!(result.as_bool());
     }
 
@@ -598,7 +589,9 @@ mod tests {
         // 2. 释放工厂（#[implement] COM 智能指针）
         // SAFETY: ppv 为 DllGetClassObject 成功返回的 +1 引用，此处按 COM 规则释放，
         // 之后 DllCanUnloadNow 才可能返回可卸载。
-        unsafe { release_com_ptr(ppv); }
+        unsafe {
+            release_com_ptr(ppv);
+        }
 
         // 3. 确认可卸载
         assert_eq!(DllCanUnloadNow(), S_OK);

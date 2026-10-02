@@ -41,7 +41,8 @@ use crate::pipeline::dsp::filter::Filter;
 const DAT_REF_SR: f32 = 29761.0;
 
 /// 输入扩散：论文 Fig.1 的 4 级 lattice 延迟（采样@29761Hz）与系数。
-const DAT_INPUT_APF: [(f32, f32); 4] = [(142.0, 0.75), (107.0, 0.75), (379.0, 0.625), (277.0, 0.625)];
+const DAT_INPUT_APF: [(f32, f32); 4] =
+    [(142.0, 0.75), (107.0, 0.75), (379.0, 0.625), (277.0, 0.625)];
 
 /// 槽内第一对 AllPass（被 LFO 调制），左/右。
 const DAT_APF1: [f32; 2] = [672.0, 908.0];
@@ -64,7 +65,8 @@ const DAT_TAPS_L_TAIL: [(usize, f32, f32); 5] = [
     (1, 1990.0, -1.0),
     (5, 1066.0, -1.0),
 ];
-const DAT_TAPS_R_EARLY: [(usize, f32, f32); 3] = [(1, 353.0, 1.0), (2, 335.0, -1.0), (5, 121.0, -1.0)];
+const DAT_TAPS_R_EARLY: [(usize, f32, f32); 3] =
+    [(1, 353.0, 1.0), (2, 335.0, -1.0), (5, 121.0, -1.0)];
 const DAT_TAPS_R_TAIL: [(usize, f32, f32); 4] = [
     (1, 3627.0, 1.0),
     (3, 1228.0, -1.0),
@@ -184,7 +186,10 @@ struct OnePoleLp {
 impl OnePoleLp {
     fn new(cutoff_hz: f32, sr: f32) -> Self {
         let c = 1.0 - (-core::f32::consts::TAU * cutoff_hz / sr).exp();
-        Self { coeff: c, state: 0.0 }
+        Self {
+            coeff: c,
+            state: 0.0,
+        }
     }
 
     #[inline]
@@ -347,10 +352,25 @@ impl ReverbFilter {
             tap_l_tail: Vec::new(),
             tap_r_early: Vec::new(),
             tap_r_tail: Vec::new(),
-            input_lp: OnePoleLp { coeff: 0.0, state: 0.0 },
-            input_hp: OnePoleHp { a: 1.0, x1: 0.0, y1: 0.0 },
-            low_hpf_l: OnePoleHp { a: 1.0, x1: 0.0, y1: 0.0 },
-            low_hpf_r: OnePoleHp { a: 1.0, x1: 0.0, y1: 0.0 },
+            input_lp: OnePoleLp {
+                coeff: 0.0,
+                state: 0.0,
+            },
+            input_hp: OnePoleHp {
+                a: 1.0,
+                x1: 0.0,
+                y1: 0.0,
+            },
+            low_hpf_l: OnePoleHp {
+                a: 1.0,
+                x1: 0.0,
+                y1: 0.0,
+            },
+            low_hpf_r: OnePoleHp {
+                a: 1.0,
+                x1: 0.0,
+                y1: 0.0,
+            },
             tank_lp: Vec::new(),
             tank_hp: Vec::new(),
             out_dc: Vec::new(),
@@ -497,7 +517,10 @@ impl Filter for ReverbFilter {
             .collect();
         self.apf1_g = vec![-plate_g1, -plate_g1];
 
-        self.d1_delay = DAT_D1.iter().map(|&del| scale_room(del).trunc() as usize).collect();
+        self.d1_delay = DAT_D1
+            .iter()
+            .map(|&del| scale_room(del).trunc() as usize)
+            .collect();
         self.d1 = (0..2)
             .map(|i| {
                 let base = self.d1_delay[i];
@@ -508,7 +531,10 @@ impl Filter for ReverbFilter {
 
         // 论文 Fig.1：只有槽内第一对 AllPass（672/908）被 LFO 调制；
         // 第二对（1800/2656）是固定扩散器，用普通 AllPass，不做调制。
-        self.apf2_delay = DAT_APF2.iter().map(|&del| scale_room(del).trunc() as usize).collect();
+        self.apf2_delay = DAT_APF2
+            .iter()
+            .map(|&del| scale_room(del).trunc() as usize)
+            .collect();
         self.apf2 = (0..2)
             .map(|i| {
                 let base = self.apf2_delay[i];
@@ -518,7 +544,10 @@ impl Filter for ReverbFilter {
             .collect();
         self.apf2_g = vec![plate_g2, plate_g2];
 
-        self.d2_delay = DAT_D2.iter().map(|&del| scale_room(del).trunc() as usize).collect();
+        self.d2_delay = DAT_D2
+            .iter()
+            .map(|&del| scale_room(del).trunc() as usize)
+            .collect();
         self.d2 = (0..2)
             .map(|i| {
                 let base = self.d2_delay[i];

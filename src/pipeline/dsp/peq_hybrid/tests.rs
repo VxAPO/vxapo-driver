@@ -22,10 +22,7 @@ fn sr_amp(filter: &mut HybridPeqFilter, freq: f32, amp: f32, sr: u32, frames: us
 }
 
 fn target_db(bands: &[PeqBand], freq: f32, sr: u32) -> f32 {
-    bands
-        .iter()
-        .map(|b| band_response_db(b, freq, sr))
-        .sum()
+    bands.iter().map(|b| band_response_db(b, freq, sr)).sum()
 }
 
 #[test]
@@ -40,19 +37,39 @@ fn peaking_response_math() {
 #[test]
 fn shelf_and_pass_response_math() {
     // 低架 +6 dB：fc 以下接近 +6 dB，远高于 fc 接近 0。
-    let ls = PeqBand { fc: 200.0, gain_db: 6.0, q: 0.707, kind: PeqBandType::LowShelf };
+    let ls = PeqBand {
+        fc: 200.0,
+        gain_db: 6.0,
+        q: 0.707,
+        kind: PeqBandType::LowShelf,
+    };
     assert!((band_response_db(&ls, 50.0, 48000) - 6.0).abs() < 0.3);
     assert!(band_response_db(&ls, 10000.0, 48000).abs() < 0.2);
     // 高通：fc 以下显著衰减，fc 以上接近 0 dB。
-    let hp = PeqBand { fc: 1000.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::HighPass };
+    let hp = PeqBand {
+        fc: 1000.0,
+        gain_db: 0.0,
+        q: 0.707,
+        kind: PeqBandType::HighPass,
+    };
     assert!(band_response_db(&hp, 50.0, 48000) < -20.0);
     assert!(band_response_db(&hp, 10000.0, 48000).abs() < 0.2);
     // 低通：fc 以上显著衰减，fc 以下接近 0 dB。
-    let lp = PeqBand { fc: 1000.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::LowPass };
+    let lp = PeqBand {
+        fc: 1000.0,
+        gain_db: 0.0,
+        q: 0.707,
+        kind: PeqBandType::LowPass,
+    };
     assert!(band_response_db(&lp, 10000.0, 48000) < -20.0);
     assert!(band_response_db(&lp, 50.0, 48000).abs() < 0.2);
     // 高架 -6 dB：fc 以上接近 -6 dB，远低于 fc 接近 0。
-    let hs = PeqBand { fc: 6000.0, gain_db: -6.0, q: 0.707, kind: PeqBandType::HighShelf };
+    let hs = PeqBand {
+        fc: 6000.0,
+        gain_db: -6.0,
+        q: 0.707,
+        kind: PeqBandType::HighShelf,
+    };
     assert!((band_response_db(&hs, 12000.0, 48000) + 6.0).abs() < 0.3);
     assert!(band_response_db(&hs, 50.0, 48000).abs() < 0.2);
 }
@@ -60,10 +77,30 @@ fn shelf_and_pass_response_math() {
 #[test]
 fn hybrid_shelf_and_pass_match_target() {
     let bands = vec![
-        PeqBand { fc: 120.0, gain_db: 6.0, q: 0.707, kind: PeqBandType::LowShelf },
-        PeqBand { fc: 6000.0, gain_db: -4.0, q: 0.707, kind: PeqBandType::HighShelf },
-        PeqBand { fc: 1200.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::LowPass },
-        PeqBand { fc: 80.0, gain_db: 0.0, q: 0.707, kind: PeqBandType::HighPass },
+        PeqBand {
+            fc: 120.0,
+            gain_db: 6.0,
+            q: 0.707,
+            kind: PeqBandType::LowShelf,
+        },
+        PeqBand {
+            fc: 6000.0,
+            gain_db: -4.0,
+            q: 0.707,
+            kind: PeqBandType::HighShelf,
+        },
+        PeqBand {
+            fc: 1200.0,
+            gain_db: 0.0,
+            q: 0.707,
+            kind: PeqBandType::LowPass,
+        },
+        PeqBand {
+            fc: 80.0,
+            gain_db: 0.0,
+            q: 0.707,
+            kind: PeqBandType::HighPass,
+        },
     ];
     for sr in [44_100u32, 48_000, 96_000] {
         let mut f = HybridPeqFilter::new(PeqParams {
@@ -90,12 +127,42 @@ fn hybrid_shelf_and_pass_match_target() {
 fn hybrid_matches_target_across_crossover() {
     // 多段（含跨 200 Hz）：级联输出频响 ≈ 目标 ±0.5 dB。
     let bands = vec![
-        PeqBand { fc: 100.0, gain_db: -3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 200.0, gain_db: 4.0, q: 1.2, kind: PeqBandType::Peaking },
-        PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 100.0,
+            gain_db: -3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 200.0,
+            gain_db: 4.0,
+            q: 1.2,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 6.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: -2.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 8000.0,
+            gain_db: 3.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 16000.0,
+            gain_db: -1.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     for sr in [44_100u32, 48_000, 96_000] {
         let mut f = HybridPeqFilter::new(PeqParams {
@@ -104,8 +171,7 @@ fn hybrid_matches_target_across_crossover() {
         });
         f.initialize(sr, &["L".into(), "R".into()]);
         for freq in [
-            20.0f32, 31.5, 50.0, 60.0, 100.0, 125.0, 200.0, 500.0, 1000.0, 4000.0, 8000.0,
-            16000.0,
+            20.0f32, 31.5, 50.0, 60.0, 100.0, 125.0, 200.0, 500.0, 1000.0, 4000.0, 8000.0, 16000.0,
         ] {
             let frames = 12000usize;
             let out_rms = sr_amp(&mut f, freq, 0.25, sr, frames);
@@ -123,7 +189,12 @@ fn hybrid_matches_target_across_crossover() {
 #[test]
 fn low_band_uses_iir_high_band_fir() {
     // fc=100 的段：低频 IIR 承担；高频路径（fir_ir）应接近 0 dB 补偿。
-    let bands = vec![PeqBand { fc: 100.0, gain_db: -6.0, q: 1.0, kind: PeqBandType::Peaking }];
+    let bands = vec![PeqBand {
+        fc: 100.0,
+        gain_db: -6.0,
+        q: 1.0,
+        kind: PeqBandType::Peaking,
+    }];
     let mut f = HybridPeqFilter::new(PeqParams {
         crossover_hz: CROSSOVER_HZ,
         bands: bands.clone(),
@@ -145,12 +216,42 @@ fn wide_q_crossing_band_goes_to_iir() {
     // 宽 Q 段（fc=250, q=0.6）影响范围跨过分频点 → IIR 主实现；
     // 窄 Q 段（fc=300, q=5）影响完全在 200 Hz 以上 → FIR。
     let bands = vec![
-        PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6, kind: PeqBandType::Peaking },
-        PeqBand { fc: 300.0, gain_db: -6.0, q: 8.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 400.0, gain_db: -6.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 250.0,
+            gain_db: -6.0,
+            q: 0.6,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 300.0,
+            gain_db: -6.0,
+            q: 8.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 400.0,
+            gain_db: -6.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 2000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let mut f = HybridPeqFilter::new(PeqParams {
         crossover_hz: CROSSOVER_HZ,
@@ -164,12 +265,42 @@ fn wide_q_crossing_band_goes_to_iir() {
 fn crossing_band_fits_across_crossover() {
     // 宽 Q 段跨分频点：低频由 IIR 精确、高频由 FIR 补偿，总响应 = 目标。
     let bands = vec![
-        PeqBand { fc: 150.0, gain_db: -3.0, q: 0.8, kind: PeqBandType::Peaking },
-        PeqBand { fc: 250.0, gain_db: -6.0, q: 0.6, kind: PeqBandType::Peaking },
-        PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 8000.0, gain_db: 2.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 150.0,
+            gain_db: -3.0,
+            q: 0.8,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 250.0,
+            gain_db: -6.0,
+            q: 0.6,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 3.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: -2.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 8000.0,
+            gain_db: 2.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 16000.0,
+            gain_db: -1.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     for sr in [48_000u32, 96_000] {
         let mut f = HybridPeqFilter::new(PeqParams {
@@ -196,12 +327,42 @@ fn crossing_band_fits_across_crossover() {
 #[test]
 fn silence_stays_silent() {
     let bands = vec![
-        PeqBand { fc: 100.0, gain_db: 6.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 1000.0, gain_db: -6.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 8000.0, gain_db: -3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 12000.0, gain_db: 1.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 16000.0, gain_db: -1.0, q: 1.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 100.0,
+            gain_db: 6.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: -6.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 8000.0,
+            gain_db: -3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 12000.0,
+            gain_db: 1.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 16000.0,
+            gain_db: -1.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let mut f = HybridPeqFilter::new(PeqParams {
         crossover_hz: CROSSOVER_HZ,
@@ -221,12 +382,42 @@ fn silence_stays_silent() {
 fn mute_recovery_fades_in_without_glitch() {
     // 静音 500 帧 → 恢复正弦：输出应从 0 线性淡入（前 8 ms），无阶跃。
     let bands = vec![
-        PeqBand { fc: 160.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 600.0, gain_db: -6.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 1000.0, gain_db: 6.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 2000.0, gain_db: 2.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: 1.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 8000.0, gain_db: -2.0, q: 1.5, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 160.0,
+            gain_db: -2.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 600.0,
+            gain_db: -6.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 6.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 2000.0,
+            gain_db: 2.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: 1.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 8000.0,
+            gain_db: -2.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let mut f = HybridPeqFilter::new(PeqParams {
         crossover_hz: CROSSOVER_HZ,
@@ -294,12 +485,42 @@ fn extreme_params_finite_and_deterministic() {
 #[test]
 fn latency_reports_fir_len_div_4() {
     let bands = vec![
-        PeqBand { fc: 100.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 1000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 2000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 16000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 100.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 2000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 8000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 16000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let mut f = HybridPeqFilter::new(PeqParams {
         crossover_hz: CROSSOVER_HZ,
@@ -311,12 +532,42 @@ fn latency_reports_fir_len_div_4() {
     let mut f2 = HybridPeqFilter::new(PeqParams {
         crossover_hz: CROSSOVER_HZ,
         bands: vec![
-            PeqBand { fc: 100.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
-            PeqBand { fc: 200.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
-            PeqBand { fc: 300.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
-            PeqBand { fc: 400.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
-            PeqBand { fc: 500.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
-            PeqBand { fc: 600.0, gain_db: 0.0, q: 1.0, kind: PeqBandType::Peaking },
+            PeqBand {
+                fc: 100.0,
+                gain_db: 0.0,
+                q: 1.0,
+                kind: PeqBandType::Peaking,
+            },
+            PeqBand {
+                fc: 200.0,
+                gain_db: 0.0,
+                q: 1.0,
+                kind: PeqBandType::Peaking,
+            },
+            PeqBand {
+                fc: 300.0,
+                gain_db: 0.0,
+                q: 1.0,
+                kind: PeqBandType::Peaking,
+            },
+            PeqBand {
+                fc: 400.0,
+                gain_db: 0.0,
+                q: 1.0,
+                kind: PeqBandType::Peaking,
+            },
+            PeqBand {
+                fc: 500.0,
+                gain_db: 0.0,
+                q: 1.0,
+                kind: PeqBandType::Peaking,
+            },
+            PeqBand {
+                fc: 600.0,
+                gain_db: 0.0,
+                q: 1.0,
+                kind: PeqBandType::Peaking,
+            },
         ],
     });
     f2.initialize(192_000, &["L".into()]);
@@ -329,16 +580,66 @@ fn latency_reports_fir_len_div_4() {
 #[test]
 fn sine_waveform_preserved_chunked_real_config() {
     let bands = vec![
-        PeqBand { fc: 1500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 2000.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 5047.1, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 6000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 7812.0, gain_db: -6.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 10000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 13000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 16268.0, gain_db: -1.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 20000.0, gain_db: -3.0, q: 3.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 1500.0,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 2000.0,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4500.0,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 5047.1,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 6000.0,
+            gain_db: 3.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 7812.0,
+            gain_db: -6.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 10000.0,
+            gain_db: 3.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 13000.0,
+            gain_db: -2.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 16268.0,
+            gain_db: -1.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 20000.0,
+            gain_db: -3.0,
+            q: 3.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     for sr in [44_100u32, 48_000, 96_000] {
         let mut f = HybridPeqFilter::new(PeqParams {
@@ -355,8 +656,8 @@ fn sine_waveform_preserved_chunked_real_config() {
             let n = chunk.min(total - start);
             let mut block = vec![vec![0.0f32; n], vec![0.0f32; n]];
             for i in 0..n {
-                let v = 0.25
-                    * (std::f32::consts::TAU * freq * (start + i) as f32 / sr as f32).sin();
+                let v =
+                    0.25 * (std::f32::consts::TAU * freq * (start + i) as f32 / sr as f32).sin();
                 block[0][i] = v;
                 block[1][i] = v * 0.5;
             }
@@ -387,7 +688,8 @@ fn sine_waveform_preserved_chunked_real_config() {
             .count();
         let expect = (tail.len() as f32 * 2.0 * freq / sr as f32).round() as usize;
         assert!(
-            (crossings as i64 - expect as i64).unsigned_abs() <= (expect as i64 / 10).unsigned_abs() as u64,
+            (crossings as i64 - expect as i64).unsigned_abs()
+                <= (expect as i64 / 10).unsigned_abs() as u64,
             "crossings @sr {sr}: got {crossings}, expect ~{expect}"
         );
         // 4) 稳态 RMS ≈ 目标（1k 处 ≈ -1.17 dB）
@@ -407,18 +709,68 @@ fn sine_waveform_preserved_chunked_real_config() {
 #[test]
 fn sine_waveform_preserved_per_band_blocks_cascaded() {
     use crate::pipeline::chain::Chain;
-    
+
     let bands = vec![
-        PeqBand { fc: 1500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 2000.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4500.0, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 5047.1, gain_db: 1.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 6000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 7812.0, gain_db: -6.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 10000.0, gain_db: 3.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 13000.0, gain_db: -2.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 16268.0, gain_db: -1.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 20000.0, gain_db: -3.0, q: 3.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 1500.0,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 2000.0,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4500.0,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 5047.1,
+            gain_db: 1.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 6000.0,
+            gain_db: 3.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 7812.0,
+            gain_db: -6.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 10000.0,
+            gain_db: 3.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 13000.0,
+            gain_db: -2.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 16268.0,
+            gain_db: -1.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 20000.0,
+            gain_db: -3.0,
+            q: 3.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let sr = 48_000u32;
     let mut chain = Chain::new();
@@ -440,8 +792,7 @@ fn sine_waveform_preserved_per_band_blocks_cascaded() {
         let n = chunk.min(total - start);
         let mut block = vec![vec![0.0f32; n], vec![0.0f32; n]];
         for i in 0..n {
-            let v =
-                0.25 * (std::f32::consts::TAU * freq * (start + i) as f32 / sr as f32).sin();
+            let v = 0.25 * (std::f32::consts::TAU * freq * (start + i) as f32 / sr as f32).sin();
             block[0][i] = v;
             block[1][i] = v * 0.5;
         }
@@ -488,9 +839,24 @@ fn sine_waveform_preserved_per_band_blocks_cascaded() {
 #[test]
 fn reset_clears_stale_fir_tail_before_reuse() {
     let bands = vec![
-        PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: -6.0, q: 2.0, kind: PeqBandType::Peaking },
-        PeqBand { fc: 8000.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 6.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: -6.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 8000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let sr = 48_000u32;
     let make = || {
@@ -554,8 +920,18 @@ fn reset_clears_stale_fir_tail_before_reuse() {
 #[test]
 fn fir_only_skips_silence_gate_on_gaps() {
     let bands = vec![
-        PeqBand { fc: 1000.0, gain_db: 6.0, q: 1.5, kind: PeqBandType::Peaking },
-        PeqBand { fc: 4000.0, gain_db: -6.0, q: 2.0, kind: PeqBandType::Peaking },
+        PeqBand {
+            fc: 1000.0,
+            gain_db: 6.0,
+            q: 1.5,
+            kind: PeqBandType::Peaking,
+        },
+        PeqBand {
+            fc: 4000.0,
+            gain_db: -6.0,
+            q: 2.0,
+            kind: PeqBandType::Peaking,
+        },
     ];
     let sr = 48_000u32;
     let mut f = HybridPeqFilter::new(PeqParams {

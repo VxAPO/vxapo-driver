@@ -299,7 +299,10 @@ mod tests {
         );
         // ratio 更高 → 压缩更多、输出更静。
         let out20 = run(20.0);
-        assert!(out20 < out, "higher ratio must compress more: {out20:.1} vs {out:.1}");
+        assert!(
+            out20 < out,
+            "higher ratio must compress more: {out20:.1} vs {out:.1}"
+        );
     }
 
     #[test]

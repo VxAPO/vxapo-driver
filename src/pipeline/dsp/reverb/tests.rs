@@ -109,8 +109,7 @@ fn max_params_bounded_across_sample_rates() {
         f.initialize(sr, &["L".into(), "R".into()]);
         let mut samples = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
         for i in 0..4800 {
-            samples[0][i] =
-                (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin() * 0.9;
+            samples[0][i] = (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin() * 0.9;
             samples[1][i] = samples[0][i] * 0.5;
         }
         f.process(&mut samples, 4800);
@@ -128,8 +127,7 @@ fn mono_has_wet_tail() {
     f.initialize(48000, &["Mono".into()]);
     let mut samples = vec![vec![0.0f32; 4800]];
     for i in 0..4800 {
-        samples[0][i] =
-            (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin() * 0.5;
+        samples[0][i] = (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin() * 0.5;
     }
     f.process(&mut samples, 4800);
     for &v in &samples[0] {

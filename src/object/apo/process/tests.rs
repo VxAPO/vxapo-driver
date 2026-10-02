@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use crate::object::vx_reg_props::CLSID_VXAPO_PRE_MIX;
 
 /// 测试：`apo_process_panic_fallback` 在模拟 panic 后输出清零 + BUFFER_SILENT + error_count++。

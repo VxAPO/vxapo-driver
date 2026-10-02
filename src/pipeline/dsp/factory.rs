@@ -53,7 +53,9 @@ fn matches_kind(kind: &EffectType, params: &EffectParams) -> bool {
 mod tests {
     use super::*;
     use crate::pipeline::dsp::filter::{DeviceType, ProcessingStage};
-    use crate::pipeline::dsp::model::{LoudnessParams, PeqBand, PeqBandType, PeqParams, PreampParams};
+    use crate::pipeline::dsp::model::{
+        LoudnessParams, PeqBand, PeqBandType, PeqParams, PreampParams,
+    };
     use crate::pipeline::dsp::wide::WideParams;
     use std::collections::HashMap;
 
@@ -86,12 +88,42 @@ mod tests {
         PeqParams {
             crossover_hz: 200.0,
             bands: vec![
-                PeqBand { fc: 100.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-                PeqBand { fc: 200.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-                PeqBand { fc: 400.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-                PeqBand { fc: 800.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-                PeqBand { fc: 1600.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
-                PeqBand { fc: 3200.0, gain_db: 3.0, q: 1.0, kind: PeqBandType::Peaking },
+                PeqBand {
+                    fc: 100.0,
+                    gain_db: 3.0,
+                    q: 1.0,
+                    kind: PeqBandType::Peaking,
+                },
+                PeqBand {
+                    fc: 200.0,
+                    gain_db: 3.0,
+                    q: 1.0,
+                    kind: PeqBandType::Peaking,
+                },
+                PeqBand {
+                    fc: 400.0,
+                    gain_db: 3.0,
+                    q: 1.0,
+                    kind: PeqBandType::Peaking,
+                },
+                PeqBand {
+                    fc: 800.0,
+                    gain_db: 3.0,
+                    q: 1.0,
+                    kind: PeqBandType::Peaking,
+                },
+                PeqBand {
+                    fc: 1600.0,
+                    gain_db: 3.0,
+                    q: 1.0,
+                    kind: PeqBandType::Peaking,
+                },
+                PeqBand {
+                    fc: 3200.0,
+                    gain_db: 3.0,
+                    q: 1.0,
+                    kind: PeqBandType::Peaking,
+                },
             ],
         }
     }
@@ -115,15 +147,17 @@ mod tests {
             ),
             effect(
                 EffectType::Compressor,
-                EffectParams::Compressor(crate::pipeline::dsp::compressor::CompressorParams::default()),
+                EffectParams::Compressor(
+                    crate::pipeline::dsp::compressor::CompressorParams::default(),
+                ),
             ),
-            effect(
-                EffectType::Wide,
-                EffectParams::Wide(WideParams::default()),
-            ),
+            effect(EffectType::Wide, EffectParams::Wide(WideParams::default())),
             effect(
                 EffectType::Loudness,
-                EffectParams::Loudness(LoudnessParams { phon: 80.0, reference_phon: 90.0 }),
+                EffectParams::Loudness(LoudnessParams {
+                    phon: 80.0,
+                    reference_phon: 90.0,
+                }),
             ),
         ];
         for cfg in cases {
@@ -148,7 +182,10 @@ mod tests {
     fn loudness_respects_ctx_flag() {
         let cfg = effect(
             EffectType::Loudness,
-            EffectParams::Loudness(LoudnessParams { phon: 80.0, reference_phon: 90.0 }),
+            EffectParams::Loudness(LoudnessParams {
+                phon: 80.0,
+                reference_phon: 90.0,
+            }),
         );
         let ctx = test_ctx();
         ctx.loudness_enabled.set(false);

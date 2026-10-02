@@ -1,4 +1,4 @@
-﻿//! object/factory.rs — COM ClassFactory 实现
+//! object/factory.rs — COM ClassFactory 实现
 //!
 //! 职责：
 //! 1. 管理 `LOCK_COUNT` 原子计数，跟踪客户端显式锁定
@@ -14,7 +14,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::core::{BOOL, Error, Ref};
+use windows::core::{Error, Ref, BOOL};
 
 use crate::object::vx_reg_props::is_vxapo_clsid;
 use crate::sys::com::prelude::*;
@@ -115,7 +115,9 @@ impl IClassFactory_Impl for ClassFactory_Impl {
             .map(Interface::as_raw)
             .unwrap_or(std::ptr::null_mut());
         // SAFETY: self.target_clsid 是 VxAPO CLSID（create_factory 已校验）。
-        let na = unsafe { crate::object::apo::aggregate::create_aggregate(outer_raw, self.target_clsid) };
+        let na = unsafe {
+            crate::object::apo::aggregate::create_aggregate(outer_raw, self.target_clsid)
+        };
         if na.is_null() {
             return Err(Error::from(E_OUTOFMEMORY));
         }
@@ -126,7 +128,8 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         // SAFETY: na 是 create_aggregate 刚返回的有效 COM 对象指针；COM 布局保证
         // 对象首字段是 vtable 指针（*const usize 指向函数指针数组）。
         let vtbl = unsafe { *(na as *const *const usize) };
-        type QIFn2 = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
+        type QIFn2 =
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
         // SAFETY: vtable 第 0 项按 COM 契约即 QueryInterface；函数签名与 IUnknown 一致，
         // transmute 到该签名后由下一条 SAFETY 说明的调用点使用。
         let qi2: QIFn2 = unsafe { std::mem::transmute(*vtbl.add(0)) };
@@ -166,7 +169,12 @@ impl IClassFactory_Impl for ClassFactory_Impl {
 
 pub fn create_factory(clsid: &GUID) -> Option<IClassFactory> {
     if is_vxapo_clsid(clsid) {
-        Some(ClassFactory { target_clsid: *clsid }.into())
+        Some(
+            ClassFactory {
+                target_clsid: *clsid,
+            }
+            .into(),
+        )
     } else {
         None
     }
@@ -181,7 +189,7 @@ mod tests {
     use super::*;
     use crate::object::apo::ApoObject;
     use crate::object::ref_count as inst_count;
-    use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX};
+    use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 
     // ── LOCK_COUNT ──────────────────────────────────────────────────────────
 
@@ -278,11 +286,12 @@ mod tests {
 
     #[test]
     fn create_instance_aggregated_matches_eapo_ref_semantics() {
+        use crate::sys::com::prelude::Interface;
         use std::ffi::c_void;
         use std::sync::atomic::{AtomicU32, Ordering};
-        use crate::sys::com::prelude::Interface;
 
-        type QiFn = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
+        type QiFn =
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
         type RefFn = unsafe extern "system" fn(*mut c_void) -> u32;
 
         #[repr(C)]
@@ -355,10 +364,8 @@ mod tests {
         // 聚合创建：返回类型为 IUnknown，方法内部用 T::IID（IUnknown）调用工厂。
         // SAFETY: outer_unknown 指向栈上有效的 Outer 视图，调用期间存活；
         // CreateInstance 为 COM 委派调用，参数由 COM 契约校验。
-        let inner: IUnknown = unsafe {
-            factory.CreateInstance(Some(&outer_unknown))
-        }
-        .expect("aggregated CreateInstance failed");
+        let inner: IUnknown = unsafe { factory.CreateInstance(Some(&outer_unknown)) }
+            .expect("aggregated CreateInstance failed");
         outer.inner = Interface::as_raw(&inner);
 
         // 引擎拿到返回的非委托 IUnknown 视图后 QI(IAPO)：

@@ -1,4 +1,4 @@
-﻿//! install/selector.rs — 设备选择 + 安装/卸载入口聚合（规范 5.5）
+//! install/selector.rs — 设备选择 + 安装/卸载入口聚合（规范 5.5）
 //!
 //! 仅声明 `operation` 子模块，不含业务逻辑。
 //!

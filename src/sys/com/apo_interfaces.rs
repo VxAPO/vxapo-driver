@@ -14,7 +14,7 @@
 //!
 //! 禁止：不包含任何实现逻辑。
 
-use crate::sys::com::prelude::{GUID, Interface};
+use crate::sys::com::prelude::{Interface, GUID};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 4 个 APO 接口结构体 re-export（windows-rs 提供，非自定义 trait）
@@ -33,9 +33,9 @@ pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration;
 
 // ── 对应 _Impl traits（#[implement] 实现对象时使用）───────────────────────────
-pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObject_Impl;
-pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT_Impl;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration_Impl;
+pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT_Impl;
+pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObject_Impl;
 
 // IAudioSystemEffects（marker 接口，EAPO 对齐）：`_Impl` 空体（windows-rs 0.62.2
 // Apo/mod.rs:1109 `pub trait IAudioSystemEffects_Impl: IUnknownImpl {}`）——
@@ -69,7 +69,9 @@ pub const IID_IAUDIO_MEDIA_TYPE: GUID = IAudioMediaType::IID;
 
 // 以下两个接口类型仅用于 cfg(test) 下的 IID 常量。
 #[cfg(test)]
-use windows::Win32::Media::Audio::Apo::{IAudioProcessingObjectNotifications, IAudioSystemEffects2};
+use windows::Win32::Media::Audio::Apo::{
+    IAudioProcessingObjectNotifications, IAudioSystemEffects2,
+};
 
 /// `IAudioSystemEffects` IID。
 pub const IID_IAUDIO_SYSTEM_EFFECTS: GUID = IAudioSystemEffects::IID;
@@ -93,20 +95,16 @@ pub const IID_IAUDIO_PROCESSING_OBJECT_NOTIFICATIONS: GUID =
 
 #[cfg(feature = "aec")]
 pub use windows::Win32::Media::Audio::Apo::{
-    IApoAcousticEchoCancellation,
-    IApoAuxiliaryInputConfiguration,
-    IApoAuxiliaryInputRT,
+    IApoAcousticEchoCancellation, IApoAuxiliaryInputConfiguration, IApoAuxiliaryInputRT,
 };
 
 /// `IApoAcousticEchoCancellation` IID（仅 `feature = "aec"` 时存在）。
 #[cfg(feature = "aec")]
-pub const IID_IAPO_ACOUSTIC_ECHO_CANCELLATION: GUID =
-    IApoAcousticEchoCancellation::IID;
+pub const IID_IAPO_ACOUSTIC_ECHO_CANCELLATION: GUID = IApoAcousticEchoCancellation::IID;
 
 /// `IApoAuxiliaryInputConfiguration` IID（仅 `feature = "aec"` 时存在）。
 #[cfg(feature = "aec")]
-pub const IID_IAPO_AUXILIARY_INPUT_CONFIGURATION: GUID =
-    IApoAuxiliaryInputConfiguration::IID;
+pub const IID_IAPO_AUXILIARY_INPUT_CONFIGURATION: GUID = IApoAuxiliaryInputConfiguration::IID;
 
 /// `IApoAuxiliaryInputRT` IID（仅 `feature = "aec"` 时存在）。
 #[cfg(feature = "aec")]

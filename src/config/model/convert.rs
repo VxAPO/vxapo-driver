@@ -2,14 +2,16 @@
 
 //! to_chain_model() 丢弃 APP 元数据并完成范围/段数/声道名校验。
 
-use super::*;
 use super::types::*;
+use super::*;
 
 impl FileModel {
     /// FileModel → ChainModel（丢弃 APP 元数据 + 校验）。
     pub fn to_chain_model(&self, file: &str) -> Result<ChainModel, ConfigError> {
         if !self.enabled {
-            return Ok(ChainModel { effects: Vec::new() });
+            return Ok(ChainModel {
+                effects: Vec::new(),
+            });
         }
         let mut effects = Vec::with_capacity(self.effects.len());
         for (idx, fe) in self.effects.iter().enumerate() {
@@ -20,7 +22,9 @@ impl FileModel {
         let mut shared_peq_bands = 0usize;
         let mut channel_peq_bands: HashMap<String, usize> = HashMap::new();
         for e in &effects {
-            let EffectParams::Peq(p) = &e.params else { continue };
+            let EffectParams::Peq(p) = &e.params else {
+                continue;
+            };
             let n = p.bands.len();
             match &e.channels {
                 Some(names) if !names.is_empty() => {
@@ -136,7 +140,10 @@ impl FileEffect {
             if !allowed.contains(&field) {
                 return Err(model_err(
                     file,
-                    format!("effects[{idx}]: key '{field}' does not apply to '{}'", kind.as_str()),
+                    format!(
+                        "effects[{idx}]: key '{field}' does not apply to '{}'",
+                        kind.as_str()
+                    ),
                 ));
             }
         }
@@ -236,9 +243,10 @@ impl FileEffect {
             .unwrap_or(crate::pipeline::dsp::model::CROSSOVER_HZ);
         let crossover_hz = finite_range(crossover_hz, 20.0, 20_000.0, file, idx, "crossover_hz")?;
 
-        let bands = self.bands.clone().ok_or_else(|| {
-            model_err(file, format!("effects[{idx}]: 'peq' requires 'bands'"))
-        })?;
+        let bands = self
+            .bands
+            .clone()
+            .ok_or_else(|| model_err(file, format!("effects[{idx}]: 'peq' requires 'bands'")))?;
         if bands.len() < MIN_PEQ_BANDS || bands.len() > MAX_PEQ_BANDS {
             return Err(model_err(
                 file,
@@ -252,8 +260,14 @@ impl FileEffect {
         for (bi, b) in bands.iter().enumerate() {
             let what = format!("bands[{bi}]");
             let fc = finite_range(b.fc, 20.0, 20_000.0, file, idx, &format!("{what}.fc"))?;
-            let gain_db =
-                finite_range(b.gain_db, -30.0, 30.0, file, idx, &format!("{what}.gain_db"))?;
+            let gain_db = finite_range(
+                b.gain_db,
+                -30.0,
+                30.0,
+                file,
+                idx,
+                &format!("{what}.gain_db"),
+            )?;
             let q = finite_range(b.q, 0.1, 12.0, file, idx, &format!("{what}.q"))?;
             let kind = match &b.band_type {
                 Some(t) => PeqBandType::from_str(t).ok_or_else(|| {
@@ -264,15 +278,23 @@ impl FileEffect {
                 })?,
                 None => PeqBandType::Peaking,
             };
-            out.push(PeqBand { fc, gain_db, q, kind });
+            out.push(PeqBand {
+                fc,
+                gain_db,
+                q,
+                kind,
+            });
         }
-        Ok(PeqParams { crossover_hz, bands: out })
+        Ok(PeqParams {
+            crossover_hz,
+            bands: out,
+        })
     }
 
     fn to_preamp(&self, file: &str, idx: usize) -> Result<PreampParams, ConfigError> {
-        let gain_db = self
-            .gain_db
-            .ok_or_else(|| model_err(file, format!("effects[{idx}]: 'preamp' requires 'gain_db'")))?;
+        let gain_db = self.gain_db.ok_or_else(|| {
+            model_err(file, format!("effects[{idx}]: 'preamp' requires 'gain_db'"))
+        })?;
         Ok(PreampParams {
             gain_db: finite_range(gain_db, -120.0, 48.0, file, idx, "gain_db")?,
         })
@@ -313,7 +335,11 @@ impl FileEffect {
         let unit = |v: Option<f32>, name: &str| -> Result<f32, ConfigError> {
             match v {
                 Some(x) => finite_range(x, 0.0, 1.0, file, idx, name),
-                None => Ok(if name == "wet" { d.wet } else if name == "dry" { d.dry } else {
+                None => Ok(if name == "wet" {
+                    d.wet
+                } else if name == "dry" {
+                    d.dry
+                } else {
                     match name {
                         "decay" => d.decay,
                         "damping" => d.damping,
@@ -424,9 +450,9 @@ impl FileEffect {
     }
 
     fn to_loudness(&self, file: &str, idx: usize) -> Result<LoudnessParams, ConfigError> {
-        let phon = self
-            .phon
-            .ok_or_else(|| model_err(file, format!("effects[{idx}]: 'loudness' requires 'phon'")))?;
+        let phon = self.phon.ok_or_else(|| {
+            model_err(file, format!("effects[{idx}]: 'loudness' requires 'phon'"))
+        })?;
         let reference = self.reference_phon.unwrap_or(80.0);
         Ok(LoudnessParams {
             phon: finite_range(phon, 0.0, 120.0, file, idx, "phon")?,

@@ -1,6 +1,8 @@
 //! pipeline/buffer.rs — 缓冲区描述与状态判定（规范 4.2）
 
-use crate::sys::com::apo_types::{APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID};
+use crate::sys::com::apo_types::{
+    APO_BUFFER_FLAGS, APO_CONNECTION_PROPERTY, BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID,
+};
 
 /// 静音阈值（-200 dBFS 以下）。
 #[cfg(test)]
@@ -16,10 +18,20 @@ pub(crate) struct BufferInfo {
 }
 
 impl BufferInfo {
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
-    pub fn new(ptr: *mut f32, valid_frames: usize, flags: APO_BUFFER_FLAGS, channels: usize) -> Self {
-        Self { ptr, valid_frames, flags, channels }
+    pub fn new(
+        ptr: *mut f32,
+        valid_frames: usize,
+        flags: APO_BUFFER_FLAGS,
+        channels: usize,
+    ) -> Self {
+        Self {
+            ptr,
+            valid_frames,
+            flags,
+            channels,
+        }
     }
 
     pub fn from_prop(prop: &APO_CONNECTION_PROPERTY, channels: usize) -> Self {
@@ -40,13 +52,13 @@ impl BufferInfo {
         }
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_valid(&self) -> bool {
         self.flags == BUFFER_VALID
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_silent(&self) -> bool {
         self.flags == BUFFER_SILENT
@@ -56,7 +68,7 @@ impl BufferInfo {
         self.valid_frames * self.channels
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn bytes(&self) -> usize {
         self.total_samples() * std::mem::size_of::<f32>()
@@ -101,7 +113,10 @@ pub(crate) enum BufferAction {
 }
 
 /// 根据输入标志和 allowSilentBuffer 确定处理动作。
-pub(crate) fn evaluate_buffer(flags: APO_BUFFER_FLAGS, allow_silent_buffer: bool) -> (BufferAction, APO_BUFFER_FLAGS) {
+pub(crate) fn evaluate_buffer(
+    flags: APO_BUFFER_FLAGS,
+    allow_silent_buffer: bool,
+) -> (BufferAction, APO_BUFFER_FLAGS) {
     if flags == BUFFER_INVALID {
         (BufferAction::Skip, BUFFER_INVALID)
     } else if flags == BUFFER_SILENT && !allow_silent_buffer {
@@ -116,7 +131,11 @@ pub(crate) fn evaluate_buffer(flags: APO_BUFFER_FLAGS, allow_silent_buffer: bool
 /// 检查去交织平面缓冲区中所有采样是否为静音。
 #[cfg(test)]
 pub(crate) fn is_silent(samples: &[Vec<f32>], frame_count: usize) -> bool {
-    samples.iter().all(|ch| ch[..frame_count].iter().all(|&v| v.abs() <= SILENCE_THRESHOLD))
+    samples.iter().all(|ch| {
+        ch[..frame_count]
+            .iter()
+            .all(|&v| v.abs() <= SILENCE_THRESHOLD)
+    })
 }
 
 /// 将去交织平面缓冲区所有通道清零。
@@ -136,30 +155,40 @@ pub(crate) fn copy_buffers(src: &[Vec<f32>], dst: &mut [Vec<f32>], frame_count: 
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn evaluate_valid_process() {
-        assert_eq!(evaluate_buffer(BUFFER_VALID, false), (BufferAction::Process, BUFFER_VALID));
+        assert_eq!(
+            evaluate_buffer(BUFFER_VALID, false),
+            (BufferAction::Process, BUFFER_VALID)
+        );
     }
 
     #[test]
     fn evaluate_invalid_skip() {
-        assert_eq!(evaluate_buffer(BUFFER_INVALID, true), (BufferAction::Skip, BUFFER_INVALID));
+        assert_eq!(
+            evaluate_buffer(BUFFER_INVALID, true),
+            (BufferAction::Skip, BUFFER_INVALID)
+        );
     }
 
     #[test]
     fn evaluate_silent_no_allow() {
-        assert_eq!(evaluate_buffer(BUFFER_SILENT, false), (BufferAction::Silent, BUFFER_SILENT));
+        assert_eq!(
+            evaluate_buffer(BUFFER_SILENT, false),
+            (BufferAction::Silent, BUFFER_SILENT)
+        );
     }
 
     #[test]
     fn evaluate_silent_allow() {
-        assert_eq!(evaluate_buffer(BUFFER_SILENT, true), (BufferAction::Process, BUFFER_SILENT));
+        assert_eq!(
+            evaluate_buffer(BUFFER_SILENT, true),
+            (BufferAction::Process, BUFFER_SILENT)
+        );
     }
 
     #[test]

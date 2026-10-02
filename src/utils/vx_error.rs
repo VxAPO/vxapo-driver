@@ -1,4 +1,4 @@
-﻿//! utils/vx_error.rs — VxApoError 业务错误（规范）
+//! utils/vx_error.rs — VxApoError 业务错误（规范）
 //!
 //! 边界：不依赖任何其他模块（仅 `windows-core` 的 `HRESULT`）。
 //!
@@ -142,7 +142,10 @@ mod tests {
         assert!(matches!(VxApoError::format("x"), VxApoError::Format(_)));
         assert!(matches!(VxApoError::io("x"), VxApoError::Io(_)));
         assert!(matches!(VxApoError::internal("x"), VxApoError::Internal(_)));
-        assert!(matches!(VxApoError::rt_safety("x"), VxApoError::RtSafety(_)));
+        assert!(matches!(
+            VxApoError::rt_safety("x"),
+            VxApoError::RtSafety(_)
+        ));
         assert!(matches!(VxApoError::state("x"), VxApoError::State(_)));
         assert!(matches!(
             VxApoError::device_not_found("x"),

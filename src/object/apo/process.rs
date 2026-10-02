@@ -8,25 +8,25 @@ use std::sync::atomic::Ordering;
 
 use windows::core::Result;
 
-use super::{ApoObject, ApoObject_Impl};
 use super::config::{start_watcher, stop_watcher};
 use super::state::{ApoState, LockGuard};
+use super::{ApoObject, ApoObject_Impl};
 use crate::config::parser::ConfigParser;
 use crate::install::audiodg::ensure_can_load;
+use crate::object::vx_reg_props::CLSID_VXAPO_POST_MIX;
 use crate::pipeline::chain::Chain;
 use crate::pipeline::context::PipelineContext;
-use crate::pipeline::dsp::filter::{DspContext, DeviceType, ProcessingStage};
+use crate::pipeline::dsp::filter::{DeviceType, DspContext, ProcessingStage};
 use crate::pipeline::dsp::math::init_audio_thread;
 use crate::pipeline::format::{extract_format, AudioFormat};
 use crate::pipeline::process::{
-    ErrorPolicy, ProcessParams, process_audio, process_chain_interleaved,
+    process_audio, process_chain_interleaved, ErrorPolicy, ProcessParams,
 };
-use crate::object::vx_reg_props::CLSID_VXAPO_POST_MIX;
 use crate::sys::audio_defs::get_channel_names;
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{
-    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APOERR_INVALID_CONNECTION_FORMAT,
-    APOERR_NOT_INITIALIZED, APOERR_NUM_CONNECTIONS_INVALID, BUFFER_SILENT, BUFFER_VALID,
+    APOERR_INVALID_CONNECTION_FORMAT, APOERR_NOT_INITIALIZED, APOERR_NUM_CONNECTIONS_INVALID,
+    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, BUFFER_SILENT, BUFFER_VALID,
 };
 use crate::sys::com::prelude::{E_FAIL, HRESULT};
 
@@ -181,20 +181,19 @@ pub(crate) fn lock_for_process(
     let input_descriptor = unsafe { &**pp_inputs };
     // SAFETY: 同上（输出侧）。两处借用都只在本次 Process 调用内使用。
     let output_descriptor = unsafe { &**pp_outputs };
-    let extract_descriptor_format =
-        |desc: &APO_CONNECTION_DESCRIPTOR| -> Result<AudioFormat> {
-            match desc.pFormat.as_ref() {
-                Some(media_type) => {
-                    let mt_ptr: *mut IAudioMediaType =
-                        media_type as *const IAudioMediaType as *mut IAudioMediaType;
-                    // SAFETY: media_type 是描述符 pFormat 中的 IAudioMediaType 引用，
-                    // 引擎保证其在本帧内有效；转成可变指针只为匹配签名，extract_format 只读。
-                    unsafe { extract_format(mt_ptr) }
-                        .map_err(|e| windows::core::Error::from(HRESULT::from(e)))
-                }
-                None => Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT)),
+    let extract_descriptor_format = |desc: &APO_CONNECTION_DESCRIPTOR| -> Result<AudioFormat> {
+        match desc.pFormat.as_ref() {
+            Some(media_type) => {
+                let mt_ptr: *mut IAudioMediaType =
+                    media_type as *const IAudioMediaType as *mut IAudioMediaType;
+                // SAFETY: media_type 是描述符 pFormat 中的 IAudioMediaType 引用，
+                // 引擎保证其在本帧内有效；转成可变指针只为匹配签名，extract_format 只读。
+                unsafe { extract_format(mt_ptr) }
+                    .map_err(|e| windows::core::Error::from(HRESULT::from(e)))
             }
-        };
+            None => Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT)),
+        }
+    };
     let format = extract_descriptor_format(input_descriptor)?;
     let output_format = extract_descriptor_format(output_descriptor)?;
 
@@ -652,7 +651,12 @@ impl ApoObject {
                 let in_peak = if frames > 0 && in_ch > 0 {
                     // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
                     unsafe {
-                        checked_interleaved_slice(ip.pBuffer as *const f32, frames, in_ch, max_frames)
+                        checked_interleaved_slice(
+                            ip.pBuffer as *const f32,
+                            frames,
+                            in_ch,
+                            max_frames,
+                        )
                     }
                     .iter()
                     .fold(0.0f32, |m, &v| m.max(v.abs()))
@@ -665,7 +669,12 @@ impl ApoObject {
                 if frames > 0 && out_ch > 0 {
                     // SAFETY: 同输入缓冲（输出由引擎按 u32MaxFrameCount × ch 分配）。
                     unsafe {
-                        checked_interleaved_slice_mut(op.pBuffer as *mut f32, frames, out_ch, max_frames)
+                        checked_interleaved_slice_mut(
+                            op.pBuffer as *mut f32,
+                            frames,
+                            out_ch,
+                            max_frames,
+                        )
                     }
                     .fill(0.0);
                 }
@@ -701,12 +710,22 @@ impl ApoObject {
                 let frames = (input_prop.u32ValidFrameCount as usize).min(max_frames);
                 // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
                 let src = unsafe {
-                    checked_interleaved_slice(input_prop.pBuffer as *const f32, frames, in_ch, max_frames)
+                    checked_interleaved_slice(
+                        input_prop.pBuffer as *const f32,
+                        frames,
+                        in_ch,
+                        max_frames,
+                    )
                 };
                 // SAFETY: 输出缓冲由引擎按 u32MaxFrameCount × 通道数分配，helper 已把帧数
                 // clamp 到 max_frames；pBuffer 非空且长度足够。
                 let dst = unsafe {
-                    checked_interleaved_slice_mut(output_prop.pBuffer as *mut f32, frames, out_ch, max_frames)
+                    checked_interleaved_slice_mut(
+                        output_prop.pBuffer as *mut f32,
+                        frames,
+                        out_ch,
+                        max_frames,
+                    )
                 };
                 let copy_len = src.len().min(dst.len());
                 // in-place 场景 src/dst 可能重叠，逐元素拷贝（memmove 语义）。
@@ -762,7 +781,12 @@ impl ApoObject {
             // 输入切片（交织）。
             // SAFETY: 引擎缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             let input_slice = unsafe {
-                checked_interleaved_slice(input_prop.pBuffer as *const f32, frames, in_ch, max_frames)
+                checked_interleaved_slice(
+                    input_prop.pBuffer as *const f32,
+                    frames,
+                    in_ch,
+                    max_frames,
+                )
             };
 
             // 旧链 → temp_buffer_old。
@@ -812,13 +836,15 @@ impl ApoObject {
             // 按 factor=1.0（纯新链）输出，APO 契约要求每帧写出。
             // SAFETY: 输出缓冲按 u32MaxFrameCount × ch 分配；helper 已 clamp 帧数。
             let out_slice = unsafe {
-                checked_interleaved_slice_mut(output_prop.pBuffer as *mut f32, frames, out_ch, max_frames)
+                checked_interleaved_slice_mut(
+                    output_prop.pBuffer as *mut f32,
+                    frames,
+                    out_ch,
+                    max_frames,
+                )
             };
             for f in 0..frames {
-                let factor = transition
-                    .as_mut()
-                    .and_then(|p| p.advance())
-                    .unwrap_or(1.0);
+                let factor = transition.as_mut().and_then(|p| p.advance()).unwrap_or(1.0);
                 let inv_factor = 1.0 - factor;
                 for c in 0..out_ch {
                     let idx = f * out_ch + c;

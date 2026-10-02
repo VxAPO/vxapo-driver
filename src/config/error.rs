@@ -1,4 +1,4 @@
-﻿//! config/error.rs — 配置解析专用错误类型（规范 6.0）
+//! config/error.rs — 配置解析专用错误类型（规范 6.0）
 
 /// 配置解析错误类型。
 ///
@@ -11,7 +11,11 @@ pub enum ConfigError {
     IoError { path: String, message: String },
     /// 命令语法错误（含文件名和行号）。
     #[error("Syntax error in {file}:{line}: {message}")]
-    SyntaxError { file: String, line: usize, message: String },
+    SyntaxError {
+        file: String,
+        line: usize,
+        message: String,
+    },
     /// TOML 反序列化失败。
     #[error("TOML error in {file}: {message}")]
     TomlError { file: String, message: String },

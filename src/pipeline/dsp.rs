@@ -1,4 +1,4 @@
-﻿//! pipeline/dsp.rs — DSP 算法模块入口（规范）
+//! pipeline/dsp.rs — DSP 算法模块入口（规范）
 //!
 //! 职责：Filter trait、工厂注册表、过渡混合。
 //!
@@ -9,8 +9,8 @@ pub mod aural;
 pub mod biquad;
 pub mod compressor;
 pub mod factory;
-pub mod fir;
 pub mod filter;
+pub mod fir;
 pub mod gain;
 pub mod loudness;
 pub mod math;

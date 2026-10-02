@@ -63,28 +63,28 @@ impl ApoSlot {
         self as u8
     }
 
-/// Windows 真实注册表槽位属性 ID（PID）。
-///
-/// **实证（reg query）**：FxProperties 下 `{d04e05a6-...}` 各槽位
-/// 的 PID 为 **0/3/5/6/7**（非连续 0-4）：
-/// - LFX=0 / GFX=3 / SFX=5 / MFX=6 / EFX=7
-/// - 值与旧 CLI `src/reg.rs` 常量一致（VAL_SFX=5 / VAL_MFX=6 / VAL_EFX=7）
-pub fn registry_pid(self) -> u8 {
-    match self {
-        ApoSlot::Lfx => PID_LFX,
-        ApoSlot::Gfx => PID_GFX,
-        ApoSlot::Sfx => PID_SFX,
-        ApoSlot::Mfx => PID_MFX,
-        ApoSlot::Efx => PID_EFX,
+    /// Windows 真实注册表槽位属性 ID（PID）。
+    ///
+    /// **实证（reg query）**：FxProperties 下 `{d04e05a6-...}` 各槽位
+    /// 的 PID 为 **0/3/5/6/7**（非连续 0-4）：
+    /// - LFX=0 / GFX=3 / SFX=5 / MFX=6 / EFX=7
+    /// - 值与旧 CLI `src/reg.rs` 常量一致（VAL_SFX=5 / VAL_MFX=6 / VAL_EFX=7）
+    pub fn registry_pid(self) -> u8 {
+        match self {
+            ApoSlot::Lfx => PID_LFX,
+            ApoSlot::Gfx => PID_GFX,
+            ApoSlot::Sfx => PID_SFX,
+            ApoSlot::Mfx => PID_MFX,
+            ApoSlot::Efx => PID_EFX,
+        }
     }
-}
 
-/// 槽位的注册表值名称。
-///
-/// 格式：`{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},{registry_pid}`
-pub fn value_name(self) -> String {
-    format!("{{{}}},{}", APO_FX_PROPERTY_GUID, self.registry_pid())
-}
+    /// 槽位的注册表值名称。
+    ///
+    /// 格式：`{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},{registry_pid}`
+    pub fn value_name(self) -> String {
+        format!("{{{}}},{}", APO_FX_PROPERTY_GUID, self.registry_pid())
+    }
 
     /// 是否为 PreMix 类槽位。
     pub fn is_premix(self) -> bool {
@@ -182,4 +182,3 @@ impl SlotValue {
 // ══════════════════════════════════════════════════════════════════════════════
 // 公开 API — 槽位读取
 // ══════════════════════════════════════════════════════════════════════════════
-

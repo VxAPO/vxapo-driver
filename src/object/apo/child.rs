@@ -21,7 +21,6 @@
 //! - **委托失败降级**：Initialize/LockForProcess/UnlockForProcess 失败不阻塞父
 //! - **重置防御**：Unlock 失败后下次 Lock 前 child.reset()/重建
 
-
 use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration,
     IAudioProcessingObjectRT,
@@ -30,7 +29,7 @@ use crate::sys::com::apo_types::{
     APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES, REFERENCE_TIME,
 };
 use crate::sys::com::prelude::{
-    CLSCTX_ALL, CoCreateInstance, E_POINTER, GUID, HRESULT, Interface, IUnknown, S_OK,
+    CoCreateInstance, IUnknown, Interface, CLSCTX_ALL, E_POINTER, GUID, HRESULT, S_OK,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -75,22 +74,24 @@ impl ChildApo {
     pub unsafe fn create(clsid: &GUID) -> Result<Self, HRESULT> {
         // Step 1: CoCreateInstance → IUnknown（ref=1）。
         // SAFETY: rclsid 非空 + CLSCTX_INPROC_SERVER；函数返回 Result<IUnknown>。
-        let unknown: IUnknown = unsafe { CoCreateInstance(clsid, None, CLSCTX_ALL) }
-            .map_err(HRESULT::from)?;
+        let unknown: IUnknown =
+            unsafe { CoCreateInstance(clsid, None, CLSCTX_ALL) }.map_err(HRESULT::from)?;
 
         // Step 2: cast 三个接口（每次 cast 内部 QI + AddRef，ref 递增；cast 为 safe 方法）。
         // SAFETY: unknown 有效；目标接口为该 APO 真实实现的接口。
-        let iapo: IAudioProcessingObject =
-            unknown.cast().map_err(HRESULT::from)?;
-        let iapo_rt: IAudioProcessingObjectRT =
-            unknown.cast().map_err(HRESULT::from)?;
+        let iapo: IAudioProcessingObject = unknown.cast().map_err(HRESULT::from)?;
+        let iapo_rt: IAudioProcessingObjectRT = unknown.cast().map_err(HRESULT::from)?;
         let iapo_cfg: IAudioProcessingObjectConfiguration =
             unknown.cast().map_err(HRESULT::from)?;
 
         // Step 3: drop 原始 IUnknown（三个 cast 引用保持对象存活）。
         drop(unknown);
 
-        Ok(Self { iapo, iapo_rt, iapo_cfg })
+        Ok(Self {
+            iapo,
+            iapo_rt,
+            iapo_cfg,
+        })
     }
 
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
@@ -306,7 +307,10 @@ impl ChildApo {
     ) {
         // SAFETY: self.iapo_rt 有效；num_input/num_output 与 pp_inputs/pp_outputs 由
         // 父 APO 的 Process 按引擎契约原样转发（指针数组长度与帧数一致）。
-        unsafe { self.iapo_rt.APOProcess(num_input, pp_inputs, num_output, pp_outputs) }
+        unsafe {
+            self.iapo_rt
+                .APOProcess(num_input, pp_inputs, num_output, pp_outputs)
+        }
     }
 
     // ── IAudioProcessingObjectConfiguration 委托 ─────────────────────────────
@@ -333,11 +337,17 @@ impl ChildApo {
         // SAFETY: 上方已检查指针非空且数量非零；引擎保证 pp_inputs 指向 num_input 个
         // 有效的 *const APO_CONNECTION_DESCRIPTOR；切片只在本次调用内使用。
         let inputs = unsafe {
-            std::slice::from_raw_parts(pp_inputs as *const *const APO_CONNECTION_DESCRIPTOR, num_input as usize)
+            std::slice::from_raw_parts(
+                pp_inputs as *const *const APO_CONNECTION_DESCRIPTOR,
+                num_input as usize,
+            )
         };
         // SAFETY: 同输入侧——非空/非零已检查，指针数组长度与 num_output 一致。
         let outputs = unsafe {
-            std::slice::from_raw_parts(pp_outputs as *const *const APO_CONNECTION_DESCRIPTOR, num_output as usize)
+            std::slice::from_raw_parts(
+                pp_outputs as *const *const APO_CONNECTION_DESCRIPTOR,
+                num_output as usize,
+            )
         };
         // SAFETY: self.iapo_cfg 有效；inputs/outputs 为上述切片，调用期间存活。
         unsafe { self.iapo_cfg.LockForProcess(inputs, outputs) }

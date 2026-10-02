@@ -6,11 +6,11 @@
 use crate::install::device::endpoint::{query_endpoint, EndpointInfo, EndpointState, Flow};
 use crate::install::device::format::{read_audio_format, AudioFormat};
 use crate::install::device::slots::{
-    read_all_slots, ApoSlot, InstallMode, SlotValue, detect_install_mode as eapo_detect_mode,
+    detect_install_mode as eapo_detect_mode, read_all_slots, ApoSlot, InstallMode, SlotValue,
     FX_PROPERTIES_KEY, INSTALL_VERSION, INSTALL_VERSION_LEGACY,
 };
-use crate::sys::registry::{RegKey, is_windows_version_at_least};
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
+use crate::sys::registry::{is_windows_version_at_least, RegKey};
 use crate::utils::guid::parse_guid_string;
 use crate::utils::vx_error::{Result, VxApoError};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
@@ -31,12 +31,10 @@ const PKEY_AUDIOENGINE_DEVICE_FORMAT: &str = "{f19f064d-082c-4e27-bc73-6882a1bb8
 const PKEY_AUDIOENDPOINT_PHYSICAL_SPEAKERS: &str = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},3";
 
 /// MMDevices 渲染端点根路径。
-const RENDER_PATH: &str =
-    r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
+const RENDER_PATH: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
 
 /// MMDevices 采集端点根路径。
-const CAPTURE_PATH: &str =
-    r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
+const CAPTURE_PATH: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
 
 /// 枚举根 → 音频流方向。
 ///
@@ -57,7 +55,9 @@ fn flow_for_root(root_path: &str) -> Flow {
 pub fn find_endpoint_path(device_guid: &str) -> Result<String> {
     // 先校验 GUID 再拼注册表路径，避免畸形输入被当作子键路径。
     if parse_guid_string(device_guid).is_none() {
-        return Err(VxApoError::internal(format!("无效的端点 GUID：{device_guid}")));
+        return Err(VxApoError::internal(format!(
+            "无效的端点 GUID：{device_guid}"
+        )));
     }
     let render = format!("{}\\{}", RENDER_PATH, device_guid);
     if RegKey::open(HKEY_LOCAL_MACHINE, &render).is_ok() {
@@ -394,8 +394,8 @@ fn read_install_version(endpoint_key: &RegKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::com::prelude::GUID;
     use crate::install::device::endpoint::{EndpointState, Flow};
+    use crate::sys::com::prelude::GUID;
 
     fn empty_slots() -> [SlotValue; 5] {
         [SlotValue::NoKey; 5]

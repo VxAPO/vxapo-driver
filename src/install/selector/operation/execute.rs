@@ -2,18 +2,25 @@
 
 //! 共享导入与 InstallConfig 见父模块 install/selector/operation.rs。
 
-use super::*;
-use super::helpers::*;
 use super::capx::*;
+use super::helpers::*;
+use super::*;
 
 /// 回滚动作。
 #[derive(Debug)]
 pub(super) enum RollbackAction {
     /// 删除指定键路径（安装新建的键）。
-    DeleteKey { root: windows::Win32::System::Registry::HKEY, path: String },
+    DeleteKey {
+        root: windows::Win32::System::Registry::HKEY,
+        path: String,
+    },
     /// 恢复指定值（原名 + 备份 GUID 字符串——槽位必须写 REG_SZ，
     /// 见 `write_apo_slot` 的 REG_SZ 实证说明）。
-    RestoreValue { key_path: String, name: String, backup: String },
+    RestoreValue {
+        key_path: String,
+        name: String,
+        backup: String,
+    },
 }
 
 /// 简单事务：记录回滚动作，Drop 时逆序执行（未 commit 时）。
@@ -24,7 +31,10 @@ pub(super) struct Transaction {
 
 impl Transaction {
     pub(super) fn new() -> Self {
-        Self { actions: Vec::new(), committed: false }
+        Self {
+            actions: Vec::new(),
+            committed: false,
+        }
     }
 
     pub(super) fn record(&mut self, action: RollbackAction) {
@@ -49,7 +59,11 @@ impl Drop for Transaction {
                     // 路径必须走 delete_tree（幂等）；旧实现打开后传全路径 → 静默空操作。
                     let _ = crate::sys::registry::delete_tree(*root, path);
                 }
-                RollbackAction::RestoreValue { key_path, name, backup } => {
+                RollbackAction::RestoreValue {
+                    key_path,
+                    name,
+                    backup,
+                } => {
                     if let Ok(key) = RegKey::create(HKEY_LOCAL_MACHINE, key_path) {
                         let _ = key.write_sz(name, backup);
                     }
@@ -115,8 +129,7 @@ pub fn write_install_config(
 
     // ── 读取当前槽位（用于原始 APO 保留） ────────────────────────────────
 
-    let (original_premix, original_postmix) =
-        read_original_apo_guids(&fx_key, config);
+    let (original_premix, original_postmix) = read_original_apo_guids(&fx_key, config);
 
     // ── capture 特例（EAPO DeviceAPOInfo.cpp 583/607/632）───────────────
     // 采集端点（Capture）只装 PreMix，PostMix 不装（VxAPO 不做采集端增强）。
@@ -146,10 +159,18 @@ pub fn write_install_config(
     delete_other_mode_slots(&fx_key, config.install_mode);
 
     if config.install_premix {
-        write_apo_slot(&fx_key, config.install_mode.premix_slot(), CLSID_VXAPO_PRE_MIX)?;
+        write_apo_slot(
+            &fx_key,
+            config.install_mode.premix_slot(),
+            CLSID_VXAPO_PRE_MIX,
+        )?;
     }
     if config.install_postmix && !is_capture {
-        write_apo_slot(&fx_key, config.install_mode.postmix_slot(), CLSID_VXAPO_POST_MIX)?;
+        write_apo_slot(
+            &fx_key,
+            config.install_mode.postmix_slot(),
+            CLSID_VXAPO_POST_MIX,
+        )?;
     }
 
     // ── Step 6: 写入默认处理模式 GUID ────────────────────────────────────
@@ -202,12 +223,7 @@ pub fn install_endpoint(
         // SAFETY: CoInitializeEx 无 preconditions；进程级调用。
         // S_OK(0)=本次初始化成功；S_FALSE(1)=已由宿主初始化（合法）。
         // 其他值=COM 初始化失败，verify 不可靠 → 报错。
-        let co_init = unsafe {
-            CoInitializeEx(
-                None,
-                COINIT_MULTITHREADED,
-            )
-        };
+        let co_init = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let co_init_hr = co_init.0;
         if co_init_hr != 0 && co_init_hr != 1 {
             return Err(VxApoError::internal(format!(
@@ -218,13 +234,7 @@ pub fn install_endpoint(
         for clsid in [CLSID_VXAPO_PRE_MIX, CLSID_VXAPO_POST_MIX] {
             // 实例化验证：CoCreateInstance 成功即 DLL 可加载（不深究接口）。
             // SAFETY: windows-rs 3 参泛型（rclsid, punkouter, dwclscontext）返回 IUnknown。
-            let hr = unsafe {
-                CoCreateInstance::<_, IUnknown>(
-                    &clsid,
-                    None,
-                    CLSCTX_INPROC_SERVER,
-                )
-            };
+            let hr = unsafe { CoCreateInstance::<_, IUnknown>(&clsid, None, CLSCTX_INPROC_SERVER) };
             if hr.is_err() {
                 return Err(VxApoError::internal(format!(
                     "安装自检失败：CoCreateInstance(CLSID) err={}",
@@ -407,4 +417,3 @@ pub fn migrate_install(
 // ══════════════════════════════════════════════════════════════════════════════
 // 内部辅助
 // ══════════════════════════════════════════════════════════════════════════════
-

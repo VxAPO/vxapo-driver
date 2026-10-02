@@ -20,7 +20,9 @@ use crate::object::apo::ApoObject;
 use crate::sys::com::apo_interfaces::{
     IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, IID_IAUDIO_SYSTEM_EFFECTS,
 };
-use crate::sys::com::prelude::{E_NOINTERFACE, E_POINTER, GUID, HRESULT, Interface, IUnknown, S_OK};
+use crate::sys::com::prelude::{
+    IUnknown, Interface, E_NOINTERFACE, E_POINTER, GUID, HRESULT, S_OK,
+};
 
 /// 聚合实例生命周期计数（诊断）：`create_aggregate` 成功 +1，
 /// `na_release` 归零析构 -1。用于验证“audiodg 实例是否泄漏”
@@ -41,8 +43,18 @@ struct IapoVtbl {
     get_latency: unsafe extern "system" fn(*mut c_void, *mut i64) -> HRESULT,
     get_reg_props: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
     initialize: unsafe extern "system" fn(*mut c_void, u32, *const u8) -> HRESULT,
-    is_input_fmt: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT,
-    is_output_fmt: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT,
+    is_input_fmt: unsafe extern "system" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    is_output_fmt: unsafe extern "system" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut *mut c_void,
+    ) -> HRESULT,
     get_input_channels: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT,
 }
 
@@ -51,7 +63,8 @@ struct IapoRtVtbl {
     qi: QiFn,
     addref: RefFn,
     release: RefFn,
-    apo_process: unsafe extern "system" fn(*mut c_void, u32, *const *const c_void, u32, *mut *mut c_void),
+    apo_process:
+        unsafe extern "system" fn(*mut c_void, u32, *const *const c_void, u32, *mut *mut c_void),
     calc_input: unsafe extern "system" fn(*mut c_void, u32) -> u32,
     calc_output: unsafe extern "system" fn(*mut c_void, u32) -> u32,
 }
@@ -61,7 +74,13 @@ struct IapoCfgVtbl {
     qi: QiFn,
     addref: RefFn,
     release: RefFn,
-    lock_for_process: unsafe extern "system" fn(*mut c_void, u32, *const *const c_void, u32, *const *const c_void) -> HRESULT,
+    lock_for_process: unsafe extern "system" fn(
+        *mut c_void,
+        u32,
+        *const *const c_void,
+        u32,
+        *const *const c_void,
+    ) -> HRESULT,
     unlock_for_process: unsafe extern "system" fn(*mut c_void) -> HRESULT,
 }
 
@@ -200,7 +219,11 @@ unsafe fn delegate_release_at(base: *mut NApo) -> u32 {
 }
 
 // IAPO 接口 ptr = base+0（offset 0，this 即 base）。
-unsafe extern "system" fn apo_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn apo_dl_qi(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
     delegate_qi_at(this as *mut NApo, riid, ppv)
 }
 unsafe extern "system" fn apo_dl_addref(this: *mut c_void) -> u32 {
@@ -211,7 +234,11 @@ unsafe extern "system" fn apo_dl_release(this: *mut c_void) -> u32 {
 }
 
 // IAPO_RT 接口 ptr = base+8，需回退。
-unsafe extern "system" fn rt_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn rt_dl_qi(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
     delegate_qi_at(base_from_iface(this, OFF_RT), riid, ppv)
 }
 unsafe extern "system" fn rt_dl_addref(this: *mut c_void) -> u32 {
@@ -222,7 +249,11 @@ unsafe extern "system" fn rt_dl_release(this: *mut c_void) -> u32 {
 }
 
 // IAPO_CFG 接口 ptr = base+16，需回退。
-unsafe extern "system" fn cfg_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn cfg_dl_qi(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
     delegate_qi_at(base_from_iface(this, OFF_CFG), riid, ppv)
 }
 unsafe extern "system" fn cfg_dl_addref(this: *mut c_void) -> u32 {
@@ -233,7 +264,11 @@ unsafe extern "system" fn cfg_dl_release(this: *mut c_void) -> u32 {
 }
 
 // IAPO_ASE 接口 ptr = base+24，需回退。
-unsafe extern "system" fn ase_dl_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn ase_dl_qi(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
     delegate_qi_at(base_from_iface(this, OFF_ASE), riid, ppv)
 }
 unsafe extern "system" fn ase_dl_addref(this: *mut c_void) -> u32 {
@@ -246,7 +281,11 @@ unsafe extern "system" fn ase_dl_release(this: *mut c_void) -> u32 {
 // ── NonDelegatingQI（EAPO:519-538）───────────────────────────
 // this 可能是任意接口视图（非委托 IUnknown 视图 base+32 / IAPO base / RT base+8 …），
 // 统一按指向的 vtable 判断当前这是哪个视图，还原 base 再暴露接口。
-unsafe extern "system" fn na_qi(this: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn na_qi(
+    this: *mut c_void,
+    riid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
     if riid.is_null() || ppv.is_null() {
         return E_POINTER;
     }
@@ -366,7 +405,15 @@ macro_rules! forward_method {
 }
 
 // ── IAPO vtable stub（offset 0 = 基址） ─────────────────────────
-forward_method!(na_reset, |this| as_apo(this as *mut NApo), i_apo, 3, HRESULT, (), ());
+forward_method!(
+    na_reset,
+    |this| as_apo(this as *mut NApo),
+    i_apo,
+    3,
+    HRESULT,
+    (),
+    ()
+);
 forward_method!(na_get_latency, |this| as_apo(this as *mut NApo), i_apo, 4, HRESULT, (out: *mut i64), (out));
 forward_method!(na_get_reg_props, |this| as_apo(this as *mut NApo), i_apo, 5, HRESULT, (out: *mut *mut c_void), (out));
 forward_method!(na_initialize, |this| as_apo(this as *mut NApo), i_apo, 6, HRESULT, (cb: u32, data: *const u8), (cb, data));
@@ -381,14 +428,26 @@ forward_method!(rt_calc_output, |this| as_apo(base_from_iface(this, OFF_RT)), i_
 
 // ── IAPO_CFG vtable stub（offset 16） ───────────────────────────
 forward_method!(cfg_lock, |this| as_apo(base_from_iface(this, OFF_CFG)), i_cfg, 3, HRESULT, (nin: u32, pin: *const *const c_void, nout: u32, pout: *const *const c_void), (nin, pin, nout, pout));
-forward_method!(cfg_unlock, |this| as_apo(base_from_iface(this, OFF_CFG)), i_cfg, 4, HRESULT, (), ());
+forward_method!(
+    cfg_unlock,
+    |this| as_apo(base_from_iface(this, OFF_CFG)),
+    i_cfg,
+    4,
+    HRESULT,
+    (),
+    ()
+);
 
 // ── IAPO_ASE vtable stub（offset 24） ───────────────────────────
 // IUnknown 槽 0-2 = delegating。
 
 /// 非委托 IUnknown vtable（EAPO INonDelegatingUnknown）：槽 0-2 = na_qi/na_addref/na_release
 /// （自维护 + 直接暴露 inner 接口）。CreateInstance 返回此视图，引擎对它的 QI 走 NonDQI。
-static ND_UNKNOWN_VTBL: IUnknownVtbl = IUnknownVtbl { qi: na_qi, addref: na_addref, release: na_release };
+static ND_UNKNOWN_VTBL: IUnknownVtbl = IUnknownVtbl {
+    qi: na_qi,
+    addref: na_addref,
+    release: na_release,
+};
 static IAPO_VTBL: IapoVtbl = IapoVtbl {
     qi: apo_dl_qi,
     addref: apo_dl_addref,

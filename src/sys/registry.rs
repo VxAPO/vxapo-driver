@@ -3,10 +3,10 @@
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::System::Registry::{
-    HKEY, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW,
-    RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY_CLASSES_ROOT,
-    HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS, REG_BINARY, REG_DWORD,
-    REG_MULTI_SZ, REG_OPEN_CREATE_OPTIONS, REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW,
+    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS, REG_BINARY, REG_DWORD, REG_MULTI_SZ,
+    REG_OPEN_CREATE_OPTIONS, REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
 };
 
 use crate::utils::vx_error::{Result, VxApoError};
@@ -186,9 +186,7 @@ impl RegKey {
                     RegValue::Dword(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
                 } else {
                     // 数据损坏不可静默（审查 #6）：截断为 0 会掩盖注册表问题。
-                    return Err(err_from_hr(
-                        windows::core::HRESULT(0x8007_000Du32 as i32),
-                    ));
+                    return Err(err_from_hr(windows::core::HRESULT(0x8007_000Du32 as i32)));
                 }
             }
             t if t == REG_QWORD => {
@@ -197,9 +195,7 @@ impl RegKey {
                         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
                     ]))
                 } else {
-                    return Err(err_from_hr(
-                        windows::core::HRESULT(0x8007_000Du32 as i32),
-                    ));
+                    return Err(err_from_hr(windows::core::HRESULT(0x8007_000Du32 as i32)));
                 }
             }
             t if t == REG_BINARY => RegValue::Binary(buf),
@@ -213,9 +209,7 @@ impl RegKey {
     pub fn read_sz_value(&self, name: &str) -> Result<String> {
         match self.read_value(name)? {
             RegValue::Sz(s) => Ok(s),
-            _ => Err(err_from_hr(windows::core::HRESULT(
-                0x8000_000Du32 as i32,
-            ))),
+            _ => Err(err_from_hr(windows::core::HRESULT(0x8000_000Du32 as i32))),
         }
     }
 
@@ -228,9 +222,7 @@ impl RegKey {
     pub fn read_dword_value(&self, name: &str) -> Result<u32> {
         match self.read_value(name)? {
             RegValue::Dword(d) => Ok(d),
-            _ => Err(err_from_hr(windows::core::HRESULT(
-                0x8000_000Du32 as i32,
-            ))),
+            _ => Err(err_from_hr(windows::core::HRESULT(0x8000_000Du32 as i32))),
         }
     }
 
@@ -238,9 +230,7 @@ impl RegKey {
     pub fn read_binary_value(&self, name: &str) -> Result<Vec<u8>> {
         match self.read_value(name)? {
             RegValue::Binary(b) => Ok(b),
-            _ => Err(err_from_hr(windows::core::HRESULT(
-                0x8000_000Du32 as i32,
-            ))),
+            _ => Err(err_from_hr(windows::core::HRESULT(0x8000_000Du32 as i32))),
         }
     }
 
@@ -248,9 +238,7 @@ impl RegKey {
     pub fn read_multi_value(&self, name: &str) -> Result<Vec<String>> {
         match self.read_value(name)? {
             RegValue::MultiSz(v) => Ok(v),
-            _ => Err(err_from_hr(windows::core::HRESULT(
-                0x8000_000Du32 as i32,
-            ))),
+            _ => Err(err_from_hr(windows::core::HRESULT(0x8000_000Du32 as i32))),
         }
     }
 
@@ -309,9 +297,13 @@ impl RegKey {
                     names.push(String::from_utf16_lossy(&buf[..len as usize]));
                     index += 1;
                     break;
-                } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
+                } else if is_not_found(err) || err.0 == 259
+                /* ERROR_NO_MORE_ITEMS */
+                {
                     return Ok(names);
-                } else if err.0 == 234 /* ERROR_MORE_DATA */ {
+                } else if err.0 == 234
+                /* ERROR_MORE_DATA */
+                {
                     // 超长名扩容重试（上限 32767，审查 #6）。
                     let new_len = (buf.len() * 2).max(len as usize).min(32767);
                     if new_len <= buf.len() {
@@ -354,9 +346,13 @@ impl RegKey {
                     names.push(String::from_utf16_lossy(&buf[..len as usize]));
                     index += 1;
                     break;
-                } else if is_not_found(err) || err.0 == 259 /* ERROR_NO_MORE_ITEMS */ {
+                } else if is_not_found(err) || err.0 == 259
+                /* ERROR_NO_MORE_ITEMS */
+                {
                     return Ok(names);
-                } else if err.0 == 234 /* ERROR_MORE_DATA */ {
+                } else if err.0 == 234
+                /* ERROR_MORE_DATA */
+                {
                     let new_len = (buf.len() * 2).max(len as usize).min(32767);
                     if new_len <= buf.len() {
                         win32_ok(err)?;
@@ -379,33 +375,24 @@ impl RegKey {
                     data1: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
                     data2: u16::from_le_bytes([b[4], b[5]]),
                     data3: u16::from_le_bytes([b[6], b[7]]),
-                    data4: [
-                        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
-                    ],
+                    data4: [b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]],
                 };
                 Ok(crate::sys::com::prelude::guid_to_string(&guid))
             }
             RegValue::Sz(s) => Ok(s),
-            _ => Err(err_from_hr(
-                windows::core::HRESULT(0x8000_000Du32 as i32),
-            )),
+            _ => Err(err_from_hr(windows::core::HRESULT(0x8000_000Du32 as i32))),
         }
     }
 
     /// 写入 REG_SZ。
     pub fn write_sz(&self, name: &str, value: &str) -> Result<()> {
         let name = HSTRING::from(name);
-        let mut bytes: Vec<u8> = value
-            .encode_utf16()
-            .flat_map(|u| u.to_le_bytes())
-            .collect();
+        let mut bytes: Vec<u8> = value.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         bytes.extend_from_slice(&[0, 0]); // null terminator
 
         // SAFETY: bytes 为 UTF-16LE + 单个 NUL 终止的 REG_SZ 布局，长度以字节数传入；
         // &bytes 在调用期间存活，self.handle 具备 KEY_SET_VALUE。
-        let err = unsafe {
-            RegSetValueExW(self.handle, &name, None, REG_SZ, Some(&bytes))
-        };
+        let err = unsafe { RegSetValueExW(self.handle, &name, None, REG_SZ, Some(&bytes)) };
         win32_ok(err)
     }
 
@@ -415,15 +402,7 @@ impl RegKey {
         let data = value.to_le_bytes();
         // SAFETY: data 是 4 字节 LE 布局、与 REG_DWORD 类型一致；切片在调用期间存活，
         // self.handle 具备 KEY_SET_VALUE。
-        let err = unsafe {
-            RegSetValueExW(
-                self.handle,
-                &name,
-                None,
-                REG_DWORD,
-                Some(&data),
-            )
-        };
+        let err = unsafe { RegSetValueExW(self.handle, &name, None, REG_DWORD, Some(&data)) };
         win32_ok(err)
     }
 
@@ -434,15 +413,7 @@ impl RegKey {
         let name = HSTRING::from(name);
         let data = value.to_le_bytes();
         // SAFETY: data 是 8 字节 LE 布局、与 REG_QWORD 类型一致；其余同 write_dword。
-        let err = unsafe {
-            RegSetValueExW(
-                self.handle,
-                &name,
-                None,
-                REG_QWORD,
-                Some(&data),
-            )
-        };
+        let err = unsafe { RegSetValueExW(self.handle, &name, None, REG_QWORD, Some(&data)) };
         win32_ok(err)
     }
 
@@ -451,15 +422,7 @@ impl RegKey {
         let name = HSTRING::from(name);
         // SAFETY: data 为调用方提供的字节切片，长度按字节数传递；切片与 name 在调用
         // 期间存活，self.handle 具备 KEY_SET_VALUE。
-        let err = unsafe {
-            RegSetValueExW(
-                self.handle,
-                &name,
-                None,
-                REG_BINARY,
-                Some(data),
-            )
-        };
+        let err = unsafe { RegSetValueExW(self.handle, &name, None, REG_BINARY, Some(data)) };
         win32_ok(err)
     }
 
@@ -483,15 +446,7 @@ impl RegKey {
 
         // SAFETY: bytes 为 REG_MULTI_SZ 布局（每项 NUL 终止 + 双 NUL 结尾），长度以字节
         // 数传入；切片在调用期间存活，self.handle 具备 KEY_SET_VALUE。
-        let err = unsafe {
-            RegSetValueExW(
-                self.handle,
-                &name,
-                None,
-                REG_MULTI_SZ,
-                Some(&bytes),
-            )
-        };
+        let err = unsafe { RegSetValueExW(self.handle, &name, None, REG_MULTI_SZ, Some(&bytes)) };
         win32_ok(err)
     }
 
@@ -576,11 +531,7 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
         "HKCR" | "HKEY_CLASSES_ROOT" => HKEY_CLASSES_ROOT,
         "HKU" | "HKEY_USERS" => HKEY_USERS,
         "HKCC" | "HKEY_CURRENT_CONFIG" => HKEY_CURRENT_CONFIG,
-        _ => {
-            return Err(err_from_hr(windows::core::HRESULT(
-                0x8007_001Bu32 as i32,
-            )))
-        }
+        _ => return Err(err_from_hr(windows::core::HRESULT(0x8007_001Bu32 as i32))),
     };
     Ok((root, rest))
 }
@@ -651,9 +602,7 @@ pub fn save_to_file(root: HKEY, sub_key: &str, path: &str) -> Result<()> {
     bytes.append(&mut utf16);
     std::fs::write(path, bytes).map_err(|e| {
         let code = e.raw_os_error().unwrap_or(5) as u32 & 0xFFFF;
-        err_from_hr(windows::core::HRESULT(
-            (0x8007_0000u32 | code) as i32,
-        ))
+        err_from_hr(windows::core::HRESULT((0x8007_0000u32 | code) as i32))
     })?;
     Ok(())
 }
@@ -686,10 +635,9 @@ fn dump_key_recursive(
                         display_name,
                         s.replace('\\', "\\\\").replace('"', "\\\"")
                     )),
-                    RegValue::Dword(d) => content.push_str(&format!(
-                        "\"{}\"=dword:{:08x}\r\n",
-                        display_name, d
-                    )),
+                    RegValue::Dword(d) => {
+                        content.push_str(&format!("\"{}\"=dword:{:08x}\r\n", display_name, d))
+                    }
                     RegValue::Qword(q) => {
                         // .reg 的 QWORD 类型为 hex(b)：8 字节完整小端序。
                         let bytes = q.to_le_bytes();
@@ -730,9 +678,9 @@ fn dump_key_recursive(
                     }
                 }
             }
-            Err(e) => log::warn!(
-                "save_to_file: 读取值 {name} 失败：{e}——备份不完整（调用方应视为警告）"
-            ),
+            Err(e) => {
+                log::warn!("save_to_file: 读取值 {name} 失败：{e}——备份不完整（调用方应视为警告）")
+            }
         }
     }
     content.push('\n');

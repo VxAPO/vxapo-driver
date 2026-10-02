@@ -1,4 +1,4 @@
-﻿//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（规范 4.3）
+//! pipeline/format.rs — 从 IAudioMediaType 提取 WAVEFORMATEX 信息（规范 4.3）
 
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE};
@@ -40,7 +40,12 @@ pub(crate) fn format_from_wave_format(wf: &WAVEFORMATEX) -> AudioFormat {
     } else {
         crate::sys::audio_defs::default_channel_mask(channels)
     };
-    AudioFormat { sample_rate, channels, bits_per_sample, channel_mask }
+    AudioFormat {
+        sample_rate,
+        channels,
+        bits_per_sample,
+        channel_mask,
+    }
 }
 
 /// 判断 WAVEFORMATEX 是否表示 IEEE float。
@@ -56,8 +61,7 @@ pub(crate) fn is_float_wave_format(wf: &WAVEFORMATEX) -> bool {
         let ext = wf as *const WAVEFORMATEX as *const WAVEFORMATEXTENSIBLE;
         // SAFETY: 见上——cbSize>=22 保证 SubFormat 字段在有效范围内；
         // read_unaligned 处理任意对齐的 GUID 拷贝。
-        let sub: GUID =
-            unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*ext).SubFormat)) };
+        let sub: GUID = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*ext).SubFormat)) };
         return sub == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
     }
     false
@@ -126,7 +130,10 @@ mod tests {
 
     #[test]
     fn base_pcm_is_not_float() {
-        let wf = WAVEFORMATEX { wFormatTag: 1, ..base_ieee_float() };
+        let wf = WAVEFORMATEX {
+            wFormatTag: 1,
+            ..base_ieee_float()
+        };
         assert!(!is_float_wave_format(&wf));
     }
 

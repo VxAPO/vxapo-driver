@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use crate::sys::com::apo_types::{
     APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
 };
-use crate::sys::com::prelude::{GUID, guid_to_string};
+use crate::sys::com::prelude::{guid_to_string, GUID};
 
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
 pub(crate) const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.toml";
@@ -90,14 +90,21 @@ pub(crate) fn resolve_config_path_from(
 
     let dir = std::path::Path::new(config_root).join(&device_dir);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        log::warn!("create_dir_all({}) failed: {} — fallback to shared default config", dir.display(), e);
+        log::warn!(
+            "create_dir_all({}) failed: {} — fallback to shared default config",
+            dir.display(),
+            e
+        );
         return DEFAULT_CONFIG_PATH.to_owned();
     }
     let path = dir.join("config.toml");
 
     // config.toml 缺失 → 写默认 passthrough（空文件 = 无滤波器 = passthrough）。
     if !path.exists() {
-        log::info!("config not found at {}, writing default passthrough", path.display());
+        log::info!(
+            "config not found at {}, writing default passthrough",
+            path.display()
+        );
         if let Err(e) = std::fs::write(&path, "# VxAPO default passthrough\n") {
             log::warn!("write default config failed: {}", e);
         }
@@ -150,5 +157,5 @@ pub(crate) fn diag_append(line: &str) {
 }
 // ── 子模块 re-export（实现见 object/apo/reload.rs 与 rtdump.rs）────────────
 
-pub(crate) use super::reload::{WatcherState, hot_reload_impl, start_watcher, stop_watcher};
+pub(crate) use super::reload::{hot_reload_impl, start_watcher, stop_watcher, WatcherState};
 pub(crate) use super::rtdump::{rt_dump_flush, rt_dump_open};

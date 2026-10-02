@@ -15,7 +15,10 @@
 use crate::sys::com::prelude::GUID;
 
 use crate::sys::com::apo_interfaces::IID_IAPO;
-use crate::sys::com::apo_types::{APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, APO_FLAG_FRAMESPERSECOND_MUST_MATCH, APO_FLAG_INPLACE, APO_REG_PROPERTIES};
+use crate::sys::com::apo_types::{
+    APO_FLAG, APO_FLAG_BITSPERSAMPLE_MUST_MATCH, APO_FLAG_FRAMESPERSECOND_MUST_MATCH,
+    APO_FLAG_INPLACE, APO_REG_PROPERTIES,
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CLSID 常量（定义在 sys/consts.rs，单一来源）
@@ -36,8 +39,8 @@ const APO_COPYRIGHT: &str = "VxAPO Project";
 
 const APO_FLAGS: APO_FLAG = APO_FLAG(
     APO_FLAG_FRAMESPERSECOND_MUST_MATCH.0
-    | APO_FLAG_BITSPERSAMPLE_MUST_MATCH.0
-    | APO_FLAG_INPLACE.0,
+        | APO_FLAG_BITSPERSAMPLE_MUST_MATCH.0
+        | APO_FLAG_INPLACE.0,
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -93,14 +96,17 @@ const _: () = {
     // EAPO 对照：CRegAPOProperties<1> = u32NumAPOInterfaces=1（audiodg 校验
     // 接口数与 iidAPOInterfaceList 长度必须一致——曾写 3 导致独立父槽位被拒）。
     assert!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces == 1);
-    assert!(REG_PROPS_PRE_MIX.u32NumAPOInterfaces as usize == REG_PROPS_PRE_MIX.iidAPOInterfaceList.len());
-    assert!(REG_PROPS_POST_MIX.u32NumAPOInterfaces as usize == REG_PROPS_POST_MIX.iidAPOInterfaceList.len());
+    assert!(
+        REG_PROPS_PRE_MIX.u32NumAPOInterfaces as usize
+            == REG_PROPS_PRE_MIX.iidAPOInterfaceList.len()
+    );
+    assert!(
+        REG_PROPS_POST_MIX.u32NumAPOInterfaces as usize
+            == REG_PROPS_POST_MIX.iidAPOInterfaceList.len()
+    );
     assert!(REG_PROPS_PRE_MIX.szFriendlyName[0] != 0);
     assert!(REG_PROPS_PRE_MIX.Flags.0 == REG_PROPS_POST_MIX.Flags.0);
-    assert!(
-        REG_PROPS_PRE_MIX.u32MaxInputConnections
-            == REG_PROPS_POST_MIX.u32MaxInputConnections
-    );
+    assert!(REG_PROPS_PRE_MIX.u32MaxInputConnections == REG_PROPS_POST_MIX.u32MaxInputConnections);
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -176,8 +182,14 @@ mod tests {
     #[test]
     fn props_share_everything_except_clsid() {
         assert_eq!(REG_PROPS_PRE_MIX.Flags, REG_PROPS_POST_MIX.Flags);
-        assert_eq!(REG_PROPS_PRE_MIX.u32MajorVersion, REG_PROPS_POST_MIX.u32MajorVersion);
-        assert_eq!(REG_PROPS_PRE_MIX.u32MinorVersion, REG_PROPS_POST_MIX.u32MinorVersion);
+        assert_eq!(
+            REG_PROPS_PRE_MIX.u32MajorVersion,
+            REG_PROPS_POST_MIX.u32MajorVersion
+        );
+        assert_eq!(
+            REG_PROPS_PRE_MIX.u32MinorVersion,
+            REG_PROPS_POST_MIX.u32MinorVersion
+        );
         assert_eq!(
             REG_PROPS_PRE_MIX.u32MinInputConnections,
             REG_PROPS_POST_MIX.u32MinInputConnections
@@ -194,13 +206,22 @@ mod tests {
             REG_PROPS_PRE_MIX.u32MaxOutputConnections,
             REG_PROPS_POST_MIX.u32MaxOutputConnections
         );
-        assert_eq!(REG_PROPS_PRE_MIX.u32MaxInstances, REG_PROPS_POST_MIX.u32MaxInstances);
+        assert_eq!(
+            REG_PROPS_PRE_MIX.u32MaxInstances,
+            REG_PROPS_POST_MIX.u32MaxInstances
+        );
         assert_eq!(
             REG_PROPS_PRE_MIX.u32NumAPOInterfaces,
             REG_PROPS_POST_MIX.u32NumAPOInterfaces
         );
-        assert_eq!(REG_PROPS_PRE_MIX.szFriendlyName, REG_PROPS_POST_MIX.szFriendlyName);
-        assert_eq!(REG_PROPS_PRE_MIX.szCopyrightInfo, REG_PROPS_POST_MIX.szCopyrightInfo);
+        assert_eq!(
+            REG_PROPS_PRE_MIX.szFriendlyName,
+            REG_PROPS_POST_MIX.szFriendlyName
+        );
+        assert_eq!(
+            REG_PROPS_PRE_MIX.szCopyrightInfo,
+            REG_PROPS_POST_MIX.szCopyrightInfo
+        );
         assert_ne!(REG_PROPS_PRE_MIX.clsid, REG_PROPS_POST_MIX.clsid);
     }
 
@@ -278,28 +299,42 @@ impl ClsidEntry {
             },
         }
     }
-    pub fn clsid_key_path(&self) -> String { format!("CLSID\\{}", self.clsid_str) }
-    pub fn inproc_server_path(&self) -> String { format!("CLSID\\{}\\InprocServer32", self.clsid_str) }
+    pub fn clsid_key_path(&self) -> String {
+        format!("CLSID\\{}", self.clsid_str)
+    }
+    pub fn inproc_server_path(&self) -> String {
+        format!("CLSID\\{}\\InprocServer32", self.clsid_str)
+    }
     /// AudioEngine APO 注册键：引擎读槽位 CLSID 后查此键取 APO 属性，缺失则静默拒载。
     pub fn audio_engine_path(&self) -> String {
         format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
     }
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn registration_entries(&self, dll_path: &str) -> Vec<(&str, String, String)> {
         vec![
             ("Default", String::new(), dll_path.to_owned()),
-            ("ThreadingModel", "ThreadingModel".to_owned(), "Both".to_owned()),
+            (
+                "ThreadingModel",
+                "ThreadingModel".to_owned(),
+                "Both".to_owned(),
+            ),
         ]
     }
 }
 
 /// 注册顺序：PostMix → PreMix。
 pub fn registration_order() -> Vec<ClsidEntry> {
-    vec![ClsidEntry::new(CLSID_VXAPO_POST_MIX), ClsidEntry::new(CLSID_VXAPO_PRE_MIX)]
+    vec![
+        ClsidEntry::new(CLSID_VXAPO_POST_MIX),
+        ClsidEntry::new(CLSID_VXAPO_PRE_MIX),
+    ]
 }
 
 /// 注销顺序：PreMix → PostMix。
 pub fn unregistration_order() -> Vec<ClsidEntry> {
-    vec![ClsidEntry::new(CLSID_VXAPO_PRE_MIX), ClsidEntry::new(CLSID_VXAPO_POST_MIX)]
+    vec![
+        ClsidEntry::new(CLSID_VXAPO_PRE_MIX),
+        ClsidEntry::new(CLSID_VXAPO_POST_MIX),
+    ]
 }

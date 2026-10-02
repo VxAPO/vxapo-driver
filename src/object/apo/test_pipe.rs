@@ -9,13 +9,13 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use windows::core::HSTRING;
 use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
     OPEN_EXISTING,
 };
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
-use windows::core::HSTRING;
 
 use crate::sys::registry::RegKey;
 
@@ -114,7 +114,9 @@ fn dead_pipe_seen(name: &str) -> bool {
 
 fn mark_pipe_dead(name: &str) {
     let mut guard = DEAD_PIPES.lock().unwrap_or_else(|e| e.into_inner());
-    guard.get_or_insert_with(std::collections::HashSet::new).insert(name.to_string());
+    guard
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(name.to_string());
 }
 
 #[cfg(test)]
@@ -124,7 +126,15 @@ mod tests {
     /// 无管道名时 notify 必须零副作用直接返回（不 panic、不连接）。
     #[test]
     fn notify_without_pipe_name_is_noop() {
-        notify("{00000000-0000-0000-0000-000000000000}", "premix", "initialize");
-        notify("{00000000-0000-0000-0000-000000000000}", "postmix", "child_apo");
+        notify(
+            "{00000000-0000-0000-0000-000000000000}",
+            "premix",
+            "initialize",
+        );
+        notify(
+            "{00000000-0000-0000-0000-000000000000}",
+            "postmix",
+            "child_apo",
+        );
     }
 }

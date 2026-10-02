@@ -10,13 +10,13 @@ use windows::core::Result;
 use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
 use crate::pipeline::chain::Chain;
-use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
+use crate::pipeline::dsp::transition::{default_smoothing_length, SmoothingProvider};
 use crate::sys::com::prelude::GUID;
 
-use super::ApoObject_Impl;
-use super::inner::{ApoObjectInner, build_dsp_context};
 use super::config::diag_append;
-use super::rtdump::{rt_dump_open};
+use super::inner::{build_dsp_context, ApoObjectInner};
+use super::rtdump::rt_dump_open;
+use super::ApoObject_Impl;
 
 /// watcher 运行时状态（外部驱动模型）。
 #[derive(Default)]
@@ -158,9 +158,7 @@ pub(crate) fn hot_reload_impl(
                 guard.transition = None;
             } else {
                 guard.pending_reload = true;
-                let msg = format!(
-                    "RELOAD pending(transition) clsid={clsid:?} obj=0x{obj_ptr:x}"
-                );
+                let msg = format!("RELOAD pending(transition) clsid={clsid:?} obj=0x{obj_ptr:x}");
                 drop(guard);
                 diag_append(&msg); // 锁外写盘（不持 inner 锁做磁盘 I/O）
                 return;
@@ -280,4 +278,3 @@ impl Drop for ReloadingClear<'_> {
         guard.reloading = false;
     }
 }
-

@@ -1,8 +1,8 @@
 use crate::sys::com::prelude::guid_to_string;
 
-use super::*;
 use super::child::*;
 use super::types::*;
+use super::*;
 
 // ── ApoSlot ───────────────────────────────────────────────────────────
 
@@ -31,7 +31,11 @@ fn slot_all_unique() {
 fn slot_value_names_format() {
     for slot in ApoSlot::ALL {
         let name = slot.value_name();
-        assert!(name.starts_with('{'), "value_name should start with '{{': {}", name);
+        assert!(
+            name.starts_with('{'),
+            "value_name should start with '{{': {}",
+            name
+        );
         assert!(name.contains(APO_FX_PROPERTY_GUID));
         assert!(name.ends_with(&format!(",{}", slot.registry_pid())));
     }
@@ -95,15 +99,31 @@ fn mode_postmix_slots() {
 
 #[test]
 fn mode_premix_slots_are_premix_type() {
-    for mode in [InstallMode::LfxGfx, InstallMode::SfxMfx, InstallMode::SfxEfx] {
-        assert!(mode.premix_slot().is_premix(), "{:?} premix should be premix type", mode);
+    for mode in [
+        InstallMode::LfxGfx,
+        InstallMode::SfxMfx,
+        InstallMode::SfxEfx,
+    ] {
+        assert!(
+            mode.premix_slot().is_premix(),
+            "{:?} premix should be premix type",
+            mode
+        );
     }
 }
 
 #[test]
 fn mode_postmix_slots_are_postmix_type() {
-    for mode in [InstallMode::LfxGfx, InstallMode::SfxMfx, InstallMode::SfxEfx] {
-        assert!(mode.postmix_slot().is_postmix(), "{:?} postmix should be postmix type", mode);
+    for mode in [
+        InstallMode::LfxGfx,
+        InstallMode::SfxMfx,
+        InstallMode::SfxEfx,
+    ] {
+        assert!(
+            mode.postmix_slot().is_postmix(),
+            "{:?} postmix should be postmix type",
+            mode
+        );
     }
 }
 
@@ -151,7 +171,12 @@ fn slot_value_clone() {
 
 #[test]
 fn guid_to_string_zeroed() {
-    let g = GUID { data1: 0, data2: 0, data3: 0, data4: [0; 8] };
+    let g = GUID {
+        data1: 0,
+        data2: 0,
+        data3: 0,
+        data4: [0; 8],
+    };
     assert_eq!(guid_to_string(&g), "{00000000-0000-0000-0000-000000000000}");
 }
 
@@ -224,7 +249,10 @@ fn premix_primary_has_guid() {
     // SFX 有 GUID → 直接返回，不走回退
     let mut slots = empty_slots();
     slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(1));
-    assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxEfx), guid_to_string(&test_guid(1)));
+    assert_eq!(
+        get_original_pre_mix(&slots, InstallMode::SfxEfx),
+        guid_to_string(&test_guid(1))
+    );
 }
 
 #[test]
@@ -240,7 +268,10 @@ fn premix_novalue_fallback_to_lfx() {
     let mut slots = empty_slots();
     slots[ApoSlot::Sfx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(2));
-    assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxEfx), guid_to_string(&test_guid(2)));
+    assert_eq!(
+        get_original_pre_mix(&slots, InstallMode::SfxEfx),
+        guid_to_string(&test_guid(2))
+    );
 }
 
 #[test]
@@ -257,7 +288,10 @@ fn premix_lfxgfx_mode_uses_lfx() {
     // LfxGfx 模式：主槽位 = LFX
     let mut slots = empty_slots();
     slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(3));
-    assert_eq!(get_original_pre_mix(&slots, InstallMode::LfxGfx), guid_to_string(&test_guid(3)));
+    assert_eq!(
+        get_original_pre_mix(&slots, InstallMode::LfxGfx),
+        guid_to_string(&test_guid(3))
+    );
 }
 
 #[test]
@@ -266,7 +300,10 @@ fn premix_lfxgfx_novalue_fallback_to_sfx() {
     let mut slots = empty_slots();
     slots[ApoSlot::Lfx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(4));
-    assert_eq!(get_original_pre_mix(&slots, InstallMode::LfxGfx), guid_to_string(&test_guid(4)));
+    assert_eq!(
+        get_original_pre_mix(&slots, InstallMode::LfxGfx),
+        guid_to_string(&test_guid(4))
+    );
 }
 
 #[test]
@@ -274,7 +311,10 @@ fn premix_sfxmfx_mode_uses_sfx() {
     // SfxMfx 模式：主槽位 = SFX
     let mut slots = empty_slots();
     slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(5));
-    assert_eq!(get_original_pre_mix(&slots, InstallMode::SfxMfx), guid_to_string(&test_guid(5)));
+    assert_eq!(
+        get_original_pre_mix(&slots, InstallMode::SfxMfx),
+        guid_to_string(&test_guid(5))
+    );
 }
 
 #[test]
@@ -293,7 +333,10 @@ fn postmix_primary_has_guid() {
     // EFX 有 GUID → 直接返回
     let mut slots = empty_slots();
     slots[ApoSlot::Efx.index() as usize] = SlotValue::Guid(test_guid(10));
-    assert_eq!(get_original_post_mix(&slots, InstallMode::SfxEfx), guid_to_string(&test_guid(10)));
+    assert_eq!(
+        get_original_post_mix(&slots, InstallMode::SfxEfx),
+        guid_to_string(&test_guid(10))
+    );
 }
 
 #[test]
@@ -309,7 +352,10 @@ fn postmix_sfxefx_novalue_fallback_to_mfx() {
     let mut slots = empty_slots();
     slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Mfx.index() as usize] = SlotValue::Guid(test_guid(11));
-    assert_eq!(get_original_post_mix(&slots, InstallMode::SfxEfx), guid_to_string(&test_guid(11)));
+    assert_eq!(
+        get_original_post_mix(&slots, InstallMode::SfxEfx),
+        guid_to_string(&test_guid(11))
+    );
 }
 
 #[test]
@@ -319,7 +365,10 @@ fn postmix_sfxefx_novalue_fallback_to_gfx() {
     slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Mfx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Gfx.index() as usize] = SlotValue::Guid(test_guid(12));
-    assert_eq!(get_original_post_mix(&slots, InstallMode::SfxEfx), guid_to_string(&test_guid(12)));
+    assert_eq!(
+        get_original_post_mix(&slots, InstallMode::SfxEfx),
+        guid_to_string(&test_guid(12))
+    );
 }
 
 #[test]
@@ -338,7 +387,10 @@ fn postmix_sfxmfx_novalue_fallback_to_efx() {
     let mut slots = empty_slots();
     slots[ApoSlot::Mfx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Efx.index() as usize] = SlotValue::Guid(test_guid(13));
-    assert_eq!(get_original_post_mix(&slots, InstallMode::SfxMfx), guid_to_string(&test_guid(13)));
+    assert_eq!(
+        get_original_post_mix(&slots, InstallMode::SfxMfx),
+        guid_to_string(&test_guid(13))
+    );
 }
 
 #[test]
@@ -347,7 +399,10 @@ fn postmix_lfxgfx_novalue_fallback_to_efx() {
     let mut slots = empty_slots();
     slots[ApoSlot::Gfx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Efx.index() as usize] = SlotValue::Guid(test_guid(14));
-    assert_eq!(get_original_post_mix(&slots, InstallMode::LfxGfx), guid_to_string(&test_guid(14)));
+    assert_eq!(
+        get_original_post_mix(&slots, InstallMode::LfxGfx),
+        guid_to_string(&test_guid(14))
+    );
 }
 
 #[test]
@@ -357,24 +412,36 @@ fn postmix_lfxgfx_novalue_fallback_to_mfx() {
     slots[ApoSlot::Gfx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Efx.index() as usize] = SlotValue::NoValue;
     slots[ApoSlot::Mfx.index() as usize] = SlotValue::Guid(test_guid(15));
-    assert_eq!(get_original_post_mix(&slots, InstallMode::LfxGfx), guid_to_string(&test_guid(15)));
+    assert_eq!(
+        get_original_post_mix(&slots, InstallMode::LfxGfx),
+        guid_to_string(&test_guid(15))
+    );
 }
 
 // ── 回退顺序验证 ─────────────────────────────────────────────────────
 
 #[test]
 fn postmix_fallback_order_sfxefx() {
-    assert_eq!(postmix_fallback_order(InstallMode::SfxEfx), &[ApoSlot::Mfx, ApoSlot::Gfx]);
+    assert_eq!(
+        postmix_fallback_order(InstallMode::SfxEfx),
+        &[ApoSlot::Mfx, ApoSlot::Gfx]
+    );
 }
 
 #[test]
 fn postmix_fallback_order_sfxmfx() {
-    assert_eq!(postmix_fallback_order(InstallMode::SfxMfx), &[ApoSlot::Efx, ApoSlot::Gfx]);
+    assert_eq!(
+        postmix_fallback_order(InstallMode::SfxMfx),
+        &[ApoSlot::Efx, ApoSlot::Gfx]
+    );
 }
 
 #[test]
 fn postmix_fallback_order_lfxgfx() {
-    assert_eq!(postmix_fallback_order(InstallMode::LfxGfx), &[ApoSlot::Efx, ApoSlot::Mfx]);
+    assert_eq!(
+        postmix_fallback_order(InstallMode::LfxGfx),
+        &[ApoSlot::Efx, ApoSlot::Mfx]
+    );
 }
 
 // ── other_premix_slot ─────────────────────────────────────────────────
@@ -402,8 +469,14 @@ fn other_premix_for_sfxmfx_is_lfx() {
 fn detect_mode_old_windows_defaults_lfxgfx() {
     // Win < 8.1 → 不探测，Legacy 初始默认。
     let slots = [SlotValue::NoKey; 5];
-    assert_eq!(detect_install_mode(false, &slots, false), InstallMode::LfxGfx);
-    assert_eq!(detect_install_mode(false, &slots, true), InstallMode::LfxGfx);
+    assert_eq!(
+        detect_install_mode(false, &slots, false),
+        InstallMode::LfxGfx
+    );
+    assert_eq!(
+        detect_install_mode(false, &slots, true),
+        InstallMode::LfxGfx
+    );
 }
 
 #[test]
@@ -412,7 +485,10 @@ fn detect_mode_legacy_only_lfxgfx() {
     let mut slots = [SlotValue::NoValue; 5];
     slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(1));
     slots[ApoSlot::Gfx.index() as usize] = SlotValue::Guid(test_guid(2));
-    assert_eq!(detect_install_mode(true, &slots, false), InstallMode::LfxGfx);
+    assert_eq!(
+        detect_install_mode(true, &slots, false),
+        InstallMode::LfxGfx
+    );
 }
 
 #[test]
@@ -421,7 +497,10 @@ fn detect_mode_sfx_occupied_not_legacy() {
     let mut slots = [SlotValue::NoValue; 5];
     slots[ApoSlot::Lfx.index() as usize] = SlotValue::Guid(test_guid(1));
     slots[ApoSlot::Sfx.index() as usize] = SlotValue::Guid(test_guid(3));
-    assert_eq!(detect_install_mode(true, &slots, false), InstallMode::SfxEfx);
+    assert_eq!(
+        detect_install_mode(true, &slots, false),
+        InstallMode::SfxEfx
+    );
 }
 
 #[test]
@@ -443,7 +522,10 @@ fn detect_mode_bluetooth_beats_legacy() {
 fn detect_mode_default_sfxefx() {
     // 现代驱动、无蓝牙、SFX 等被占 → SfxEfx 默认。
     let slots = [SlotValue::NoValue; 5];
-    assert_eq!(detect_install_mode(true, &slots, false), InstallMode::SfxEfx);
+    assert_eq!(
+        detect_install_mode(true, &slots, false),
+        InstallMode::SfxEfx
+    );
 }
 
 #[test]
@@ -474,6 +556,15 @@ fn test_guid(n: u32) -> GUID {
         data1: 0xA000_0000 + n,
         data2: 0xB000 + n as u16,
         data3: 0xC000 + n as u16,
-        data4: [0xD0, 0xE0, 0xF0, n as u8, (n >> 8) as u8, (n >> 16) as u8, (n >> 24) as u8, 0xFF],
+        data4: [
+            0xD0,
+            0xE0,
+            0xF0,
+            n as u8,
+            (n >> 8) as u8,
+            (n >> 16) as u8,
+            (n >> 24) as u8,
+            0xFF,
+        ],
     }
 }

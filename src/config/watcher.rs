@@ -112,7 +112,7 @@ impl ConfigWatcher {
     }
 
     /// 监控目录。
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn watch_dir(&self) -> &Path {
         &self.watch_dir
@@ -149,7 +149,8 @@ impl ConfigWatcher {
         if wait.0 == WAIT_OBJECT_0.0 + 1 {
             // 去重窗口 10ms：再次等待 notify（超时或再次触发均视为同一次变更合并）。
             // Safety: 同上句柄有效性；10ms 短超时。
-            let _ = unsafe { WaitForMultipleObjects(&[self.notify_handle], false, DEDUP_WINDOW_MS) };
+            let _ =
+                unsafe { WaitForMultipleObjects(&[self.notify_handle], false, DEDUP_WINDOW_MS) };
             // 重置通知，为下一次等待准备。
             // Safety: notify_handle 有效。
             let ok = unsafe { FindNextChangeNotification(self.notify_handle) };
@@ -167,7 +168,7 @@ impl ConfigWatcher {
     }
 
     /// 检查注册表变更（哈希比对，低频；与目录监控并行）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn poll_registry(&mut self, current_hash: u64) -> Option<WatchEvent> {
         if let Some(last) = self.last_registry_hash {
             if last != current_hash {
@@ -185,7 +186,7 @@ impl ConfigWatcher {
     ///
     /// 调用方（apo.rs UnlockForProcess）随后 join 自己的 watcher 线程。
     /// 重复调用幂等（句柄关闭后置位无副作用）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn shutdown(&mut self) {
         // Safety: shutdown_event 由 APO 实例持有且有效；SetEvent 置位唤醒等待线程。
         let _ = unsafe { SetEvent(self.shutdown_event) };

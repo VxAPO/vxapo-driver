@@ -287,10 +287,7 @@ impl Filter for HybridPeqFilter {
             .filter_map(|b| {
                 let c = Biquad::from_band(b, sample_rate);
                 if c.is_none() {
-                    warn_rate_limited(
-                        "peq_hybrid_unstable",
-                        "peq biquad 超出稳定范围，该段已直通",
-                    );
+                    warn_rate_limited("peq_hybrid_unstable", "peq biquad 超出稳定范围，该段已直通");
                 }
                 c
             })
@@ -305,8 +302,7 @@ impl Filter for HybridPeqFilter {
         let n = Self::fir_len_for(sample_rate);
         let ir = build_min_phase_ir(&bands, &self.iir, sample_rate, n);
         let count = self.channel_indices.len();
-        self.fade_total =
-            ((sample_rate.max(1) as f32) * MUTE_RECOVERY_FADE_S).round() as usize;
+        self.fade_total = ((sample_rate.max(1) as f32) * MUTE_RECOVERY_FADE_S).round() as usize;
         self.fade_remaining = 0;
         self.input_active = false;
         self.silence_count = 0;
@@ -401,7 +397,14 @@ impl Filter for HybridPeqFilter {
                     x = bq.process(&mut ch.iir[i], x);
                 }
                 let out = match &mut self.fir {
-                    PeqFir::Direct { ir_rev, fir_len, delay_len, mask, delay, pos } => {
+                    PeqFir::Direct {
+                        ir_rev,
+                        fir_len,
+                        delay_len,
+                        mask,
+                        delay,
+                        pos,
+                    } => {
                         let fir_len = *fir_len;
                         let delay_len = *delay_len;
                         let mask = *mask;
@@ -418,10 +421,7 @@ impl Filter for HybridPeqFilter {
                         } else {
                             let len_old = delay_len - oldest;
                             crate::pipeline::dsp::fir::dot(&ir_rev[..len_old], &d[oldest..])
-                                + crate::pipeline::dsp::fir::dot(
-                                    &ir_rev[len_old..],
-                                    &d[0..=start],
-                                )
+                                + crate::pipeline::dsp::fir::dot(&ir_rev[len_old..], &d[0..=start])
                         }
                     }
                     PeqFir::Partitioned(pf) => pf.process_channel(k, x),

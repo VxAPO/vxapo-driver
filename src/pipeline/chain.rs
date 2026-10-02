@@ -57,7 +57,7 @@ impl Chain {
     }
 
     /// 总延迟（采样数）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn total_latency(&self) -> u32 {
         self.total_latency
     }
@@ -78,7 +78,7 @@ impl Chain {
     ///
     /// `filters.iter().all(|f| f.is_in_place())`。调用方（process_audio）据此
     /// 决定是否可走零拷贝快路径：全链 `true` 时去交织缓冲即最终输出。
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn is_fully_in_place(&self) -> bool {
         self.filters.iter().all(|f| f.is_in_place())
@@ -87,7 +87,11 @@ impl Chain {
     /// 在去交织空间执行 Filter 链。
     ///
     /// `samples[channel][frame]`，纯计算操作：无锁、无分配、无 I/O。
-    pub fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) -> crate::utils::vx_error::Result<()> {
+    pub fn process(
+        &mut self,
+        samples: &mut [Vec<f32>],
+        frame_count: usize,
+    ) -> crate::utils::vx_error::Result<()> {
         for filter in self.filters.iter_mut() {
             filter.process(samples, frame_count);
         }
@@ -102,7 +106,7 @@ impl Chain {
     }
 
     /// 校验帧数约束（防御性检查）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn validate_frame_count(&self, frame_count: usize) -> bool {
         self.filters
             .iter()
@@ -157,7 +161,11 @@ mod tests {
         fn process(&mut self, _samples: &mut [Vec<f32>], _frame_count: usize) {
             assert!(self.initialized, "filter process called before initialize");
         }
-        fn initialize(&mut self, _sample_rate: u32, _channel_names: &[String]) -> Option<Vec<String>> {
+        fn initialize(
+            &mut self,
+            _sample_rate: u32,
+            _channel_names: &[String],
+        ) -> Option<Vec<String>> {
             self.initialized = true;
             None
         }
@@ -171,7 +179,11 @@ mod tests {
                 }
             }
         }
-        fn initialize(&mut self, _sample_rate: u32, _channel_names: &[String]) -> Option<Vec<String>> {
+        fn initialize(
+            &mut self,
+            _sample_rate: u32,
+            _channel_names: &[String],
+        ) -> Option<Vec<String>> {
             None
         }
     }
@@ -193,7 +205,8 @@ mod tests {
     #[test]
     fn initialize_calls_each_filter() {
         let mut c2 = Chain::new();
-        c2.add_filter(Box::new(InitTrackingFilter { initialized: false })).unwrap();
+        c2.add_filter(Box::new(InitTrackingFilter { initialized: false }))
+            .unwrap();
         c2.initialize(48000, &["L".into(), "R".into()]);
         assert_eq!(c2.filter_count(), 1);
         let mut samples = vec![vec![0.0f32; 4]; 2];
@@ -213,7 +226,7 @@ mod tests {
 
     #[test]
     fn channel_selection_applies_to_selected_slot_only() {
-        use crate::pipeline::dsp::gain::{GainFilter, db_to_linear};
+        use crate::pipeline::dsp::gain::{db_to_linear, GainFilter};
 
         let mut chain = Chain::new();
         chain

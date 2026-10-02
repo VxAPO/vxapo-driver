@@ -9,7 +9,6 @@
 // 本模块含 DSP 参数范围表（规范第 9 节全集）：范围常量供跨仓工具与排障对表，仓内未必全部有消费者。
 #![allow(dead_code, unused_imports)]
 
-
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Mutex;

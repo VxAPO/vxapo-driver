@@ -1,5 +1,5 @@
-use super::*;
 use super::execute::*;
+use super::*;
 
 #[test]
 fn default_config_values() {
@@ -53,16 +53,21 @@ fn read_slot_value_parses_eapo_reg_sz_guid() {
 #[test]
 fn delete_other_mode_slots_keep_semantics() {
     // 对三种模式的 pre/post 槽位，验证 keep 判定结果。
-    for mode in [InstallMode::SfxEfx, InstallMode::SfxMfx, InstallMode::LfxGfx] {
+    for mode in [
+        InstallMode::SfxEfx,
+        InstallMode::SfxMfx,
+        InstallMode::LfxGfx,
+    ] {
         let pre = mode.premix_slot();
         let post = mode.postmix_slot();
         for slot in ApoSlot::ALL {
             let is_target = slot == pre || slot == post;
-            let keep = !is_target && match mode {
-                InstallMode::SfxEfx => slot == ApoSlot::Mfx,
-                InstallMode::SfxMfx => slot == ApoSlot::Efx,
-                InstallMode::LfxGfx => false,
-            };
+            let keep = !is_target
+                && match mode {
+                    InstallMode::SfxEfx => slot == ApoSlot::Mfx,
+                    InstallMode::SfxMfx => slot == ApoSlot::Efx,
+                    InstallMode::LfxGfx => false,
+                };
             if is_target {
                 assert!(!keep, "{mode:?} target slot should not be in keep set");
             }

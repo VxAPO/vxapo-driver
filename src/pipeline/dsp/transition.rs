@@ -184,7 +184,7 @@ impl SmoothingProvider {
     }
 
     /// 是否正在过渡中。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -200,7 +200,7 @@ impl SmoothingProvider {
     }
 
     /// 进度百分比（0.0..=1.0）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn progress(&self) -> f32 {
         if self.length == 0 {
             return 1.0;
@@ -209,14 +209,14 @@ impl SmoothingProvider {
     }
 
     /// 重置到空闲状态。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn reset(&mut self) {
         self.counter = 0;
         self.active = false;
     }
 
     /// 更改过渡长度（配置变更时可能需要调整）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn set_length(&mut self, length: u32) {
         self.length = length;
     }
@@ -299,7 +299,10 @@ mod tests {
         let mut prev = 0.0f32;
         for counter in 1..=length {
             let f = raised_cosine(counter, length);
-            assert!(f >= prev, "not monotonic at counter={counter}: {f} < {prev}");
+            assert!(
+                f >= prev,
+                "not monotonic at counter={counter}: {f} < {prev}"
+            );
             prev = f;
         }
     }

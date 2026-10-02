@@ -7,9 +7,7 @@ use windows::core::Ref;
 
 use crate::pipeline::format::{extract_format, is_float_format, AudioFormat};
 use crate::sys::com::apo_interfaces::IAudioMediaType;
-use crate::sys::com::apo_types::{
-    APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT,
-};
+use crate::sys::com::apo_types::{APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT};
 use windows::core::Result;
 
 /// 格式协商独立属性检查（object 7.1.16， 修订）。
@@ -17,9 +15,7 @@ use windows::core::Result;
 /// `IsInputFormatSupported`/`IsOutputFormatSupported` 由 Windows 引擎在**格式协商阶段**
 /// 调用，**早于 LockForProcess**——此时 `pipeline_context` 为全零 `PipelineContext::new()`，
 /// **禁止依赖 pipeline_context 做等值比较**。
-pub(crate) fn extract_format_ref(
-    media_ref: &Ref<IAudioMediaType>,
-) -> Result<AudioFormat> {
+pub(crate) fn extract_format_ref(media_ref: &Ref<IAudioMediaType>) -> Result<AudioFormat> {
     let Some(mt) = media_ref.as_ref() else {
         return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));
     };
@@ -33,9 +29,7 @@ pub(crate) fn extract_format_ref(
 /// - 仅拒绝非 float（DSP 链为 f32 处理）
 /// - 通道 1~8（DSP 链真实能力）
 /// - **不设采样率限制**——EAPO 基类不限制采样率。
-pub(crate) fn check_format_supported(
-    p_requested: &Ref<IAudioMediaType>,
-) -> Result<()> {
+pub(crate) fn check_format_supported(p_requested: &Ref<IAudioMediaType>) -> Result<()> {
     let fmt = extract_format_ref(p_requested)?;
     let Some(req) = p_requested.as_ref() else {
         return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));

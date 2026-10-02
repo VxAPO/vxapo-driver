@@ -53,7 +53,12 @@ pub fn parse_guid_string(s: &str) -> Option<GUID> {
     for (i, b) in data4.iter_mut().enumerate() {
         *b = (hex_val(hex[i * 2])? << 4) | hex_val(hex[i * 2 + 1])?;
     }
-    Some(GUID { data1, data2, data3, data4 })
+    Some(GUID {
+        data1,
+        data2,
+        data3,
+        data4,
+    })
 }
 
 /// 单个 ASCII hex 字符 → 数值（0-15）。

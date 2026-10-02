@@ -125,14 +125,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
         EffectSpec {
             effect: "reverb",
             params: vec![
-                spec(
-                    "room_size",
-                    0.5,
-                    1.5,
-                    0.01,
-                    q(reverb.room_size),
-                    None,
-                ),
+                spec("room_size", 0.5, 1.5, 0.01, q(reverb.room_size), None),
                 spec("decay", 0.0, 1.0, 0.01, q(reverb.decay), None),
                 spec("damping", 0.0, 1.0, 0.01, q(reverb.damping), None),
                 spec(
@@ -248,7 +241,12 @@ mod tests {
                     effect.effect,
                     p.key
                 );
-                assert!(!keys.contains(&p.key), "{}: 参数键重复 {}", effect.effect, p.key);
+                assert!(
+                    !keys.contains(&p.key),
+                    "{}: 参数键重复 {}",
+                    effect.effect,
+                    p.key
+                );
                 keys.push(p.key);
             }
         }
@@ -294,7 +292,14 @@ mod tests {
         let effects: Vec<&str> = effect_param_specs().iter().map(|e| e.effect).collect();
         assert_eq!(
             effects,
-            ["preamp", "wide", "aural", "reverb", "compressor", "loudness"]
+            [
+                "preamp",
+                "wide",
+                "aural",
+                "reverb",
+                "compressor",
+                "loudness"
+            ]
         );
     }
 

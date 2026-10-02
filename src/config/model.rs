@@ -19,7 +19,6 @@ use crate::pipeline::dsp::model::{
 use crate::pipeline::dsp::reverb::ReverbParams;
 use crate::pipeline::dsp::wide::WideParams;
 
-
 // ── 子模块（类型定义 / 校验转换）───────────────────────────────────────
 
 mod convert;

@@ -2,10 +2,10 @@
 //!
 //! 查询 Windows 音频端点的设备 ID、友好名称与连接状态。只读。
 
-use crate::sys::registry::{RegKey, RegValue};
 use crate::sys::com::prelude::guid_to_string;
-use crate::utils::vx_error::Result;
+use crate::sys::registry::{RegKey, RegValue};
 use crate::utils::guid::guid_from_bytes;
+use crate::utils::vx_error::Result;
 
 // ── MMDevices Properties 值名常量（Windows 11 实证）──
 const PKEY_DEVICE_INSTANCE_ID: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},2";
@@ -110,9 +110,7 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
 
     // ── 状态 ──────────────────────────────────────────────────────────────
 
-    let state_raw = endpoint_key
-        .read_dword_value("DeviceState")
-        .unwrap_or(0);
+    let state_raw = endpoint_key.read_dword_value("DeviceState").unwrap_or(0);
     let state = EndpointState::from(state_raw);
 
     // ── 流方向 ────────────────────────────────────────────────────────────

@@ -4,8 +4,8 @@
 //! 歧义或多候选一律判未命中（只提供清理，不猜）。
 //! 共享常量与公开类型见父模块 `install/device/stale.rs`。
 
-use super::*;
 use super::detect::*;
+use super::*;
 
 /// 活跃端点 + 稳定身份（身份读取失败时为空值，不影响其它端点）。
 pub(super) struct ActiveEndpoint {
@@ -69,9 +69,7 @@ impl MatchIndex {
         };
         for (i, ep) in active.iter().enumerate() {
             index.products.push(ep.identity.product_key());
-            index
-                .active_by_guid
-                .insert(ep.guid.to_ascii_lowercase(), i);
+            index.active_by_guid.insert(ep.guid.to_ascii_lowercase(), i);
             for guid in &ep.identity.endpoint_history {
                 push_unique(index.by_history.entry(guid.clone()).or_default(), i);
             }
@@ -144,7 +142,12 @@ impl MatchIndex {
             let filtered: Vec<usize> = candidates
                 .iter()
                 .copied()
-                .filter(|i| self.products.get(*i).map(|p| *p == product_key).unwrap_or(false))
+                .filter(|i| {
+                    self.products
+                        .get(*i)
+                        .map(|p| *p == product_key)
+                        .unwrap_or(false)
+                })
                 .collect();
             if !filtered.is_empty() {
                 candidates = filtered;

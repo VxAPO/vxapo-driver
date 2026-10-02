@@ -66,7 +66,9 @@ fn peaking_zero_gain_is_passthrough() {
         assert!(
             (samples[0][f] - input[f]).abs() < 0.01,
             "0dB peaking should passthrough: frame {} got {} expected {}",
-            f, samples[0][f], input[f]
+            f,
+            samples[0][f],
+            input[f]
         );
     }
 }
@@ -164,12 +166,19 @@ fn extreme_cut_uses_stable_floor_not_bypass() {
     assert_ne!(c, BiquadCoeffs::BYPASS);
     assert!(c.is_valid());
     assert!(is_stable_biquad(c.a1, c.a2));
-    assert!(c.a2.abs() < 0.99, "深切地板后极点不应再贴单位圆，a2={}", c.a2);
+    assert!(
+        c.a2.abs() < 0.99,
+        "深切地板后极点不应再贴单位圆，a2={}",
+        c.a2
+    );
 }
 
 #[test]
 fn invalid_inputs_fall_back_to_bypass() {
-    assert_eq!(compute_coeffs(BiquadType::Peaking, 1000.0, 0.0, 1.0, 0), BiquadCoeffs::BYPASS);
+    assert_eq!(
+        compute_coeffs(BiquadType::Peaking, 1000.0, 0.0, 1.0, 0),
+        BiquadCoeffs::BYPASS
+    );
     assert_eq!(
         compute_coeffs(BiquadType::Peaking, f32::NAN, 0.0, 1.0, 48000),
         BiquadCoeffs::BYPASS
@@ -279,12 +288,8 @@ fn stereo_simd_matches_scalar_channels() {
     // 立体声 SIMD 路径（左右同系数）必须与两个独立单声道标量路径一致。
     let coeffs = compute_coeffs(BiquadType::Peaking, 1000.0, 6.0, 1.0, 48000);
     let len = 512;
-    let input_l: Vec<f32> = (0..len)
-        .map(|i| (i as f32 * 0.07).sin() * 0.5)
-        .collect();
-    let input_r: Vec<f32> = (0..len)
-        .map(|i| (i as f32 * 0.13).cos() * 0.4)
-        .collect();
+    let input_l: Vec<f32> = (0..len).map(|i| (i as f32 * 0.07).sin() * 0.5).collect();
+    let input_r: Vec<f32> = (0..len).map(|i| (i as f32 * 0.13).cos() * 0.4).collect();
 
     // SIMD 路径：2 通道 BiquadFilter。
     let mut stereo = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
@@ -400,11 +405,7 @@ fn stereo_simd_with_non_leading_slots_matches_scalar() {
     let mut mono_c = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
     mono_c.set_channel_indices(&[2]);
     mono_c.initialize(48000, &["C".to_owned()]);
-    let mut sc = vec![
-        vec![0.0f32; len],
-        vec![0.0f32; len],
-        input_c.clone(),
-    ];
+    let mut sc = vec![vec![0.0f32; len], vec![0.0f32; len], input_c.clone()];
     mono_c.process(&mut sc, len);
 
     let mut mono_r = BiquadFilter::new(coeffs, BiquadStructure::DirectFormIITransposed);
@@ -452,12 +453,16 @@ fn three_structures_same_output() {
         assert!(
             (results[0][f] - results[1][f]).abs() < 1e-6,
             "DF1 vs DF2 diff at frame {}: {} vs {}",
-            f, results[0][f], results[1][f]
+            f,
+            results[0][f],
+            results[1][f]
         );
         assert!(
             (results[0][f] - results[2][f]).abs() < 1e-6,
             "DF1 vs DF2T diff at frame {}: {} vs {}",
-            f, results[0][f], results[2][f]
+            f,
+            results[0][f],
+            results[2][f]
         );
     }
 }

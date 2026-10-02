@@ -32,7 +32,7 @@ pub trait Filter: Send + Sync + std::fmt::Debug {
     fn initialize(&mut self, sample_rate: u32, channel_names: &[String]) -> Option<Vec<String>>;
 
     /// 是否为 `Channel:` 类型命令（通道选择标记）。默认 false。
-#[cfg(test)]
+    #[cfg(test)]
     fn is_channel_select(&self) -> bool {
         false
     }

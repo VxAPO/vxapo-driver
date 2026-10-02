@@ -5,25 +5,27 @@
 //! 不包含 COM 接口方法本体，由 `apo.rs` 的 trait 实现转发调用。
 use windows::core::Result;
 
-use super::ApoObject_Impl;
 use super::child::ChildApo;
 use super::config::{extract_endpoint_guid, resolve_config_path};
 use super::state::ApoState;
-use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
-use crate::object::vx_reg_props::{
-    CLSID_VXAPO_PRE_MIX, REG_PROPS_POST_MIX, REG_PROPS_PRE_MIX,
-};
+use super::ApoObject_Impl;
+use crate::install::device::slots::{read_child_apo_guid, ChildApoKind};
+use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, REG_PROPS_POST_MIX, REG_PROPS_PRE_MIX};
 use crate::sys::com::apo_types::{APOInitSystemEffects, APO_REG_PROPERTIES};
-use crate::sys::com::prelude::{CoTaskMemAlloc, E_OUTOFMEMORY, HRESULT, guid_to_string};
+use crate::sys::com::prelude::{guid_to_string, CoTaskMemAlloc, E_OUTOFMEMORY, HRESULT};
 
 /// `Initialize`：解析端点 GUID、创建子 APO、确定 per-device 配置路径。
 ///
 /// 数据非法时仍初始化成功并降级默认配置，不阻断 APO 加载（object 7.1.8）。
-pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *const u8) -> Result<()> {
+pub(crate) fn initialize(
+    apo: &ApoObject_Impl,
+    cb_data_size: u32,
+    pby_data: *const u8,
+) -> Result<()> {
     // 1. 参数校验：pby_data 非空、cb_data_size 足以容纳 APOInitSystemEffects
     //    （SDK 约定：Initialize 的 pby_data 指向完整的 APOInitSystemEffects）。
-    let valid_init_data = !pby_data.is_null()
-        && cb_data_size >= std::mem::size_of::<APOInitSystemEffects>() as u32;
+    let valid_init_data =
+        !pby_data.is_null() && cb_data_size >= std::mem::size_of::<APOInitSystemEffects>() as u32;
 
     // 2. 状态转换 Created → Initialized，失败 → 对应 HRESULT。
     apo.state_cell
@@ -112,9 +114,7 @@ pub(crate) fn initialize(apo: &ApoObject_Impl, cb_data_size: u32, pby_data: *con
         );
         resolve_config_path(None)
     };
-    *apo.config_path
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = path;
+    *apo.config_path.lock().unwrap_or_else(|e| e.into_inner()) = path;
 
     Ok(())
 }

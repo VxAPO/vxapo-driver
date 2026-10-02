@@ -4,8 +4,8 @@
 //! `StaleInstall` 列表，并导出模式/身份/时间等纯读取辅助。
 //! 共享常量与公开类型见父模块 `install/device/stale.rs`。
 
-use super::*;
 use super::matching::*;
+use super::*;
 
 #[derive(Debug, Clone)]
 pub(super) struct StaleRecord {
@@ -71,19 +71,16 @@ pub fn list_stale_installs() -> Result<Vec<StaleInstall>> {
             .as_ref()
             .map(|g| config_is_meaningful(&Path::new(CONFIG_ROOT).join(g).join("config.toml")))
             .unwrap_or(false);
-        let auto_repairable =
-            target_guid.is_some() && matched_by.is_some() && source_meaningful && !target_meaningful;
+        let auto_repairable = target_guid.is_some()
+            && matched_by.is_some()
+            && source_meaningful
+            && !target_meaningful;
         result.push(StaleInstall {
             guid: record.guid.clone(),
             device_instance_id,
-            display_name: target_name
-                .clone()
-                .unwrap_or_else(|| record.guid.clone()),
+            display_name: target_name.clone().unwrap_or_else(|| record.guid.clone()),
             matched_by,
-            config_path: record
-                .config_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
+            config_path: record.config_path.as_ref().map(|p| p.display().to_string()),
             config_mtime_ms: record.config_path.as_ref().and_then(file_mtime_ms),
             snapshot_path: record
                 .snapshot_path
@@ -159,7 +156,11 @@ pub(super) fn collect_stale_records(active_guids: &HashSet<String>) -> Result<Ve
             continue;
         }
         let device_instance_id = endpoint_device_instance_id(&guid)
-            .or_else(|| info_values.get(SYSFX_BACKUP_VALUE).and_then(identity_from_sysfx))
+            .or_else(|| {
+                info_values
+                    .get(SYSFX_BACKUP_VALUE)
+                    .and_then(identity_from_sysfx)
+            })
             .unwrap_or_default();
         records.push(StaleRecord {
             guid: guid.clone(),
@@ -207,12 +208,8 @@ pub(super) fn target_health(guid: &str) -> Result<bool> {
 }
 
 pub(super) fn infer_mode(values: &HashMap<String, RegValue>) -> Option<InstallMode> {
-    let pre = values
-        .get(BACKUP_PREMIX_SLOT)
-        .and_then(read_string)?;
-    let post = values
-        .get(BACKUP_POSTMIX_SLOT)
-        .and_then(read_string)?;
+    let pre = values.get(BACKUP_PREMIX_SLOT).and_then(read_string)?;
+    let post = values.get(BACKUP_POSTMIX_SLOT).and_then(read_string)?;
     mode_from_slots(&pre, &post)
 }
 
@@ -285,9 +282,7 @@ pub(super) fn file_mtime_ms(path: &PathBuf) -> Option<u64> {
 }
 
 pub(super) fn config_is_meaningful(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|m| m.len() > 64)
-        .unwrap_or(false)
+    fs::metadata(path).map(|m| m.len() > 64).unwrap_or(false)
 }
 
 pub(super) fn validate_guid(guid: &str) -> Result<()> {

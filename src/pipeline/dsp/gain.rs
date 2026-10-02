@@ -12,12 +12,12 @@
 
 // GAIN_DB_MAX / linear_to_db 仅被 cfg(test) 下的用例与辅助函数使用。
 #[cfg(test)]
-use crate::pipeline::dsp::math::{GAIN_DB_MAX, linear_to_db as math_linear_to_db};
+use crate::pipeline::dsp::math::{linear_to_db as math_linear_to_db, GAIN_DB_MAX};
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{
-    GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT, GAIN_SNAP_THRESHOLD,
-    MAX_GAIN_STEP_RATIO, db_to_linear as math_db_to_linear,
+    db_to_linear as math_db_to_linear, GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT,
+    GAIN_SNAP_THRESHOLD, MAX_GAIN_STEP_RATIO,
 };
 
 // ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────
@@ -66,13 +66,13 @@ impl GainFilter {
     }
 
     /// 设置新增益（dB），触发平滑过渡。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn set_gain_db(&mut self, gain_db: f32) {
         self.set_gain_linear(math_db_to_linear(gain_db));
     }
 
     /// 设置新增益（线性），触发平滑过渡。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn set_gain_linear(&mut self, target: f32) {
         if !target.is_finite() {
             return; // 非有限目标：忽略，保持当前值。
@@ -85,13 +85,13 @@ impl GainFilter {
     }
 
     /// 当前增益（线性）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn current_gain_linear(&self) -> f32 {
         self.current_gain
     }
 
     /// 当前增益（dB）。
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn current_gain_db(&self) -> f32 {
         math_linear_to_db(self.current_gain)
@@ -119,8 +119,8 @@ impl GainFilter {
         if self.step_counter.is_multiple_of(GAIN_SMOOTH_RERATE) {
             // remaining 下限 = GAIN_SMOOTH_RERATE：避免 counter 超过目标步数后
             // “单步到位”控制器被 ±5% clamp 来回振荡，改为 ≥32 步的收缩控制器。
-            let remaining = (self.steps_to_reach.saturating_sub(self.step_counter))
-                .max(GAIN_SMOOTH_RERATE);
+            let remaining =
+                (self.steps_to_reach.saturating_sub(self.step_counter)).max(GAIN_SMOOTH_RERATE);
             let ideal = (self.target_gain / self.current_gain).powf(1.0 / remaining as f32);
             self.ratio = ideal.clamp(1.0 - MAX_GAIN_STEP_RATIO, 1.0 + MAX_GAIN_STEP_RATIO);
         }
@@ -235,10 +235,7 @@ mod tests {
         let mut filter = GainFilter::new(0.0);
         filter.initialize(48000, &stereo_names());
 
-        let mut samples = vec![
-            vec![1.0, 2.0, 3.0, 4.0],
-            vec![0.5, 1.0, 1.5, 2.0],
-        ];
+        let mut samples = vec![vec![1.0, 2.0, 3.0, 4.0], vec![0.5, 1.0, 1.5, 2.0]];
         filter.process(&mut samples, 4);
 
         assert_eq!(samples[0], vec![1.0, 2.0, 3.0, 4.0]);
@@ -298,11 +295,7 @@ mod tests {
 
         for f in 1..200 {
             let diff = (samples[0][f] - samples[0][f - 1]).abs();
-            assert!(
-                diff < 0.1,
-                "click detected at frame {}: diff = {}",
-                f, diff
-            );
+            assert!(diff < 0.1, "click detected at frame {}: diff = {}", f, diff);
         }
     }
 

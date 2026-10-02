@@ -2,9 +2,9 @@
 
 //! 共享导入见父模块 install/selector/operation.rs。
 
-use super::*;
 use super::execute::*;
 use super::helpers::*;
+use super::*;
 
 /// 接管指定端点的 Windows“设备默认效果”。
 ///
@@ -25,8 +25,12 @@ pub(super) fn take_over_sysfx(
     let endpoint_key = RegKey::open(HKEY_LOCAL_MACHINE, endpoint_path)?;
     let (device_id, node_type) = sysfx::endpoint_identity(&endpoint_key);
     let paths = sysfx::find_msfx_entries(device_id.as_deref(), node_type.as_deref())?;
-    let mut changes =
-        sysfx::plan_msfx_takeover(&paths, config.install_mode, config.install_premix, config.install_postmix)?;
+    let mut changes = sysfx::plan_msfx_takeover(
+        &paths,
+        config.install_mode,
+        config.install_premix,
+        config.install_postmix,
+    )?;
 
     // 端点 FxProperties 上的微软 MFX：默认模式（SfxEfx）下必须删掉。
     if config.install_mode != InstallMode::SfxMfx {
@@ -104,4 +108,3 @@ pub(super) fn restore_sysfx(device_guid: &str, endpoint_path: &str) -> Result<()
 
     Ok(())
 }
-

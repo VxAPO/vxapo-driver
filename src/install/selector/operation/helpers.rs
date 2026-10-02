@@ -2,8 +2,8 @@
 
 //! 共享导入见父模块 install/selector/operation.rs。
 
-use super::*;
 use super::execute::*;
+use super::*;
 
 /// 确保 FxProperties 子键存在。
 ///
@@ -141,8 +141,14 @@ pub(super) fn write_child_apo_config(
 
     // 被覆盖槽位名备份（无论是否有 child，都要记：uninstall 需要知道删哪个槽位、
     // 恢复时写回哪个槽位；写 VxAPO 前槽位还是原 APO，此刻读即原值）。
-    info.write_sz(BACKUP_PREMIX_SLOT, &config.install_mode.premix_slot().value_name())?;
-    info.write_sz(BACKUP_POSTMIX_SLOT, &config.install_mode.postmix_slot().value_name())?;
+    info.write_sz(
+        BACKUP_PREMIX_SLOT,
+        &config.install_mode.premix_slot().value_name(),
+    )?;
+    info.write_sz(
+        BACKUP_POSTMIX_SLOT,
+        &config.install_mode.postmix_slot().value_name(),
+    )?;
 
     // 被覆盖槽位原值备份（**无条件**——uninstall 恢复槽位必须用它把 EAPO 等
     // 第三方 APO 写回；child GUID 只在保留时写，原值备份始终写）。
@@ -171,7 +177,9 @@ pub(super) fn write_child_apo_config(
 }
 
 /// 拆分 `HKLM\...` 完整路径为(root HKEY, 子键路径)。
-pub(super) fn split_hklm_path(path: &str) -> Result<(windows::Win32::System::Registry::HKEY, &str)> {
+pub(super) fn split_hklm_path(
+    path: &str,
+) -> Result<(windows::Win32::System::Registry::HKEY, &str)> {
     let (root_str, rest) = path
         .split_once('\\')
         .ok_or_else(|| VxApoError::internal(format!("路径无根键：{path}")))?;

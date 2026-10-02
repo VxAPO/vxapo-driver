@@ -151,7 +151,11 @@ q = 0.707
     match &model.effects[0].params {
         EffectParams::Peq(p) => {
             assert_eq!(p.bands.len(), 5);
-            assert_eq!(p.bands[0].kind, PeqBandType::Peaking, "缺省 type 必须是 peaking");
+            assert_eq!(
+                p.bands[0].kind,
+                PeqBandType::Peaking,
+                "缺省 type 必须是 peaking"
+            );
             assert_eq!(p.bands[1].kind, PeqBandType::LowShelf);
             assert_eq!(p.bands[2].kind, PeqBandType::HighShelf);
             assert_eq!(p.bands[3].kind, PeqBandType::LowPass);
@@ -173,7 +177,9 @@ gain_db = 0.0
 q = 1.0
 "#;
     let err = convert(toml).unwrap_err();
-    assert!(err.to_string().contains("bands[0].type 'ring_mod' is invalid"));
+    assert!(err
+        .to_string()
+        .contains("bands[0].type 'ring_mod' is invalid"));
 }
 
 #[test]
@@ -212,7 +218,9 @@ fn foreign_field_rejected() {
 fn band_count_out_of_range_rejected() {
     let mut s = String::from("[[effects]]\ntype = \"peq\"\n");
     for fc in (0..32).map(|i| 100.0 + i as f32 * 100.0) {
-        s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+        s.push_str(&format!(
+            "[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"
+        ));
     }
     let err = convert(&s).unwrap_err();
     assert!(err.to_string().contains("out of range [1, 31]"));
@@ -245,11 +253,15 @@ fn total_peq_band_cap_enforced() {
     for _ in 0..2 {
         s.push_str("[[effects]]\ntype = \"peq\"\n");
         for fc in (0..16).map(|i| 100.0 + i as f32 * 100.0) {
-            s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+            s.push_str(&format!(
+                "[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"
+            ));
         }
     }
     let err = convert(&s).unwrap_err();
-    assert!(err.to_string().contains("unscoped 'peq' bands count 32 exceeds max 31"));
+    assert!(err
+        .to_string()
+        .contains("unscoped 'peq' bands count 32 exceeds max 31"));
 }
 
 #[test]
@@ -258,13 +270,17 @@ fn per_channel_peq_band_cap() {
     for _ in 0..2 {
         s.push_str("[[effects]]\ntype = \"peq\"\nchannels = [\"L\"]\n");
         for fc in (0..10).map(|i| 100.0 + i as f32 * 100.0) {
-            s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+            s.push_str(&format!(
+                "[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"
+            ));
         }
     }
     for _ in 0..2 {
         s.push_str("[[effects]]\ntype = \"peq\"\nchannels = [\"R\"]\n");
         for fc in (0..10).map(|i| 100.0 + i as f32 * 100.0) {
-            s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+            s.push_str(&format!(
+                "[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"
+            ));
         }
     }
     // L 20 + R 20：每声道均 ≤31，应通过
@@ -272,10 +288,14 @@ fn per_channel_peq_band_cap() {
     // L 再补 12 段 → L = 32 超限，按声道报错
     s.push_str("[[effects]]\ntype = \"peq\"\nchannels = [\"L\"]\n");
     for fc in (0..12).map(|i| 100.0 + i as f32 * 100.0) {
-        s.push_str(&format!("[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"));
+        s.push_str(&format!(
+            "[[effects.bands]]\nfc = {fc}\ngain_db = 0.0\nq = 1.0\n"
+        ));
     }
     let err = convert(&s).unwrap_err();
-    assert!(err.to_string().contains("channel 'L' peq bands count 32 exceeds max 31"));
+    assert!(err
+        .to_string()
+        .contains("channel 'L' peq bands count 32 exceeds max 31"));
 }
 
 #[test]
@@ -312,20 +332,16 @@ fn missing_required_key_rejected() {
 
 #[test]
 fn duplicate_channel_rejected() {
-    let err = convert(
-        "[[effects]]\ntype = \"wide\"\nchannels = [\"FL\", \"fl\"]\nair = 0.5\n",
-    )
-    .unwrap_err();
+    let err = convert("[[effects]]\ntype = \"wide\"\nchannels = [\"FL\", \"fl\"]\nair = 0.5\n")
+        .unwrap_err();
     assert!(err.to_string().contains("duplicate channel"));
 }
 
 #[test]
 fn compressor_range_rejected() {
-    let err = convert("[[effects]]\ntype = \"compressor\"\nthreshold_db = 5.0\n")
-        .unwrap_err();
+    let err = convert("[[effects]]\ntype = \"compressor\"\nthreshold_db = 5.0\n").unwrap_err();
     assert!(err.to_string().contains("threshold_db"));
-    let err2 = convert("[[effects]]\ntype = \"compressor\"\nratio = 50.0\n")
-        .unwrap_err();
+    let err2 = convert("[[effects]]\ntype = \"compressor\"\nratio = 50.0\n").unwrap_err();
     assert!(err2.to_string().contains("ratio"));
 }
 
@@ -346,10 +362,9 @@ fn legacy_maximizer_and_leveler_map_to_compressor() {
         _ => panic!("expected compressor"),
     }
     // leveler 旧段落同样映射。
-    let model2 = convert(
-        "[[effects]]\ntype = \"leveler\"\ntarget_rms_db = -12.0\nresponse_s = 5.0\n",
-    )
-    .unwrap();
+    let model2 =
+        convert("[[effects]]\ntype = \"leveler\"\ntarget_rms_db = -12.0\nresponse_s = 5.0\n")
+            .unwrap();
     assert_eq!(model2.effects[0].kind, EffectType::Compressor);
     match &model2.effects[0].params {
         EffectParams::Compressor(p) => {

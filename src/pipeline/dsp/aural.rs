@@ -124,7 +124,11 @@ impl Filter for AuralEnhancerFilter {
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
-        let n = self.channel_indices.len().min(self.states.len()).min(self.scratch.len());
+        let n = self
+            .channel_indices
+            .len()
+            .min(self.states.len())
+            .min(self.scratch.len());
         if n == 0 {
             return;
         }
@@ -280,8 +284,7 @@ mod tests {
         let n = 4800usize;
         let mut samples = vec![vec![0.0f32; n]];
         for i in 0..n {
-            samples[0][i] =
-                amp * (core::f32::consts::TAU * 3000.0 * i as f32 / sr as f32).sin();
+            samples[0][i] = amp * (core::f32::consts::TAU * 3000.0 * i as f32 / sr as f32).sin();
         }
         f.process(&mut samples, n);
         let mut d2 = 0.0f32;
@@ -326,7 +329,10 @@ mod tests {
         f.process(&mut samples, n);
         // 3000 Hz @48k = 16 帧/周期；取 2000..4400 共 150 个整周期，避免窗口残差。
         let mean = samples[0][2000..4400].iter().sum::<f32>() / 2400.0;
-        assert!(mean.abs() < 1.0e-3, "odd path should have no DC, mean {mean}");
+        assert!(
+            mean.abs() < 1.0e-3,
+            "odd path should have no DC, mean {mean}"
+        );
     }
 
     /// 样本段在指定频率处的单侧幅度（窗口须覆盖整数周期）。
@@ -358,8 +364,7 @@ mod tests {
             let n = 9600usize;
             let mut samples = vec![vec![0.0f32; n]];
             for i in 0..n {
-                samples[0][i] = 0.5
-                    * (core::f32::consts::TAU * 1000.0 * i as f32 / 48000.0).sin();
+                samples[0][i] = 0.5 * (core::f32::consts::TAU * 1000.0 * i as f32 / 48000.0).sin();
             }
             f.process(&mut samples, n);
             // 4800..9600 = 100 个整周期（1000 Hz @48k）。
@@ -404,8 +409,7 @@ mod tests {
             assert_eq!(f.states.len(), 2);
             let mut samples = vec![vec![0.0f32; 512], vec![0.0f32; 512]];
             for i in 0..512 {
-                samples[0][i] =
-                    (core::f32::consts::TAU * 500.0 * i as f32 / sr as f32).sin();
+                samples[0][i] = (core::f32::consts::TAU * 500.0 * i as f32 / sr as f32).sin();
                 samples[1][i] = samples[0][i] * 0.3;
             }
             f.process(&mut samples, 512);
@@ -438,5 +442,4 @@ mod tests {
             assert!((f.hp_a0 - a0).abs() < 1e-6, "a0 {}/{}", f.hp_a0, a0);
         }
     }
-
 }

@@ -2,7 +2,6 @@
 // 本模块是 RT-safety 契约设施（守卫/标记 trait/线程局部状态）：生产路径经宏展开引用，仓内直接消费者少。
 #![allow(dead_code, unused_imports)]
 
-
 #[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -357,7 +356,9 @@ mod tests {
         let data = vec![1.0, 2.0];
         // SAFETY: 刻意越界（5 >= len=2）——本用例就是要触发 debug 断言 panic，
         // 不产生任何解引用后的读写。
-        unsafe { rt_index(&data, 5); }
+        unsafe {
+            rt_index(&data, 5);
+        }
     }
 
     // ── RtCopy（不碰全局状态） ──────────────────────────────────────────────
@@ -424,7 +425,9 @@ mod tests {
     #[test]
     fn macro_rt_require_non_rt_passes() {
         let _l = serial_lock();
-        fn init() { rt_require_non_rt!("init"); }
+        fn init() {
+            rt_require_non_rt!("init");
+        }
         init();
     }
 
@@ -433,7 +436,9 @@ mod tests {
     #[should_panic(expected = "RT-SAFETY VIOLATION")]
     fn macro_rt_require_non_rt_fails_in_rt() {
         let _l = serial_lock();
-        fn init() { rt_require_non_rt!("init"); }
+        fn init() {
+            rt_require_non_rt!("init");
+        }
         let _guard = RtGuard::new();
         init();
     }

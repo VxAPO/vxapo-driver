@@ -15,17 +15,17 @@
 //!    （避免 VxAPO PostMix 与微软 MFX/EFX 重复处理）；
 //! 3. 在 VxAPO 安装信息区保存原始值，卸载时恢复微软默认效果。
 
-use crate::install::device::slots::InstallMode;
 use crate::install::device::slots::ApoSlot;
+use crate::install::device::slots::InstallMode;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::guid_to_string;
 use crate::sys::registry::RegKey;
 use crate::utils::vx_error::Result;
-use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use once_cell::sync::Lazy;
+use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
 // ── DeviceClasses 路径与 KS 分类 GUID ──────────────────────────────────────
 
@@ -40,11 +40,9 @@ const KS_AUDIO_CLASS: &str = "{6994AD04-93EF-11D0-A3CC-00A0C9223196}";
 /// `PKEY_FX_Association`（`,0`）：节点类型 GUID，用于把端点映射到 `MSFX\N`。
 const PKEY_FX_ASSOCIATION: &str = "{D04E05A6-594B-4FB6-A80D-01AF5EED7D1D},0";
 /// `PKEY_FX_StreamEffectClsid`（`,5`）：SFX / StreamEffect APO。
-pub const PKEY_FX_STREAM_EFFECT_CLSID: &str =
-    "{D04E05A6-594B-4FB6-A80D-01AF5EED7D1D},5";
+pub const PKEY_FX_STREAM_EFFECT_CLSID: &str = "{D04E05A6-594B-4FB6-A80D-01AF5EED7D1D},5";
 /// `PKEY_FX_ModeEffectClsid`（`,6`）：MFX / ModeEffect APO。
-pub const PKEY_FX_MODE_EFFECT_CLSID: &str =
-    "{D04E05A6-594B-4FB6-A80D-01AF5EED7D1D},6";
+pub const PKEY_FX_MODE_EFFECT_CLSID: &str = "{D04E05A6-594B-4FB6-A80D-01AF5EED7D1D},6";
 /// 微软 WMALFXGFX APO 的设置上下文子键。
 const WMALFX_CONTEXT: &str = "{B13412EE-07AF-4C57-B08B-E327F8DB085B}";
 
@@ -61,8 +59,7 @@ const MS_CAPX_MODE_CLSID: &str = "{13AB3EBD-137E-4903-9D89-60BE8277FD17}";
 const PKEY_DEVICE_INSTANCE_ID: &str = "{B3F8FA53-0004-438E-9003-51A46E139BFC},2";
 /// `PKEY_AudioEndpoint_JackSubType`（`,8`）＝端点 KS 节点类型 GUID，
 /// 与 `MSFX\N` 的 `PKEY_FX_Association`（`,0`）对应。
-const PKEY_AUDIO_ENDPOINT_ASSOCIATION: &str =
-    "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},8";
+const PKEY_AUDIO_ENDPOINT_ASSOCIATION: &str = "{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},8";
 
 /// VxAPO 安装信息区中保存的 MSFX 原始值（REG_MULTI_SZ）。
 pub const SYSFX_BACKUP_VALUE: &str = "SysFxBackups";
@@ -113,10 +110,7 @@ pub fn endpoint_identity(endpoint_key: &RegKey) -> (Option<String>, Option<Strin
 /// - 设备实例 ID 归一化后出现在 DeviceClasses 实例键名中；
 /// - `MSFX\N` 的 `PKEY_FX_Association` 与端点节点类型一致；
 /// - 键内存在微软 CAPX APO 或 `{B13412EE-...}` 上下文，才会纳入接管范围。
-pub fn find_msfx_entries(
-    device_id: Option<&str>,
-    node_type: Option<&str>,
-) -> Result<Vec<String>> {
+pub fn find_msfx_entries(device_id: Option<&str>, node_type: Option<&str>) -> Result<Vec<String>> {
     let mut result = Vec::new();
     let Some(device_id) = device_id else {
         return Ok(result);
@@ -186,10 +180,7 @@ fn collect_msfx_from_instance(
         Err(_) => return Ok(()),
     };
     for reference in references {
-        let msfx_root = format!(
-            "{}\\{}\\Device Parameters\\MSFX",
-            instance_path, reference
-        );
+        let msfx_root = format!("{}\\{}\\Device Parameters\\MSFX", instance_path, reference);
         let msfx_key = match RegKey::open(HKEY_LOCAL_MACHINE, &msfx_root) {
             Ok(k) => k,
             Err(_) => continue,
@@ -223,16 +214,10 @@ pub fn plan_msfx_takeover(
         let key = RegKey::open(HKEY_LOCAL_MACHINE, path)?;
         let stream = key.read_sz(PKEY_FX_STREAM_EFFECT_CLSID);
         let mode_effect = key.read_sz(PKEY_FX_MODE_EFFECT_CLSID);
-        let has_context = key
-            .key_exists_child(WMALFX_CONTEXT)
-            .unwrap_or(false);
+        let has_context = key.key_exists_child(WMALFX_CONTEXT).unwrap_or(false);
 
-        let stream_is_ms = stream
-            .as_deref()
-            .is_some_and(is_ms_stream_clsid);
-        let stream_is_vxapo = stream
-            .as_deref()
-            .is_some_and(is_vxapo_clsid);
+        let stream_is_ms = stream.as_deref().is_some_and(is_ms_stream_clsid);
+        let stream_is_vxapo = stream.as_deref().is_some_and(is_vxapo_clsid);
         if !(stream_is_ms || stream_is_vxapo || has_context) {
             continue;
         }
@@ -248,12 +233,8 @@ pub fn plan_msfx_takeover(
         }
 
         // ModeEffect 槽位：SfxMfx 用 VxAPO PostMix，其余模式删除微软 MFX。
-        let mode_is_ms = mode_effect
-            .as_deref()
-            .is_some_and(is_ms_mode_clsid);
-        let mode_is_vxapo = mode_effect
-            .as_deref()
-            .is_some_and(is_vxapo_clsid);
+        let mode_is_ms = mode_effect.as_deref().is_some_and(is_ms_mode_clsid);
+        let mode_is_vxapo = mode_effect.as_deref().is_some_and(is_vxapo_clsid);
         if mode == InstallMode::SfxMfx && install_postmix {
             if mode_is_ms && !mode_is_vxapo {
                 changes.push(SysFxChange {
@@ -287,9 +268,7 @@ pub fn plan_msfx_restore(backups: &[SysFxBackup]) -> Result<Vec<SysFxChange>> {
         match &backup.stream {
             Some(original) => {
                 let needs_restore = current_stream.is_none()
-                    || current_stream
-                        .as_deref()
-                        .is_some_and(is_vxapo_clsid);
+                    || current_stream.as_deref().is_some_and(is_vxapo_clsid);
                 if needs_restore {
                     changes.push(SysFxChange {
                         key_path: backup.key_path.clone(),
@@ -300,10 +279,7 @@ pub fn plan_msfx_restore(backups: &[SysFxBackup]) -> Result<Vec<SysFxChange>> {
                 }
             }
             None => {
-                if current_stream
-                    .as_deref()
-                    .is_some_and(is_vxapo_clsid)
-                {
+                if current_stream.as_deref().is_some_and(is_vxapo_clsid) {
                     changes.push(SysFxChange {
                         key_path: backup.key_path.clone(),
                         value_name: PKEY_FX_STREAM_EFFECT_CLSID.to_string(),
@@ -317,10 +293,8 @@ pub fn plan_msfx_restore(backups: &[SysFxBackup]) -> Result<Vec<SysFxChange>> {
         // ModeEffect：当前是 VxAPO 或已被我们删除（None）时恢复原始值。
         match &backup.mode {
             Some(original) => {
-                let needs_restore = current_mode
-                    .as_deref()
-                    .is_some_and(is_vxapo_clsid)
-                    || current_mode.is_none();
+                let needs_restore =
+                    current_mode.as_deref().is_some_and(is_vxapo_clsid) || current_mode.is_none();
                 if needs_restore {
                     changes.push(SysFxChange {
                         key_path: backup.key_path.clone(),
@@ -331,10 +305,7 @@ pub fn plan_msfx_restore(backups: &[SysFxBackup]) -> Result<Vec<SysFxChange>> {
                 }
             }
             None => {
-                if current_mode
-                    .as_deref()
-                    .is_some_and(is_vxapo_clsid)
-                {
+                if current_mode.as_deref().is_some_and(is_vxapo_clsid) {
                     changes.push(SysFxChange {
                         key_path: backup.key_path.clone(),
                         value_name: PKEY_FX_MODE_EFFECT_CLSID.to_string(),
@@ -356,10 +327,7 @@ pub fn plan_msfx_restore_defaults(paths: &[String]) -> Result<Vec<SysFxChange>> 
         let current_stream = key.read_sz(PKEY_FX_STREAM_EFFECT_CLSID);
         let current_mode = key.read_sz(PKEY_FX_MODE_EFFECT_CLSID);
 
-        if current_stream
-            .as_deref()
-            .is_some_and(is_vxapo_clsid)
-        {
+        if current_stream.as_deref().is_some_and(is_vxapo_clsid) {
             changes.push(SysFxChange {
                 key_path: path.clone(),
                 value_name: PKEY_FX_STREAM_EFFECT_CLSID.to_string(),
@@ -376,10 +344,7 @@ pub fn plan_msfx_restore_defaults(paths: &[String]) -> Result<Vec<SysFxChange>> 
                 });
             }
         }
-        if current_mode
-            .as_deref()
-            .is_some_and(is_vxapo_clsid)
-        {
+        if current_mode.as_deref().is_some_and(is_vxapo_clsid) {
             changes.push(SysFxChange {
                 key_path: path.clone(),
                 value_name: PKEY_FX_MODE_EFFECT_CLSID.to_string(),
@@ -395,9 +360,7 @@ pub fn plan_msfx_restore_defaults(paths: &[String]) -> Result<Vec<SysFxChange>> 
 pub fn changes_to_backups(changes: &[SysFxChange]) -> Vec<SysFxBackup> {
     let mut backups: Vec<SysFxBackup> = Vec::new();
     for change in changes {
-        let entry = backups
-            .iter_mut()
-            .find(|b| b.key_path == change.key_path);
+        let entry = backups.iter_mut().find(|b| b.key_path == change.key_path);
         let entry = match entry {
             Some(e) => e,
             None => {
@@ -524,11 +487,7 @@ pub enum HealAction {
 /// 铁律：**只动微软 CAPX**——stream 是微软 CAPX → 替换为 VxAPO PreMix；
 /// mode 是微软 CAPX → 删除；含 WMALFX 上下文但值缺失也视为微软条目。
 /// 第三方 APO 一律不动。
-pub fn msfx_heal_action(
-    stream: Option<&str>,
-    mode: Option<&str>,
-    has_context: bool,
-) -> HealAction {
+pub fn msfx_heal_action(stream: Option<&str>, mode: Option<&str>, has_context: bool) -> HealAction {
     let stream_is_ms = stream.is_some_and(is_ms_stream_clsid);
     let mode_is_ms = mode.is_some_and(is_ms_mode_clsid);
     let stream_is_vx = stream.is_some_and(is_vxapo_clsid);
@@ -653,11 +612,9 @@ mod tests {
     #[test]
     fn fast_path_candidate_matches_known_instance_name() {
         // 快速路径构造的实例键名应与安装时 SysFxBackups 实证路径一致。
-        let normalized =
-            normalize_device_id("{1}.USB\\VID_2D99&PID_A037&MI_00\\6&20BE7186&2&0000");
-        let candidate = format!(
-            "{DEVICE_CLASSES_ROOT}\\{KS_RENDER_CLASS}\\##?#{normalized}#{KS_RENDER_CLASS}"
-        );
+        let normalized = normalize_device_id("{1}.USB\\VID_2D99&PID_A037&MI_00\\6&20BE7186&2&0000");
+        let candidate =
+            format!("{DEVICE_CLASSES_ROOT}\\{KS_RENDER_CLASS}\\##?#{normalized}#{KS_RENDER_CLASS}");
         let known = r"SYSTEM\CurrentControlSet\Control\DeviceClasses\{65E8773E-8F56-11D0-A3B9-00A0C9223196}\##?#USB#VID_2D99&PID_A037&MI_00#6&20BE7186&2&0000#{65e8773e-8f56-11d0-a3b9-00a0c9223196}";
         assert!(
             candidate.eq_ignore_ascii_case(known),
@@ -669,7 +626,9 @@ mod tests {
     fn ms_clsid_matchers_case_insensitive() {
         assert!(is_ms_stream_clsid("{c9453e73-8c5c-4463-9984-af8bab2f5447}"));
         assert!(is_ms_mode_clsid("{13AB3EBD-137E-4903-9D89-60BE8277FD17}"));
-        assert!(!is_ms_stream_clsid("{00000000-0000-0000-0000-000000000000}"));
+        assert!(!is_ms_stream_clsid(
+            "{00000000-0000-0000-0000-000000000000}"
+        ));
     }
 
     #[test]

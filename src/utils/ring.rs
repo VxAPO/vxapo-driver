@@ -22,7 +22,10 @@ impl<T: Copy + Default> RingBuffer<T> {
     /// 创建指定容量（向上取整为 2 的幂）的环形缓冲。
     pub fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two().max(2);
-        let data = (0..cap).map(|_| T::default()).collect::<Vec<_>>().into_boxed_slice();
+        let data = (0..cap)
+            .map(|_| T::default())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Self {
             data: UnsafeCell::new(data),
             capacity: cap,
@@ -43,12 +46,13 @@ impl<T: Copy + Default> RingBuffer<T> {
         unsafe {
             (*self.data.get())[write & (self.capacity - 1)] = value;
         }
-        self.write_pos.store(write.wrapping_add(1), Ordering::Release);
+        self.write_pos
+            .store(write.wrapping_add(1), Ordering::Release);
         true
     }
 
     /// 弹出元素。空时返回 None。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn pop(&self) -> Option<T> {
         let read = self.read_pos.load(Ordering::Relaxed);
         let write = self.write_pos.load(Ordering::Acquire);
@@ -62,13 +66,13 @@ impl<T: Copy + Default> RingBuffer<T> {
         Some(value)
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_empty(&self) -> bool {
         self.read_pos.load(Ordering::Acquire) == self.write_pos.load(Ordering::Acquire)
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // cfg(test) 专用但当前连测试都未引用：待整链清理后删除
     pub fn is_full(&self) -> bool {
         let write = self.write_pos.load(Ordering::Relaxed);

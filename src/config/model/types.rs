@@ -160,4 +160,3 @@ pub struct FilePeqBand {
     #[serde(rename = "type", default)]
     pub band_type: Option<String>,
 }
-

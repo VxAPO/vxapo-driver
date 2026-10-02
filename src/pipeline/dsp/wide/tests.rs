@@ -51,7 +51,10 @@ fn all_zero_is_passthrough() {
 
 #[test]
 fn mono_is_passthrough() {
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["Mono".into()]);
     let mut samples = vec![vec![0.8f32; 64]];
     f.process(&mut samples, 64);
@@ -62,7 +65,10 @@ fn mono_is_passthrough() {
 
 #[test]
 fn silence_stays_silent() {
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["L".into(), "R".into()]);
     let mut samples = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
     f.process(&mut samples, 4800);
@@ -176,7 +182,10 @@ fn air_depth_drives_center_attenuation() {
 fn center_signal_preserved_without_air_and_symmetric() {
     // 纯中央信号、无空气吸收：mid 不做任何静态负增益，
     // 输出应保持原电平（无中频糊感来源）。
-    let mut f = WideFilter::new(WideParams { air: 0.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 0.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["L".into(), "R".into()]);
     let n = 4800usize;
     let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -276,7 +285,10 @@ fn bass_tilts_down_per_low_shelf_and_highs_stay_flat() {
 fn fir_split_reconstructs_delayed_input() {
     // 线性相位 FIR 完美重建：低频支路 + 高频支路 = 延迟 center 帧的原信号
     // （逐样本，含相位——这是 FIR 相对 IIR 分频的核心优势）。
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["L".into(), "R".into()]);
     // 只测 FIR 分频本身：用 FIR 群延迟中心，不含 Haas 延迟。
     let center = (wide_fir_len(48000, 200.0) - 1) / 2;
@@ -306,7 +318,10 @@ fn fir_split_reconstructs_delayed_input() {
 fn fir_split_reconstructs_partitioned_high_rate() {
     // 192k：4096 抽头走分块 FFT——低通支路 + 互补高通必须仍等于
     // 延迟 latency 帧的原信号（延迟对齐环正确性）。
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(192_000, &["L".into(), "R".into()]);
     // 192k/200Hz：8192 抽头走分块 FFT；分块延迟 = 报告延迟 − 1
     // （报告值含 1 样本整体补偿）。
@@ -336,7 +351,10 @@ fn fir_split_reconstructs_partitioned_high_rate() {
 #[test]
 fn fir_delays_by_center_samples() {
     // 单脉冲经低通 FIR 的主峰应出现在 center 帧（对称 FIR 群延迟）。
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["L".into(), "R".into()]);
     let center = (wide_fir_len(48000, 200.0) - 1) / 2;
     let n = center + 128;
@@ -355,10 +373,16 @@ fn fir_delays_by_center_samples() {
 
 #[test]
 fn latency_is_fir_center() {
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["L".into(), "R".into()]);
     // FIR 中心 + 1 样本（HPF 群延迟补偿）。
-    assert_eq!(f.latency(), ((wide_fir_len(48000, 200.0) - 1) / 2) as u32 + 1);
+    assert_eq!(
+        f.latency(),
+        ((wide_fir_len(48000, 200.0) - 1) / 2) as u32 + 1
+    );
 }
 
 #[test]
@@ -431,7 +455,10 @@ fn air_absorption_follows_physical_curve() {
         20.0 * (out_rms / in_rms).max(1e-6).log10()
     }
     let att_8k_half = air_only_attenuation_db(0.5);
-    assert!(att_8k_half > att_8k, "more air should attenuate deeper: {att_8k_half} vs {att_8k}");
+    assert!(
+        att_8k_half > att_8k,
+        "more air should attenuate deeper: {att_8k_half} vs {att_8k}"
+    );
 }
 
 #[test]
@@ -555,7 +582,10 @@ fn out_of_range_params_are_clamped() {
 #[test]
 fn low_level_is_transparent() {
     // 低电平下 tanh 近似线性：2 次/3 次谐波应可忽略。
-    let mut f = WideFilter::new(WideParams { air: 1.0, ..Default::default() });
+    let mut f = WideFilter::new(WideParams {
+        air: 1.0,
+        ..Default::default()
+    });
     f.initialize(48000, &["L".into(), "R".into()]);
     let n = 9600usize;
     let mut samples = vec![vec![0.0f32; n], vec![0.0f32; n]];
@@ -640,8 +670,14 @@ fn itd_delay_follows_time_and_amount() {
             rw += yr;
         }
         let (dl, dr) = (ls / lw, rs / rw);
-        assert!((dl - want_l).abs() < 0.1, "sr={sr} 左延迟 {dl} 应为 {want_l}");
-        assert!((dr - want_r).abs() < 0.1, "sr={sr} 右延迟 {dr} 应为 {want_r}");
+        assert!(
+            (dl - want_l).abs() < 0.1,
+            "sr={sr} 左延迟 {dl} 应为 {want_l}"
+        );
+        assert!(
+            (dr - want_r).abs() < 0.1,
+            "sr={sr} 右延迟 {dr} 应为 {want_r}"
+        );
         assert!(
             (dr - dl - 0.05 * sr / 1000.0).abs() < 0.1,
             "sr={sr} Δτ 应恒为 0.05ms（{dle} 采样）",
@@ -719,7 +755,10 @@ fn hard_panned_hf_keeps_its_position() {
     }
     let in_rms = 0.3 / (2.0f32).sqrt();
     let (s0, m0) = measure(0.0);
-    assert!((s0 - in_rms).abs() < 0.05, "α=0 应≈输入侧电平 {in_rms}: {s0}");
+    assert!(
+        (s0 - in_rms).abs() < 0.05,
+        "α=0 应≈输入侧电平 {in_rms}: {s0}"
+    );
     assert!(m0 < 0.05, "α=0 不该产生 mid: {m0}");
     // （α=1 的侧能量下降属去相关本身，见下方按「能量守恒」的判据。）
 
@@ -736,9 +775,7 @@ fn hard_panned_hf_keeps_its_position() {
         });
         f.initialize(48000, &["L".into(), "R".into()]);
         // 方案 A 后总延迟 = 主分离器中心 + 1（HPF 群延迟补偿）+ 侧分离器中心 D2。
-        let center = (wide_fir_len(48000, 200.0) - 1) / 2
-            + 1
-            + (side_fir_len(48000) - 1) / 2;
+        let center = (wide_fir_len(48000, 200.0) - 1) / 2 + 1 + (side_fir_len(48000) - 1) / 2;
         let n = 4800usize;
         let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
         for i in 0..n {
@@ -800,8 +837,10 @@ fn measure_splitter_group_delay() {
                 peak = i;
             }
         }
-        println!("{name}: fc={fc}Hz taps={taps} 群延迟={peak} 采样 ({:.3} ms) 峰值={best:.4}",
-            peak as f32 * 1000.0 / sr as f32);
+        println!(
+            "{name}: fc={fc}Hz taps={taps} 群延迟={peak} 采样 ({:.3} ms) 峰值={best:.4}",
+            peak as f32 * 1000.0 / sr as f32
+        );
         assert!(best > 0.5, "{name}: 冲激响应峰值异常 {best}");
         assert!(energy > 0.9, "{name}: 重建能量异常 {energy}");
     }
@@ -901,7 +940,10 @@ fn extreme_antiphase_is_bounded() {
             peak = peak.max(v.abs());
         }
     }
-    assert!(peak > 0.9, "full-width antiphase should be strongly widened, peak {peak}");
+    assert!(
+        peak > 0.9,
+        "full-width antiphase should be strongly widened, peak {peak}"
+    );
 }
 
 #[test]
@@ -935,7 +977,10 @@ fn output_is_linear_below_knee_and_never_clips() {
     let p2 = peak(0.2);
     let p4 = peak(0.4);
     assert!(p1 > 0.0);
-    assert!(p4 < 0.9, "test loads must stay below the soft knee: peak {p4}");
+    assert!(
+        p4 < 0.9,
+        "test loads must stay below the soft knee: peak {p4}"
+    );
     assert!(
         (p2 / p1 - 2.0).abs() < 0.15 && (p4 / p2 - 2.0).abs() < 0.15,
         "below knee output must scale linearly: p1={p1} p2={p2} p4={p4}"
@@ -953,7 +998,10 @@ fn output_is_linear_below_knee_and_never_clips() {
 #[test]
 fn deterministic_and_reproducible() {
     let run = || -> Vec<f32> {
-        let mut f = WideFilter::new(WideParams { air: 0.7, ..Default::default() });
+        let mut f = WideFilter::new(WideParams {
+            air: 0.7,
+            ..Default::default()
+        });
         f.initialize(48000, &["L".into(), "R".into()]);
         let mut samples = vec![vec![0.0f32; 2048], vec![0.0f32; 2048]];
         for i in 0..2048 {
@@ -975,12 +1023,14 @@ fn deterministic_and_reproducible() {
 fn finite_across_params_and_sample_rates() {
     for sr in [44_100u32, 48_000, 96_000] {
         for air in [0.0f32, 0.354331, 0.7, 1.0] {
-            let mut f = WideFilter::new(WideParams { air, ..Default::default() });
+            let mut f = WideFilter::new(WideParams {
+                air,
+                ..Default::default()
+            });
             f.initialize(sr, &["L".into(), "R".into()]);
             let mut samples = vec![vec![0.0f32; 480], vec![0.0f32; 480]];
             for i in 0..480 {
-                samples[0][i] =
-                    (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin() * 0.9;
+                samples[0][i] = (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin() * 0.9;
                 samples[1][i] = -samples[0][i] * 0.6;
             }
             f.process(&mut samples, 480);

@@ -6,16 +6,11 @@
 /// 临时 RT 转储开关（诊断）：读 `HKLM\SOFTWARE\VxAPO\RtDumpSecs`（DWORD）。
 /// 返回 `Some((路径, 缓冲, 总帧数))` 表示本次 Lock 需要采集该流前 N 秒的
 /// [in_L,in_R,out_L,out_R] 平面数据（f32 小端，4 值/帧）。
-pub(crate) fn rt_dump_open(
-    sample_rate: u32,
-) -> Option<(std::path::PathBuf, Vec<f32>, usize)> {
+pub(crate) fn rt_dump_open(sample_rate: u32) -> Option<(std::path::PathBuf, Vec<f32>, usize)> {
     use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
-    let secs = crate::sys::registry::RegKey::open(
-        HKEY_LOCAL_MACHINE,
-        r"SOFTWARE\VxAPO",
-    )
-    .and_then(|k| k.read_dword_value("RtDumpSecs"))
-    .unwrap_or(0) as usize;
+    let secs = crate::sys::registry::RegKey::open(HKEY_LOCAL_MACHINE, r"SOFTWARE\VxAPO")
+        .and_then(|k| k.read_dword_value("RtDumpSecs"))
+        .unwrap_or(0) as usize;
     if secs == 0 {
         return None;
     }
@@ -36,14 +31,14 @@ pub(crate) fn rt_dump_open(
 /// 控制线程落盘（Unlock 时调用）：内存缓冲 → 文件，失败静默。
 pub(crate) fn rt_dump_flush(rt_dump: Option<(std::path::PathBuf, Vec<f32>, usize)>) {
     use std::io::Write;
-    let Some((path, buf, _)) = rt_dump else { return };
+    let Some((path, buf, _)) = rt_dump else {
+        return;
+    };
     if buf.is_empty() {
         return;
     }
     // SAFETY: buf 为 f32 向量，按小端原始字节写出（与 Python/NumPy frombuffer 兼容）。
-    let bytes = unsafe {
-        std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4)
-    };
+    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4) };
     if let Ok(mut f) = std::fs::File::create(&path) {
         let _ = f.write_all(bytes);
     }
@@ -75,11 +70,27 @@ pub(crate) unsafe fn rt_dump_push(
         let out_base = f * out_ch;
         // SAFETY: in_ptr 指向 in_ch × frames 的交织 f32（调用方按 APO 契约保证）；
         // `in_ch >= 1 / >= 2` 分支保证 in_base（及 +1）落在该范围内，f < n <= frames。
-        let il = if in_ch >= 1 { unsafe { *in_ptr.add(in_base) } } else { 0.0 };
+        let il = if in_ch >= 1 {
+            unsafe { *in_ptr.add(in_base) }
+        } else {
+            0.0
+        };
         // SAFETY: 同上——仅当 in_ch >= 2 时访问 in_base + 1，仍在该缓冲范围内。
-        let ir = if in_ch >= 2 { unsafe { *in_ptr.add(in_base + 1) } } else { 0.0 };
-        let ol = if out_ch >= 1 { out_slice[out_base] } else { 0.0 };
-        let or_ = if out_ch >= 2 { out_slice[out_base + 1] } else { 0.0 };
+        let ir = if in_ch >= 2 {
+            unsafe { *in_ptr.add(in_base + 1) }
+        } else {
+            0.0
+        };
+        let ol = if out_ch >= 1 {
+            out_slice[out_base]
+        } else {
+            0.0
+        };
+        let or_ = if out_ch >= 2 {
+            out_slice[out_base + 1]
+        } else {
+            0.0
+        };
         buf.extend_from_slice(&[il, ir, ol, or_]);
     }
     *remaining -= n;

@@ -1,4 +1,4 @@
-﻿// ── 规范模块 ──
+// ── 规范模块 ──
 pub mod buffer;
 pub mod chain;
 pub mod context;

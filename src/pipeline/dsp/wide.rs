@@ -158,7 +158,10 @@ impl AirAbsorption {
 
     #[inline]
     fn next(&mut self, x: f32) -> f32 {
-        self.lp.process_sample(&self.lp_coeffs, self.shelf.process_sample(&self.shelf_coeffs, x))
+        self.lp.process_sample(
+            &self.lp_coeffs,
+            self.shelf.process_sample(&self.shelf_coeffs, x),
+        )
     }
 
     fn clear(&mut self) {
@@ -313,15 +316,15 @@ struct FirSplit {
 enum LpEngine {
     /// 直接卷积：逆序 IR + 环形缓冲。
     Direct {
-    /// 逆序低通 IR（与 convolution::dot 配合）。
-    ir_rev: Vec<f32>,
-    /// FIR 长度。
-    ir_len: usize,
-    /// 环形缓冲长度（next_power_of_two(ir_len）)。
-    delay_len: usize,
-    mask: usize,
-    /// 线性相位中心（群延迟采样数）。
-    center: usize,
+        /// 逆序低通 IR（与 convolution::dot 配合）。
+        ir_rev: Vec<f32>,
+        /// FIR 长度。
+        ir_len: usize,
+        /// 环形缓冲长度（next_power_of_two(ir_len）)。
+        delay_len: usize,
+        mask: usize,
+        /// 线性相位中心（群延迟采样数）。
+        center: usize,
     },
     /// 分块 FFT 卷积（延迟 = block_len - 1）。
     Partitioned {
@@ -394,19 +397,12 @@ impl FirSplit {
                 } else {
                     let len_old = delay_len - oldest;
                     crate::pipeline::dsp::fir::dot(&ir_rev[..len_old], &delay[oldest..])
-                        + crate::pipeline::dsp::fir::dot(
-                            &ir_rev[len_old..],
-                            &delay[0..=start],
-                        )
+                        + crate::pipeline::dsp::fir::dot(&ir_rev[len_old..], &delay[0..=start])
                 };
                 let delayed_x = delay[(*pos + delay_len - 1 - center) & mask];
                 (lp, delayed_x - lp)
             }
-            LpEngine::Partitioned {
-                pf,
-                dmask,
-                ..
-            } => {
+            LpEngine::Partitioned { pf, dmask, .. } => {
                 let lp = pf.process_channel(k, x);
                 let dmask = *dmask;
                 // 互补高通需与原信号延迟对齐：分块延迟 = latency = block-1。
@@ -466,7 +462,10 @@ fn design_lowpass_ir(fc_hz: f32, sample_rate: u32, n: usize) -> Vec<f32> {
         } else {
             (core::f32::consts::TAU * fc * m / sr).sin() / (core::f32::consts::PI * m)
         };
-        let arg = (1.0 - ((i as f32 - center) / center).powi(2)).max(0.0).sqrt() * KAISER_BETA;
+        let arg = (1.0 - ((i as f32 - center) / center).powi(2))
+            .max(0.0)
+            .sqrt()
+            * KAISER_BETA;
         let w = kaiser_i0(arg) / i0_beta;
         *tap = sinc * w;
         sum += *tap;
@@ -718,8 +717,12 @@ impl Filter for WideFilter {
             // 抵消关系保持，低频照样下降、侧通道也不被单独动。
             let dry_l = self.align_dry_l.process(p_ll + p_hl);
             let dry_r = self.align_dry_r.process(p_rl + p_hr);
-            let low_l = self.low_shelf_l.process_sample(&self.low_shelf_coeffs, dry_l);
-            let low_r = self.low_shelf_r.process_sample(&self.low_shelf_coeffs, dry_r);
+            let low_l = self
+                .low_shelf_l
+                .process_sample(&self.low_shelf_coeffs, dry_l);
+            let low_r = self
+                .low_shelf_r
+                .process_sample(&self.low_shelf_coeffs, dry_r);
             samples[l][f] = output_soft_clip(low_l + dl_prev);
             samples[r][f] = output_soft_clip(low_r + dr_prev);
         }

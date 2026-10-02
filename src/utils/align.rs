@@ -7,8 +7,7 @@
 // 本模块是对齐缓冲设施：当前仅内部构造路径与单测使用，保留完整 API。
 #![allow(dead_code, unused_imports)]
 
-
-use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
 
 use crate::utils::vx_error::VxApoError;
@@ -64,7 +63,9 @@ impl<T: Copy> AlignedBuffer<T> {
         if len == 0 {
             // 零长度：用 dangling 指针，Drop 不释放
             let Ok(layout) = Layout::from_size_align(0, align) else {
-                return Err(VxApoError::internal("AlignedBuffer zero-length layout invalid"));
+                return Err(VxApoError::internal(
+                    "AlignedBuffer zero-length layout invalid",
+                ));
             };
             return Ok(Self {
                 ptr: NonNull::dangling(),
@@ -83,9 +84,11 @@ impl<T: Copy> AlignedBuffer<T> {
         // SAFETY: layout.size() > 0（因为 len > 0 且 elem_size > 0），
         // align 是 2 的幂且 >= size_of::<T>()，由 assert 保证。
         let raw = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(raw).unwrap_or_else(|| {
-            std::alloc::handle_alloc_error(layout);
-        }).cast::<T>();
+        let ptr = NonNull::new(raw)
+            .unwrap_or_else(|| {
+                std::alloc::handle_alloc_error(layout);
+            })
+            .cast::<T>();
 
         Ok(Self { ptr, len, layout })
     }
@@ -223,7 +226,10 @@ mod tests {
         for (i, b) in buf.as_mut_slice().iter_mut().enumerate() {
             *b = i as u8;
         }
-        assert_eq!(buf.as_slice(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(
+            buf.as_slice(),
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
     }
 
     #[test]

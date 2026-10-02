@@ -42,10 +42,7 @@ mod child;
 mod read;
 mod types;
 
-pub use child::{
-    child_apo_key_exists, read_child_apo_guid,
-    ChildApoKind, CHILD_APO_PATH_ROOT,
-};
+pub use child::{child_apo_key_exists, read_child_apo_guid, ChildApoKind, CHILD_APO_PATH_ROOT};
 pub use read::{detect_install_mode, read_all_slots, read_slot_value};
 pub use types::{
     ApoSlot, InstallMode, SlotValue, FX_PROPERTIES_KEY, INSTALL_VERSION, INSTALL_VERSION_LEGACY,

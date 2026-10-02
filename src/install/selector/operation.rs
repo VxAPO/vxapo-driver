@@ -7,22 +7,22 @@
 //!
 //! 禁止依赖：`pipeline/`、`config/`。
 
-use windows::Win32::System::Registry::{HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE};
 use windows::Win32::Media::KernelStreaming::AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
+use windows::Win32::System::Registry::{HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE};
 
-use crate::install::device::slots::{
-    ApoSlot, ChildApoKind, InstallMode, SlotValue, read_slot_value, CHILD_APO_PATH_ROOT,
-    FX_PROPERTIES_KEY, INSTALL_VERSION,
-};
 use crate::install::device::identity::{
     merge_endpoint_history, read_endpoint_identity, write_identity_values,
 };
 use crate::install::device::info::find_endpoint_path;
+use crate::install::device::slots::{
+    read_slot_value, ApoSlot, ChildApoKind, InstallMode, SlotValue, CHILD_APO_PATH_ROOT,
+    FX_PROPERTIES_KEY, INSTALL_VERSION,
+};
 use crate::install::device::sysfx;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, GUID, IUnknown,
-    guid_to_string,
+    guid_to_string, CoCreateInstance, CoInitializeEx, IUnknown, CLSCTX_INPROC_SERVER,
+    COINIT_MULTITHREADED, GUID,
 };
 use crate::sys::registry::{RegKey, RegValue};
 use crate::utils::vx_error::{Result, VxApoError};

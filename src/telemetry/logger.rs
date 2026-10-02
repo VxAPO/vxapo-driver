@@ -76,7 +76,7 @@ impl Logger {
     }
 
     /// 非实时：批量读取日志。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn drain<F>(&self, mut f: F)
     where
         F: FnMut(LogLevel, &str),

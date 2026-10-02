@@ -31,7 +31,7 @@ impl ConfigParser {
     }
 
     /// 解析配置文件（丢弃 spec）。
-#[cfg(test)]
+    #[cfg(test)]
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn parse_file(
         &self,
@@ -69,7 +69,7 @@ impl ConfigParser {
     }
 
     /// 解析配置字符串（丢弃 spec）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn parse_string(
         &self,
         content: &str,
@@ -80,7 +80,7 @@ impl ConfigParser {
     }
 
     /// 解析行列表（兼容入口：按换行拼接后走 TOML 解析）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn parse_lines(
         &self,
         lines: &[String],
@@ -209,7 +209,10 @@ fn push_peq_merged(
         kind: EffectType::Peq,
         enabled: true,
         channels: channels.clone(),
-        params: EffectParams::Peq(PeqParams { crossover_hz, bands }),
+        params: EffectParams::Peq(PeqParams {
+            crossover_hz,
+            bands,
+        }),
     };
     let filter = create_from_model(&effect, ctx);
     let filter: Box<dyn Filter> = match channels.as_ref() {
@@ -427,5 +430,4 @@ air = 0.5
         let filters = parser.parse_lines(&lines, &test_ctx()).unwrap();
         assert_eq!(filters.len(), 1);
     }
-
 }

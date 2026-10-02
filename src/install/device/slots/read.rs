@@ -2,8 +2,8 @@
 
 //! 共享导入见父模块 install/device/slots.rs。
 
-use super::*;
 use super::types::*;
+use super::*;
 
 /// 从端点 FxProperties 读取指定槽位的 APO GUID。
 ///
@@ -105,7 +105,13 @@ pub fn read_all_slots(endpoint_key: &RegKey) -> [SlotValue; 5] {
         Ok(k) => k,
         Err(_) => {
             // FxProperties 键不存在 → 所有槽位 NoKey。
-            return [SlotValue::NoKey, SlotValue::NoKey, SlotValue::NoKey, SlotValue::NoKey, SlotValue::NoKey];
+            return [
+                SlotValue::NoKey,
+                SlotValue::NoKey,
+                SlotValue::NoKey,
+                SlotValue::NoKey,
+                SlotValue::NoKey,
+            ];
         }
     };
 
@@ -119,4 +125,3 @@ pub fn read_all_slots(endpoint_key: &RegKey) -> [SlotValue; 5] {
 // ══════════════════════════════════════════════════════════════════════════════
 // 公开 API — 原始 APO GUID 回退
 // ══════════════════════════════════════════════════════════════════════════════
-

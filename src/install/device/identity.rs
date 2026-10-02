@@ -38,8 +38,7 @@ pub const PKEY_DEVICE_INSTANCE_ID: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc
 pub const PKEY_DEVICE_PRODUCT_NAME: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
 
 /// PKEY_DeviceInterface_FriendlyName（REG_SZ），形如 `扬声器`。
-pub const PKEY_DEVICE_INTERFACE_FRIENDLY_NAME: &str =
-    "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+pub const PKEY_DEVICE_INTERFACE_FRIENDLY_NAME: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
 
 /// 设备节点硬件 ID 列表（REG_MULTI_SZ），形如
 /// `{USB\VID_2D99&PID_A037&REV_0100&MI_00, USB\VID_2D99&PID_A037&MI_00}`。
@@ -82,7 +81,7 @@ pub struct EndpointIdentity {
 
 impl EndpointIdentity {
     /// 是否完全没有身份信息（三个来源都缺）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.instance_id.is_empty()
             && self.hardware_ids.is_empty()
@@ -417,7 +416,7 @@ mod tests {
         values.insert(
             VALUE_ENDPOINT_HISTORY.to_string(),
             RegValue::MultiSz(vec![
-                "{0.0.0.00000000}.{52237A1A-647C-4196-855F-E693A6504EE9}".to_string()
+                "{0.0.0.00000000}.{52237A1A-647C-4196-855F-E693A6504EE9}".to_string(),
             ]),
         );
         let identity = identity_from_values(&values);
@@ -425,7 +424,10 @@ mod tests {
             identity.instance_id,
             r"USB\VID_2D99&PID_A037&MI_00\6&20BE7186&2&0000"
         );
-        assert_eq!(identity.hardware_ids, vec![r"USB\VID_2D99&PID_A037&MI_00".to_string()]);
+        assert_eq!(
+            identity.hardware_ids,
+            vec![r"USB\VID_2D99&PID_A037&MI_00".to_string()]
+        );
         assert_eq!(identity.product_key(), "edifier m16+");
         assert_eq!(
             identity.endpoint_history,

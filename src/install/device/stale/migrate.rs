@@ -3,10 +3,10 @@
 //! 配置/快照选择与搬运、记录键值合并、身份落盘刷新，以及迁移后的端点重启。
 //! 共享常量与公开类型见父模块 `install/device/stale.rs`。
 
-use super::*;
 use super::acl::*;
 use super::detect::*;
 use super::matching::*;
+use super::*;
 
 /// 把旧 GUID 安装迁移到新 GUID。
 ///
@@ -116,9 +116,7 @@ pub fn migrate_install(
             archive_target_file(new_guid, "config.toml")?;
             copy_file(
                 &source.path,
-                &Path::new(CONFIG_ROOT)
-                    .join(new_guid)
-                    .join("config.toml"),
+                &Path::new(CONFIG_ROOT).join(new_guid).join("config.toml"),
             )?;
             config_migrated = true;
         }
@@ -203,7 +201,8 @@ pub fn migrate_install(
     for source in &group {
         history.push(vec![source.guid.clone()]);
     }
-    if let Err(e) = write_identity_values(&target_key, &refreshed, &merge_endpoint_history(&history))
+    if let Err(e) =
+        write_identity_values(&target_key, &refreshed, &merge_endpoint_history(&history))
     {
         warnings.push(format!("写入设备身份失败：{e}"));
     }
@@ -285,7 +284,9 @@ pub(super) fn choose_config_source(
         }
     }
     if let Some(forced) = forced {
-        return Ok(candidates.into_iter().find(|c| c.guid.eq_ignore_ascii_case(forced)));
+        return Ok(candidates
+            .into_iter()
+            .find(|c| c.guid.eq_ignore_ascii_case(forced)));
     }
     Ok(candidates.into_iter().max_by_key(|c| c.mtime))
 }
@@ -316,7 +317,9 @@ pub(super) fn choose_snapshot_source(
         });
     }
     if let Some(forced) = forced {
-        return Ok(candidates.into_iter().find(|c| c.guid.eq_ignore_ascii_case(forced)));
+        return Ok(candidates
+            .into_iter()
+            .find(|c| c.guid.eq_ignore_ascii_case(forced)));
     }
     Ok(candidates.into_iter().min_by_key(|c| c.mtime))
 }
@@ -349,12 +352,12 @@ pub(super) fn pick(primary: &str, fallback: &str) -> String {
 
 pub(super) fn copy_file(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).map_err(|e| VxApoError::internal(format!("创建目录失败：{e}")))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| VxApoError::internal(format!("创建目录失败：{e}")))?;
     }
     let tmp = dst.with_extension("migration.tmp");
     fs::copy(src, &tmp).map_err(|e| VxApoError::internal(format!("复制文件失败：{e}")))?;
-    rename_with_retry(&tmp, dst)
-        .map_err(|e| VxApoError::internal(format!("替换文件失败：{e}")))
+    rename_with_retry(&tmp, dst).map_err(|e| VxApoError::internal(format!("替换文件失败：{e}")))
 }
 
 /// `tmp → 目标` 原子替换，带有限重试。
@@ -394,7 +397,9 @@ pub(super) fn is_transient_sharing_error(e: &std::io::Error) -> bool {
 }
 
 pub(super) fn archive_target_file(target_guid: &str, name: &str) -> Result<()> {
-    let dir = Path::new(MIGRATION_BACKUP_DIR).join(target_guid).join("target");
+    let dir = Path::new(MIGRATION_BACKUP_DIR)
+        .join(target_guid)
+        .join("target");
     fs::create_dir_all(&dir).map_err(|e| VxApoError::internal(format!("创建备份目录失败：{e}")))?;
     let src = match name {
         "config.toml" => Path::new(CONFIG_ROOT).join(target_guid).join(name),

@@ -7,30 +7,29 @@
 // 本模块是 sys 层的 windows-rs 类型与 APO 错误码词汇表：按设计保留完整取值供对表，仓内未必全部有消费者。
 #![allow(dead_code, unused_imports)]
 
-
-pub use windows::core::GUID;
 pub use crate::sys::com::prelude::HRESULT;
+pub use windows::core::GUID;
 
 // ── windows-rs 已提供的类型（直接 re-export） ─────────────────────────────
 pub use windows::Win32::Media::Audio::Apo::{
-    APO_FLAG,
-    APO_FLAG_NONE,
-    APO_FLAG_INPLACE,
-    APO_FLAG_SAMPLESPERFRAME_MUST_MATCH,
-    APO_FLAG_FRAMESPERSECOND_MUST_MATCH,
-    APO_FLAG_BITSPERSAMPLE_MUST_MATCH,
-    APO_FLAG_MIXER,
-    APO_FLAG_DEFAULT,
-    APO_BUFFER_FLAGS,
-    APO_REG_PROPERTIES,
-    APO_CONNECTION_DESCRIPTOR,
-    APO_CONNECTION_PROPERTY,
     // APOInitSystemEffects：Initialize 初始化数据（per-device 配置路径）。
     // 实测字段：{ APOInit: APOInitBaseStruct, pAPOEndpointProperties,
     //   pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>,
     //   pReserved, pDeviceCollection }——端点 GUID 经 pAPOSystemEffectsProperties
     //   ->IPropertyStore::GetValue(PKEY_AudioEndpoint_GUID) 提取（windows-rs 0.62.2 实测）。
     APOInitSystemEffects,
+    APO_BUFFER_FLAGS,
+    APO_CONNECTION_DESCRIPTOR,
+    APO_CONNECTION_PROPERTY,
+    APO_FLAG,
+    APO_FLAG_BITSPERSAMPLE_MUST_MATCH,
+    APO_FLAG_DEFAULT,
+    APO_FLAG_FRAMESPERSECOND_MUST_MATCH,
+    APO_FLAG_INPLACE,
+    APO_FLAG_MIXER,
+    APO_FLAG_NONE,
+    APO_FLAG_SAMPLESPERFRAME_MUST_MATCH,
+    APO_REG_PROPERTIES,
 };
 
 // APOInit 基础结构（Initialize 参数校验 cb_size 用）
@@ -46,17 +45,13 @@ pub use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 // PROPVARIANT（IPropertyStore::GetValue 返回，含 GUID 类型 VT_CLSID）
 pub use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 pub use windows::Win32::System::Variant::VARENUM;
-pub use windows::Win32::System::Variant::{VT_CLSID, VT_LPWSTR, VT_BSTR};
+pub use windows::Win32::System::Variant::{VT_BSTR, VT_CLSID, VT_LPWSTR};
 
 /// windows-rs 的 APO_BUFFER_FLAGS 别名（对外交互用）。
 pub use windows::Win32::Media::Audio::Apo::APO_BUFFER_FLAGS as WinAPO_BUFFER_FLAGS;
 
 // APO_BUFFER_FLAGS 关联常量（windows-rs 命名），供内部语义引用
-pub use windows::Win32::Media::Audio::Apo::{
-    BUFFER_INVALID,
-    BUFFER_VALID,
-    BUFFER_SILENT,
-};
+pub use windows::Win32::Media::Audio::Apo::{BUFFER_INVALID, BUFFER_SILENT, BUFFER_VALID};
 
 // ── 自定义枚举（windows-rs 无） ────────────────────────────────────────────
 #[repr(u32)]
@@ -96,26 +91,29 @@ pub const AUDIOMEDIATYPE_EQUAL_FORMAT_USER_DATA: u32 = 0x0000_0008;
 
 // ── APO 专用 HRESULT 错误码（定义集中在 prelude.rs，此处仅重导出） ────────
 pub use crate::sys::com::prelude::{
-    APOERR_ALREADY_INITIALIZED,
-    APOERR_ALREADY_UNLOCKED,
-    APOERR_APO_LOCKED,
-    APOERR_BUFFERS_OVERLAP,
-    APOERR_FORMAT_NOT_SUPPORTED,
-    APOERR_INVALID_APO_CLSID,
-    APOERR_INVALID_COEFFCOUNT,
-    APOERR_INVALID_COEFFICIENT,
-    APOERR_INVALID_CONNECTION_FORMAT,
-    APOERR_INVALID_CURVE_PARAM,
-    APOERR_INVALID_INPUTID,
-    APOERR_INVALID_OUTPUT_MAXFRAMECOUNT,
-    APOERR_NOT_INITIALIZED,
+    APOERR_ALREADY_INITIALIZED, APOERR_ALREADY_UNLOCKED, APOERR_APO_LOCKED, APOERR_BUFFERS_OVERLAP,
+    APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_APO_CLSID, APOERR_INVALID_COEFFCOUNT,
+    APOERR_INVALID_COEFFICIENT, APOERR_INVALID_CONNECTION_FORMAT, APOERR_INVALID_CURVE_PARAM,
+    APOERR_INVALID_INPUTID, APOERR_INVALID_OUTPUT_MAXFRAMECOUNT, APOERR_NOT_INITIALIZED,
     APOERR_NUM_CONNECTIONS_INVALID,
 };
 
 // ── 编译期断言（验证 re-export 的 SDK 类型布局） ───────────────────────────
 const _: () = {
-    assert!(std::mem::size_of::<APO_FLAG>() == 4, "APO_FLAG must be 4 bytes");
-    assert!(std::mem::size_of::<AUDIO_FLOW_TYPE>() == 4, "AUDIO_FLOW_TYPE must be 4 bytes");
-    assert!(std::mem::size_of::<UNCOMPRESSED_AUDIO_FORMAT>() == 36, "UNCOMPRESSED_AUDIO_FORMAT must be 36 bytes");
-    assert!(std::mem::size_of::<APO_REG_PROPERTIES>() == 1092, "APO_REG_PROPERTIES must be 1092 bytes");
+    assert!(
+        std::mem::size_of::<APO_FLAG>() == 4,
+        "APO_FLAG must be 4 bytes"
+    );
+    assert!(
+        std::mem::size_of::<AUDIO_FLOW_TYPE>() == 4,
+        "AUDIO_FLOW_TYPE must be 4 bytes"
+    );
+    assert!(
+        std::mem::size_of::<UNCOMPRESSED_AUDIO_FORMAT>() == 36,
+        "UNCOMPRESSED_AUDIO_FORMAT must be 36 bytes"
+    );
+    assert!(
+        std::mem::size_of::<APO_REG_PROPERTIES>() == 1092,
+        "APO_REG_PROPERTIES must be 1092 bytes"
+    );
 };

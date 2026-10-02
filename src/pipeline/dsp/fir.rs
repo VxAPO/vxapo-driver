@@ -8,8 +8,8 @@
 
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::pipeline::dsp::math::CONVOLUTION_PARTITION_SIZE;
 
@@ -20,9 +20,7 @@ static USE_AVX2_FMA: AtomicBool = AtomicBool::new(false);
 /// 运行时探测 AVX2+FMA（非 RT，可重复调用；幂等）。
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn init_fir_simd() {
-    if std::arch::is_x86_feature_detected!("avx2")
-        && std::arch::is_x86_feature_detected!("fma")
-    {
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         USE_AVX2_FMA.store(true, Ordering::Relaxed);
     }
 }
@@ -251,7 +249,12 @@ fn process_block(
     geo: BlockGeometry,
     ch: &mut PartitionedFirChannel,
 ) {
-    let BlockGeometry { blocks, block_len, fft_len, inv_fft_len } = geo;
+    let BlockGeometry {
+        blocks,
+        block_len,
+        fft_len,
+        inv_fft_len,
+    } = geo;
     for (i, &v) in ch.in_buf.iter().enumerate() {
         ch.x_work[i] = Complex::new(v, 0.0);
     }

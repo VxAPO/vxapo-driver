@@ -1,4 +1,4 @@
-﻿//! vxapo-driver/src/lib.rs — 库根模块
+//! vxapo-driver/src/lib.rs — 库根模块
 //!
 //! VxAPO：Windows 音频处理对象（APO）驱动，提供系统级音频 DSP 处理能力。
 //!
@@ -19,7 +19,6 @@
 
 // 禁止不安全代码的文档缺失（强制要求 SAFETY 注释）
 #![deny(clippy::undocumented_unsafe_blocks)]
-
 // Windows COM 接口沿用 PascalCase / SCREAMING_SNAKE_CASE 命名
 #![allow(non_camel_case_types, non_snake_case)]
 
@@ -52,7 +51,8 @@ pub use crate::install::device::slots::{
     child_apo_key_exists, read_child_apo_guid, ChildApoKind, InstallMode, SlotValue,
 };
 pub use crate::install::device::stale::{
-    cleanup_orphan, fix_config_acl, list_stale_installs, snapshot_dir, MigrationReport, StaleInstall,
+    cleanup_orphan, fix_config_acl, list_stale_installs, snapshot_dir, MigrationReport,
+    StaleInstall,
 };
 // object：per-device 配置路径（cli 与 driver 共用同一路径布局）
 pub use crate::object::apo::config::device_config_path;

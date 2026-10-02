@@ -20,20 +20,21 @@ use std::sync::{Arc, Mutex};
 use windows::core::Result;
 
 use crate::object::apo::child::ChildApo;
-use crate::object::apo::config::{DEFAULT_CONFIG_PATH, WatcherState, hot_reload_impl};
+use crate::object::apo::config::{hot_reload_impl, WatcherState, DEFAULT_CONFIG_PATH};
 use crate::object::apo::inner::ApoObjectInner;
 use crate::object::apo::state::StateCell;
 use crate::object::ref_count;
 use crate::pipeline::process::ProcessStatistics;
 use crate::sys::com::apo_interfaces::{
     IAudioMediaType, IAudioProcessingObject, IAudioProcessingObjectConfiguration,
-    IAudioProcessingObjectRT, IAudioProcessingObject_Impl, IAudioProcessingObjectRT_Impl,
-    IAudioProcessingObjectConfiguration_Impl, IAudioSystemEffects, IAudioSystemEffects_Impl,
+    IAudioProcessingObjectConfiguration_Impl, IAudioProcessingObjectRT,
+    IAudioProcessingObjectRT_Impl, IAudioProcessingObject_Impl, IAudioSystemEffects,
+    IAudioSystemEffects_Impl,
 };
 use crate::sys::com::apo_types::{
     APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES,
 };
-use crate::sys::com::prelude::{E_FAIL, GUID, implement};
+use crate::sys::com::prelude::{implement, E_FAIL, GUID};
 
 // ═══ ApoObject ═══
 #[implement(

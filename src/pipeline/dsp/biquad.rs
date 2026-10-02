@@ -16,8 +16,8 @@
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{
-    FILTER_CUT_FLOOR_DB, FILTER_FREQ_MAX_RATIO, FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN, clamp_gain_db,
-    is_stable_biquad, warn_rate_limited,
+    clamp_gain_db, is_stable_biquad, warn_rate_limited, FILTER_CUT_FLOOR_DB, FILTER_FREQ_MAX_RATIO,
+    FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -501,7 +501,7 @@ impl BiquadFilter {
     }
 
     /// 更新系数（参数变化时立即切换；平滑过渡见 CHANGELOG 的 roadmap）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn set_coeffs(&mut self, coeffs: BiquadCoeffs) {
         self.coeffs = coeffs;
     }
@@ -513,7 +513,7 @@ impl BiquadFilter {
     }
 
     /// 重置状态（延迟线清零）。
-#[cfg(test)]
+    #[cfg(test)]
     pub fn reset_state(&mut self) {
         for s in self.df1_x.iter_mut() {
             *s = [0.0; 2];

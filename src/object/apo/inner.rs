@@ -5,7 +5,7 @@
 
 use crate::pipeline::chain::Chain;
 use crate::pipeline::context::PipelineContext;
-use crate::pipeline::dsp::filter::{DspContext, DeviceType, ProcessingStage};
+use crate::pipeline::dsp::filter::{DeviceType, DspContext, ProcessingStage};
 use crate::pipeline::dsp::transition::SmoothingProvider;
 use crate::sys::audio_defs::get_channel_names;
 
@@ -92,12 +92,7 @@ impl ApoObjectInner {
     }
 
     /// 对输出交织缓冲应用启动静音保持（默认 500ms，无淡入，RT 零分配）。
-    pub(crate) fn apply_startup_fade(
-        &mut self,
-        out: &mut [f32],
-        frames: usize,
-        out_ch: usize,
-    ) {
+    pub(crate) fn apply_startup_fade(&mut self, out: &mut [f32], frames: usize, out_ch: usize) {
         let total = self.startup_fade_total;
         if total == 0 || out_ch == 0 {
             self.startup_fade_remaining = 0;
