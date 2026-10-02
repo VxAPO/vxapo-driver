@@ -543,15 +543,21 @@ fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
     if needed == 0 {
         return Ok(Vec::new());
     }
-    let mut buf = vec![0u8; needed as usize + 32];
-    // SAFETY: buf 按 needed+32 字节分配并以其长度作为 cbBufSize 传入；svc 有效；
-    // API 只会写入该缓冲（结果数量不超过 needed/returned）。
+    // 用**类型化数组**承载结果：ENUM_SERVICE_STATUSW 是 repr(C) POD，Vec<T> 的分配
+    // 天然满足它的对齐要求（旧实现用 Vec<u8> 再转型，对齐只靠 malloc 的分配保证）。
+    // 元素数按 (needed + 32) 向上取整，保留原有 32 字节余量。
+    let elem_size = std::mem::size_of::<ENUM_SERVICE_STATUSW>();
+    let elem_count = (needed as usize + 32).div_ceil(elem_size);
+    let mut buf = vec![ENUM_SERVICE_STATUSW::default(); elem_count];
+    // SAFETY: buf 是 ENUM_SERVICE_STATUSW 的连续数组（自然对齐、已初始化）；
+    // cbBufSize 必须传**字节长度**（= 元素数 × 元素大小），API 只会写入该数组；
+    // svc 有效；结果数量不超过 needed/returned。
     unsafe {
         EnumDependentServicesW(
             svc,
             SERVICE_ACTIVE,
-            Some(buf.as_mut_ptr() as *mut ENUM_SERVICE_STATUSW),
-            buf.len() as u32,
+            Some(buf.as_mut_ptr()),
+            (buf.len() * elem_size) as u32,
             &mut needed,
             &mut returned,
         )
@@ -559,11 +565,8 @@ fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
     .map_err(|e| VxApoError::internal(format!("EnumDependentServicesW failed: {e}")))?;
 
     let mut names = Vec::with_capacity(returned as usize);
-    for i in 0..returned {
-        // SAFETY: buf 已由上面的 EnumDependentServicesW 填充 returned 个
-        // ENUM_SERVICE_STATUSW（API 契约），i < returned 故落在有效范围内；
-        // Vec<u8> 的分配由 malloc 提供，满足该结构的对齐要求。
-        let entry = unsafe { &*(buf.as_ptr() as *const ENUM_SERVICE_STATUSW).add(i as usize) };
+    // 安全索引：buf 已由 API 填充 returned 个条目（take 保证不读未写入的尾部）。
+    for entry in buf.iter().take(returned as usize) {
         names.push(string_from_wide(entry.lpServiceName));
     }
     Ok(names)
@@ -787,5 +790,58 @@ mod tests {
     fn audiodg_pids_enumeration_is_sane() {
         let pids = audiodg_pids();
         assert!(pids.len() < 64, "audiodg 实例数异常：{}", pids.len());
+    }
+
+    /// 真机验证：`active_dependents` 的**填充 + 读取**路径成立
+    /// （类型化缓冲 `Vec<ENUM_SERVICE_STATUSW>` + 以字节长度传 cbBufSize）。
+    ///
+    /// 说明：AudioSrv 的依赖只有 `AarSvc`（已停止），按 `SERVICE_ACTIVE` 过滤后本就为 0；
+    /// 音频侧真正的依赖关系是反方向（Audiosrv ← AudioEndpointBuilder 的 DependOnService）。
+    /// 因此这里改用本机实测有多个活跃依赖的服务（Dhcp 4 个 / Dnscache 5 个），
+    /// 只要其中一个返回非空即证明多条目填充与读取路径正确。
+    /// 依赖本机 SCM 访问权限，默认忽略；显式运行：`cargo test -- --ignored`。
+    #[test]
+    #[ignore = "需要本机 SCM 访问权限"]
+    fn active_dependents_enumerates_active_dependents() {
+        use windows::Win32::System::Services::{
+            CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT,
+            SERVICE_ENUMERATE_DEPENDENTS, SERVICE_QUERY_STATUS,
+        };
+        use windows::core::{HSTRING, PCWSTR};
+
+        // SAFETY: 打开本机 SCM（只申请 CONNECT）；失败直接 panic 视为环境不满足。
+        let scm = unsafe {
+            OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT)
+        }
+        .expect("OpenSCManagerW");
+
+        let mut non_empty: Vec<(String, Vec<String>)> = Vec::new();
+        for name in ["Dhcp", "Dnscache", "EventSystem", "AudioSrv"] {
+            // SAFETY: scm 有效；服务名 HSTRING 临时对象存活至调用结束；
+            // 枚举依赖需要 SERVICE_ENUMERATE_DEPENDENTS。
+            let svc = unsafe {
+                OpenServiceW(
+                    scm,
+                    &HSTRING::from(name),
+                    SERVICE_ENUMERATE_DEPENDENTS | SERVICE_QUERY_STATUS,
+                )
+            }
+            .unwrap_or_else(|e| panic!("OpenServiceW({name}) failed: {e}"));
+
+            let names = active_dependents(svc).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // SAFETY: svc 由上面的 OpenServiceW 成功返回，此处释放一次。
+            let _ = unsafe { CloseServiceHandle(svc) };
+            if !names.is_empty() {
+                non_empty.push((name.to_string(), names));
+            }
+        }
+        // SAFETY: scm 由 OpenSCManagerW 成功返回，此处释放一次。
+        let _ = unsafe { CloseServiceHandle(scm) };
+
+        assert!(
+            !non_empty.is_empty(),
+            "本机应至少有一个服务返回活跃依赖（否则无法覆盖填充路径）"
+        );
+        println!("active_dependents 实测：{non_empty:?}");
     }
 }
