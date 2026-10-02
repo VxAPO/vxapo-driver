@@ -1,0 +1,20 @@
+# VxAPO 统一格式配置（四个仓库逐字节一致；改动必须同步全部仓库）
+#
+# 决策依据见 vxapo-format-policy-plan.md §3 D1。
+# 本文件刻意保持最小：折行策略就是 rustfmt 默认值，不设任何 width 类参数。
+
+# 风格版本钉死：即使以后 crate 的 edition 升到 2024，rustfmt 的默认风格也不会跟着变，
+# 避免升级 edition 时被迫再做一次全仓重排。
+style_edition = "2021"
+
+# 与 .gitattributes 的 eol=lf 对齐：rustfmt 默认 newline_style="Auto" 会按文件现有行尾
+# 写回，混合行尾时会把行尾噪声混进 diff。这里强制 Unix。
+newline_style = "Unix"
+
+# ── 为什么不设 use_small_heuristics = "Max"（2026-10 driver 全仓实测）──
+#               hunk   added  removed     net      >90列  >100列
+#   默认         445    1802      991    +811        257      32
+#   Max          504     962     1885    -923        431      32
+# 默认方案把 >90 列的难读长行从源文件的 287 降到 257；Max 反而升到 431（+68%）。
+# 且默认值无需任何本机配置——任何编辑器 / CI / 后续工具开箱即产出同一格式。
+# 不要为了让 diff 变小而改回 Max：那会让 >90 列长行显著增加并需要长期维护此配置。

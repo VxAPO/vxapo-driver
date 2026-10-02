@@ -1,0 +1,8 @@
+[toolchain]
+# 钉死工具链版本：rustfmt 的输出随版本漂移，不钉的话「fmt-clean」会在每次 rustc
+# 升级后重新变红，又要面对一次全仓 diff。
+#
+# 升级流程（务必遵守）：升级 rustc 是独立事件 → 升完单独跑一次 `cargo fmt --all`
+# → 若输出有变化，按 vxapo-format-policy-plan.md Phase 3 的同样流程处理
+# （独立提交 + 追加到 .git-blame-ignore-revs）。
+channel = "1.97.1"

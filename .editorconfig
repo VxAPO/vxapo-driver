@@ -1,0 +1,27 @@
+# 统一编辑器行为，覆盖非 Rust 文件（Rust 由 rustfmt.toml + cargo fmt 单一权威决定）。
+#
+# 注意：本文件刻意放在仓库根、随版本控制，而不是放在 D:\APO_Project\VxAPO\。
+# 项目根不是 git 仓库，放那里等于不受版本控制、clone 后拿不到，与「新环境开箱一致」的目标冲突。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{md,yml,yaml,json,ts,vue,js,cjs,mjs,html,css}]
+indent_size = 2
+
+# Windows 批处理必须保持 CRLF（cmd 解析需要），与 .gitattributes 的例外一致。
+[*.{cmd,bat}]
+end_of_line = crlf
+
+[*.rs]
+# Rust 的缩进与行尾交给 rustfmt 统一负责，此处只兜底编辑器默认值。
+indent_size = 4
+
+[Makefile]
+indent_style = tab
