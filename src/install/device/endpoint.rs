@@ -130,18 +130,6 @@ pub fn query_endpoint(endpoint_key: &RegKey) -> Result<Option<EndpointInfo>> {
     }))
 }
 
-#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-/// 检查端点是否为活跃状态。
-///
-/// 便捷方法，等价于读取 DeviceState 值是否为 1。
-#[cfg(test)]
-pub fn is_endpoint_active(endpoint_key: &RegKey) -> Result<bool> {
-    match endpoint_key.read_dword_value("DeviceState") {
-        Ok(state) => Ok(state == 1), // DEVICE_STATE_ACTIVE
-        Err(_) => Ok(false),
-    }
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // 内部辅助
 // ══════════════════════════════════════════════════════════════════════════════

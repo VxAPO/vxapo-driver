@@ -246,13 +246,6 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     Ok(result)
 }
 
-#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-/// 检查端点的 FxProperties 键是否存在。
-#[cfg(test)]
-pub fn has_fx_properties(endpoint_key: &RegKey) -> bool {
-    endpoint_key.open_sub_key(FX_PROPERTIES_KEY).is_ok()
-}
-
 /// 设备实例 ID 值名（PKEY_DeviceInstanceId，`,2`）。
 ///
 /// EAPO 用容器 ID（`,41`）近似判定蓝牙组合设备，但该值对所有设备都存在，

@@ -46,18 +46,10 @@ pub const GAIN_SNAP_THRESHOLD: f32 = 1e-6;
 pub const GAIN_SMOOTH_RERATE: u32 = 32;
 /// 增益平滑默认目标步数（≈2.7 ms @ 48 kHz）。
 pub const GAIN_SMOOTH_STEPS_DEFAULT: u32 = 128;
-/// Copy 混音系数幅值上限。
-pub const COPY_COEFF_MAX: f32 = 16.0;
-/// 延迟上限（毫秒）。
-pub const DELAY_MS_MAX: f32 = 1000.0;
 /// Loudness phon 下限。
 pub const PHON_MIN: f32 = 0.0;
 /// Loudness phon 上限。
 pub const PHON_MAX: f32 = 120.0;
-/// GraphicEQ 最大段数（1/3 倍频程全带）。
-pub const MAX_GRAPHIC_EQ_BANDS: usize = 31;
-/// Copy 临时缓冲预分配上限（RT 安全）。
-pub const MAX_FRAME_COUNT: usize = 8192;
 /// 分块卷积块大小（长 FIR 分块处理用）。
 pub const CONVOLUTION_PARTITION_SIZE: usize = 128;
 

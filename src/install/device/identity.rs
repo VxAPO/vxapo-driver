@@ -261,17 +261,6 @@ pub fn write_identity_values(
     Ok(())
 }
 
-#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-/// 读取记录键已落盘的身份（键不存在时返回默认值）。
-#[cfg(test)]
-pub fn read_stored_identity(device_guid: &str, child_apo_root: &str) -> EndpointIdentity {
-    let key_path = format!("{child_apo_root}\\{device_guid}");
-    let Ok(key) = RegKey::open(HKEY_LOCAL_MACHINE, &key_path) else {
-        return EndpointIdentity::default();
-    };
-    identity_from_key(&key)
-}
-
 /// 从已打开的记录键读取已落盘身份（缺值 → 默认空身份）。
 pub fn identity_from_key(key: &RegKey) -> EndpointIdentity {
     let mut identity = EndpointIdentity::default();

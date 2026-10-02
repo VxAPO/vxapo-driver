@@ -309,18 +309,6 @@ impl ClsidEntry {
     pub fn audio_engine_path(&self) -> String {
         format!("AudioEngine\\AudioProcessingObjects\\{}", self.clsid_str)
     }
-    #[cfg(test)]
-    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-    pub fn registration_entries(&self, dll_path: &str) -> Vec<(&str, String, String)> {
-        vec![
-            ("Default", String::new(), dll_path.to_owned()),
-            (
-                "ThreadingModel",
-                "ThreadingModel".to_owned(),
-                "Both".to_owned(),
-            ),
-        ]
-    }
 }
 
 /// 注册顺序：PostMix → PreMix。

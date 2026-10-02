@@ -17,10 +17,6 @@
 
 use std::path::PathBuf;
 
-// Path 仅被 cfg(test) 下的 watch_dir() 使用。
-#[cfg(test)]
-use std::path::Path;
-
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
     FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
@@ -109,13 +105,6 @@ impl ConfigWatcher {
     /// 通知句柄（供调用方检查是否有效）。
     pub fn notify_handle(&self) -> HANDLE {
         self.notify_handle
-    }
-
-    /// 监控目录。
-    #[cfg(test)]
-    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-    pub fn watch_dir(&self) -> &Path {
-        &self.watch_dir
     }
 
     /// 等待并处理一个事件（阻塞直到文件变更或 shutdown）。

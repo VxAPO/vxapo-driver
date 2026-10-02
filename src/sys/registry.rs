@@ -536,23 +536,6 @@ pub fn split_key(path: &str) -> Result<(HKEY, &str)> {
     Ok((root, rest))
 }
 
-#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-/// 检查注册表键是否存在。
-#[cfg(test)]
-pub fn key_exists(root: HKEY, sub_key: &str) -> Result<bool> {
-    Ok(RegKey::open(root, sub_key).is_ok())
-}
-
-#[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-/// 检查注册表值是否存在。
-pub fn value_exists(root: HKEY, sub_key: &str, name: &str) -> Result<bool> {
-    let key = match RegKey::open(root, sub_key) {
-        Ok(k) => k,
-        Err(_) => return Ok(false),
-    };
-    key.value_exists(name)
-}
-
 /// 递归删除子树（幂等，不需要已打开的句柄）。
 pub fn delete_tree(root: HKEY, sub_key: &str) -> Result<()> {
     let sub_key = HSTRING::from(sub_key);

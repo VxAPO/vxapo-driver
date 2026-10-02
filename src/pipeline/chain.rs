@@ -74,16 +74,6 @@ impl Chain {
         self.filters.is_empty()
     }
 
-    /// 全链是否全部就地处理。
-    ///
-    /// `filters.iter().all(|f| f.is_in_place())`。调用方（process_audio）据此
-    /// 决定是否可走零拷贝快路径：全链 `true` 时去交织缓冲即最终输出。
-    #[cfg(test)]
-    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-    pub fn is_fully_in_place(&self) -> bool {
-        self.filters.iter().all(|f| f.is_in_place())
-    }
-
     /// 在去交织空间执行 Filter 链。
     ///
     /// `samples[channel][frame]`，纯计算操作：无锁、无分配、无 I/O。

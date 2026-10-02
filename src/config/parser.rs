@@ -30,18 +30,6 @@ impl ConfigParser {
         Self
     }
 
-    /// 解析配置文件（丢弃 spec）。
-    #[cfg(test)]
-    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
-    pub fn parse_file(
-        &self,
-        path: &str,
-        ctx: &DspContext,
-    ) -> Result<Vec<Box<dyn Filter>>, ConfigError> {
-        let (filters, _) = self.parse_file_with_spec(path, ctx)?;
-        Ok(filters)
-    }
-
     /// 解析配置文件，同时产出配置指纹（语义保留，指纹改模型 spec）。
     pub fn parse_file_with_spec(
         &self,
