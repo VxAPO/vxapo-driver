@@ -153,17 +153,16 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
             params: vec![
                 spec(
                     "threshold_db",
-                    -60.0,
+                    -48.0,
                     0.0,
                     1.0,
                     q(compressor.threshold_db),
                     Some("dBFS"),
                 ),
                 spec("ratio", 1.0, 20.0, 0.5, q(compressor.ratio), None),
-                spec("knee_db", 0.0, 12.0, 1.0, q(compressor.knee_db), Some("dB")),
                 spec(
                     "attack_ms",
-                    0.1,
+                    1.0,
                     100.0,
                     0.5,
                     q(compressor.attack_ms),
@@ -177,16 +176,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     q(compressor.release_ms),
                     Some("ms"),
                 ),
-                spec(
-                    "makeup_gain_db",
-                    0.0,
-                    24.0,
-                    0.5,
-                    q(compressor.makeup_gain_db),
-                    Some("dB"),
-                ),
-                spec("wet", 0.0, 1.0, 0.01, q(compressor.wet), None),
-                spec("dry", 0.0, 1.0, 0.01, q(compressor.dry), None),
+                spec("mix", 0.0, 1.0, 0.01, q(compressor.mix), None),
             ],
         },
         EffectSpec {

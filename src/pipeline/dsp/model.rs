@@ -123,8 +123,8 @@ impl EffectConfig {
                 p.dry
             )),
             EffectParams::Compressor(p) => s.push_str(&format!(
-                "th={:.6};ratio={:.6};knee={:.6};att={:.6};rel={:.6};mg={:.6};wet={:.6};dry={:.6}",
-                p.threshold_db, p.ratio, p.knee_db, p.attack_ms, p.release_ms, p.makeup_gain_db, p.wet, p.dry
+                "th={:.6};ratio={:.6};att={:.6};rel={:.6};mix={:.6}",
+                p.threshold_db, p.ratio, p.attack_ms, p.release_ms, p.mix
             )),
             EffectParams::Wide(p) => s.push_str(&format!(
                 "gain={:.6};air={:.6};side_itd={:.6};xover={:.1}",

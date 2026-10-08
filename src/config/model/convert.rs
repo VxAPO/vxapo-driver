@@ -113,10 +113,10 @@ impl FileEffect {
             EffectType::Compressor => &[
                 "threshold_db",
                 "ratio",
-                "knee_db",
                 "attack_ms",
                 "release_ms",
-                "makeup_gain_db",
+                "mix",
+                // —— 旧干湿字段兼容（忽略，由 mix 取代）——
                 "wet",
                 "dry",
                 // —— 旧 maximizer 兼容（忽略）——
@@ -189,9 +189,8 @@ impl FileEffect {
             ("peak_limit_db", self.peak_limit_db.is_some()),
             ("threshold_db", self.threshold_db.is_some()),
             ("ratio", self.ratio.is_some()),
-            ("knee_db", self.knee_db.is_some()),
             ("attack_ms", self.attack_ms.is_some()),
-            ("makeup_gain_db", self.makeup_gain_db.is_some()),
+            ("mix", self.mix.is_some()),
             ("intensity", self.intensity.is_some()),
             ("depth", self.depth.is_some()),
             ("air", self.air.is_some()),
@@ -386,39 +385,27 @@ impl FileEffect {
 
     fn to_compressor(&self, file: &str, idx: usize) -> Result<CompressorParams, ConfigError> {
         let d = CompressorParams::default();
-        // 旧 maximizer / leveler 字段全部忽略，走新默认值。
+        // 旧 knee / makeup / wet / dry 与 maximizer / leveler 字段全部忽略。
         Ok(CompressorParams {
             threshold_db: match self.threshold_db {
-                Some(v) => finite_range(v, -60.0, 0.0, file, idx, "threshold_db")?,
+                Some(v) => finite_range(v, -48.0, 0.0, file, idx, "threshold_db")?,
                 None => d.threshold_db,
             },
             ratio: match self.ratio {
                 Some(v) => finite_range(v, 1.0, 20.0, file, idx, "ratio")?,
                 None => d.ratio,
             },
-            knee_db: match self.knee_db {
-                Some(v) => finite_range(v, 0.0, 12.0, file, idx, "knee_db")?,
-                None => d.knee_db,
-            },
             attack_ms: match self.attack_ms {
-                Some(v) => finite_range(v, 0.1, 100.0, file, idx, "attack_ms")?,
+                Some(v) => finite_range(v, 1.0, 100.0, file, idx, "attack_ms")?,
                 None => d.attack_ms,
             },
             release_ms: match self.release_ms {
                 Some(v) => finite_range(v, 10.0, 1000.0, file, idx, "release_ms")?,
                 None => d.release_ms,
             },
-            makeup_gain_db: match self.makeup_gain_db {
-                Some(v) => finite_range(v, 0.0, 24.0, file, idx, "makeup_gain_db")?,
-                None => d.makeup_gain_db,
-            },
-            wet: match self.wet {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "wet")?,
-                None => d.wet,
-            },
-            dry: match self.dry {
-                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "dry")?,
-                None => d.dry,
+            mix: match self.mix {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "mix")?,
+                None => d.mix,
             },
         })
     }

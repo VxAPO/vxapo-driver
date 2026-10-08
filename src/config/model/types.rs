@@ -129,11 +129,9 @@ pub struct FileEffect {
     #[serde(default)]
     pub ratio: Option<f32>,
     #[serde(default)]
-    pub knee_db: Option<f32>,
-    #[serde(default)]
     pub attack_ms: Option<f32>,
     #[serde(default)]
-    pub makeup_gain_db: Option<f32>,
+    pub mix: Option<f32>,
     #[serde(default)]
     pub intensity: Option<f32>,
     #[serde(default)]

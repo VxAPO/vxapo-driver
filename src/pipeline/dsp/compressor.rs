@@ -1,47 +1,58 @@
 //! Compressor（动态范围压缩器）
 //!
-//! 算法结构（每帧，全声道联动检测）：
-//! 1. 全声道瞬时 RMS → 检测电平（dBFS）；
-//! 2. 静态压缩曲线（含软膝）：超阈值部分按 `1 - 1/ratio` 削减，
-//!    软膝带内二次平滑过渡；
-//! 3. 增益削减在 dB 域平滑：attack（压缩增加）快、release 慢；
-//! 4. 输出 = 输入 × makeup 增益 × 10^(-gr_db/20)，再 Wet/Dry 混合。
+//! 按「合适、好懂、负增益」重做的参数模型，共五个参数：
+//! `threshold_db` / `ratio` / `attack_ms` / `release_ms` / `mix`。
 //!
-//! config 语法（EAPO 风格）：
-//! `Compressor: Threshold -18 dB Ratio 4 Knee 3 dB Attack 10 ms
-//!  Release 100 ms Makeup 6 dB [Wet 1.0 Dry 0.0]`
+//! 算法结构（每帧，全声道联动检测）：
+//! 1. 全声道瞬时功率 → dB 电平；
+//! 2. **峰值包络**（瞬时 attack + 固定速率释放，dB 域表针式）：对稳态低频近似平直，
+//!    旧版「对称单极点功率平均」残留的 2× 频率纹波（低频增益调制、听感发毛的来源）
+//!    不再进入增益；不设侧链高通，低频照常参与触发；
+//! 3. 静态压缩曲线（固定 3dB 软膝，膝宽不作参数——效果只在阈值附近一条缝里可感，
+//!    属于「不知道调了会干嘛」的旋钮）：超阈值部分按 `1 - 1/ratio` 削减；
+//! 4. 增益削减在 dB 域平滑：attack（压缩增加）快、release 慢；
+//! 5. 输出 = 输入 × 10^(-gr/20)，按 `mix` 与原声等比混合（dry = 1 - mix）。
+//!
+//! **负增益保证**：`10^(-gr/20) ≤ 1` 恒成立，混合权重之和恒为 1，
+//! 因此恒有 `|out| ≤ |in|`——电平不抬升，本效果器就不可能制造削波；
+//! 不做 makeup、不做限幅，削波防护靠这一个自然属性。
+//!
+//! config 语法（`[[effects]]` 段）：
+//! `type = "compressor"` + `threshold_db` / `ratio` / `attack_ms` /
+//! `release_ms` / `mix`（旧 `knee_db` / `makeup_gain_db` / `wet` / `dry` 字段忽略）。
 
 use crate::pipeline::dsp::filter::Filter;
 
+/// 固定软膝宽度（dB）。
+const KNEE_DB: f32 = 3.0;
+/// 包络释放速率（dB/s）。折中：40Hz 稳态纹波 ≈0.4dB（速率停在掩蔽区），
+/// 越过阈值后回到阈值约 `(峰值-阈值)/速率` 秒，与球迹 release 同量级。
+const ENVELOPE_RELEASE_DB_PER_S: f32 = 30.0;
+/// 检测电平下限（dBFS）：静音时包络停在这里。
+const LEVEL_FLOOR_DB: f32 = -140.0;
+
 #[derive(Debug, Clone, Copy)]
 pub struct CompressorParams {
-    /// 压缩阈值（dBFS，-60..0）。
+    /// 阈值（dBFS，-48..0）。检测的是峰值包络电平：包络超过它才开始压。
     pub threshold_db: f32,
-    /// 压缩比（1..20，1 = 不压缩）。
+    /// 压缩比（1..20，1 = 不压）：超出阈值的部分按 x:1 压掉。
     pub ratio: f32,
-    /// 软膝宽度（dB，0..12，0 = 硬膝）。
-    pub knee_db: f32,
-    /// 攻击时间（ms，0.1..100）。
+    /// 起音时间（ms，1..100）：压下去的速度。
     pub attack_ms: f32,
-    /// 释放时间（ms，10..1000）。
+    /// 释放时间（ms，10..1000）：松开的速度。
     pub release_ms: f32,
-    /// 补偿增益（dB，0..24）。
-    pub makeup_gain_db: f32,
-    pub wet: f32,
-    pub dry: f32,
+    /// 干湿混合（0..1，1 = 完全压过的信号，0 = 原声）。
+    pub mix: f32,
 }
 
 impl Default for CompressorParams {
     fn default() -> Self {
         Self {
-            threshold_db: -18.0,
-            ratio: 4.0,
-            knee_db: 3.0,
+            threshold_db: -12.0,
+            ratio: 3.0,
             attack_ms: 10.0,
             release_ms: 100.0,
-            makeup_gain_db: 6.0,
-            wet: 1.0,
-            dry: 0.0,
+            mix: 1.0,
         }
     }
 }
@@ -52,13 +63,12 @@ pub struct CompressorFilter {
     channel_indices: Vec<usize>,
     /// 平滑后的增益削减（dB，>=0）。
     gr_db: f32,
-    /// RMS 检测器平滑电平（E[x²]），约 10ms，避免单帧平方波动。
-    det_level: f64,
-    det_alpha: f64,
+    /// 峰值包络（dBFS）。
+    env_db: f32,
+    /// 包络每样本的释放步进（dB）。
+    env_rel_step: f32,
     attack_c: f32,
     release_c: f32,
-    /// makeup 线性增益。
-    makeup: f32,
 }
 
 impl CompressorFilter {
@@ -67,11 +77,10 @@ impl CompressorFilter {
             params,
             channel_indices: Vec::new(),
             gr_db: 0.0,
-            det_level: 0.0,
-            det_alpha: 0.0,
+            env_db: LEVEL_FLOOR_DB,
+            env_rel_step: 0.0,
             attack_c: 0.0,
             release_c: 0.0,
-            makeup: 1.0,
         }
     }
 
@@ -100,14 +109,13 @@ impl Filter for CompressorFilter {
         }
         let sr = sample_rate.max(1) as f32;
         let p = self.params;
-        let attack_s = p.attack_ms.clamp(0.1, 100.0) * 0.001;
+        let attack_s = p.attack_ms.clamp(1.0, 100.0) * 0.001;
         let release_s = p.release_ms.clamp(10.0, 1000.0) * 0.001;
         self.attack_c = 1.0 - (-1.0 / (attack_s * sr)).exp();
         self.release_c = 1.0 - (-1.0 / (release_s * sr)).exp();
-        self.det_alpha = (1.0 - (-1.0 / (0.010 * sr)).exp()) as f64;
-        self.makeup = 10.0f32.powf(p.makeup_gain_db.clamp(0.0, 24.0) / 20.0);
+        self.env_rel_step = ENVELOPE_RELEASE_DB_PER_S / sr;
         self.gr_db = 0.0;
-        self.det_level = 0.0;
+        self.env_db = LEVEL_FLOOR_DB;
         None
     }
 
@@ -121,15 +129,14 @@ impl Filter for CompressorFilter {
             return;
         }
         let frame_count = frame_count.min(samples[first].len());
-        let threshold = self.params.threshold_db.clamp(-60.0, 0.0);
+        let threshold = self.params.threshold_db.clamp(-48.0, 0.0);
         let ratio = self.params.ratio.clamp(1.0, 20.0);
-        let knee = self.params.knee_db.clamp(0.0, 12.0);
-        let makeup = self.makeup;
-        let wet = self.params.wet;
-        let dry = self.params.dry;
+        let mix = self.params.mix.clamp(0.0, 1.0);
+        let dry = 1.0 - mix;
+        let rel_step = self.env_rel_step;
 
         for f in 0..frame_count {
-            // 1) 全声道 RMS 检测器（约 10ms 平滑）→ 检测电平。
+            // 1) 全声道瞬时功率 → dB 电平。
             let mut sum_sq = 0.0f64;
             for k in 0..n {
                 let slot = self.channel_indices[k];
@@ -138,14 +145,19 @@ impl Filter for CompressorFilter {
                     sum_sq += x * x;
                 }
             }
-            let mean = sum_sq / n as f64;
-            self.det_level += self.det_alpha * (mean - self.det_level);
-            let level_db = 10.0 * (self.det_level.max(1e-14)).log10() as f32;
+            let level_db = (10.0 * (sum_sq / n as f64).max(1e-14).log10()) as f32;
 
-            // 2) 静态曲线 → 目标削减。
-            let target_gr = Self::curve(level_db, threshold, ratio, knee);
+            // 2) 峰值包络：瞬时 attack，线性速率释放。
+            self.env_db = if level_db > self.env_db {
+                level_db
+            } else {
+                (self.env_db - rel_step).max(level_db)
+            };
 
-            // 3) dB 域平滑：attack 快、release 慢。
+            // 3) 静态曲线（固定软膝）→ 目标削减。
+            let target_gr = Self::curve(self.env_db, threshold, ratio, KNEE_DB);
+
+            // 4) dB 域平滑：attack 快、release 慢。
             let coeff = if target_gr > self.gr_db {
                 self.attack_c
             } else {
@@ -153,8 +165,8 @@ impl Filter for CompressorFilter {
             };
             self.gr_db += (target_gr - self.gr_db) * coeff;
 
-            // 4) 应用增益（makeup - gr）并干湿混合。
-            let gain = makeup * 10.0f32.powf(-self.gr_db / 20.0);
+            // 5) 负增益应用 + 等比干湿混合（权重和恒为1 → |out| ≤ |in|）。
+            let gain = 10.0f32.powf(-self.gr_db / 20.0);
             for k in 0..n {
                 let slot = self.channel_indices[k];
                 if slot >= samples.len() {
@@ -163,7 +175,7 @@ impl Filter for CompressorFilter {
                 let input = samples[slot][f];
                 let out = input * gain;
                 samples[slot][f] = if out.is_finite() {
-                    out * wet + input * dry
+                    out * mix + input * dry
                 } else {
                     0.0
                 };
@@ -177,7 +189,7 @@ impl Filter for CompressorFilter {
 
     fn reset(&mut self) {
         self.gr_db = 0.0;
-        self.det_level = 0.0;
+        self.env_db = LEVEL_FLOOR_DB;
     }
 }
 
@@ -190,6 +202,16 @@ mod tests {
 
     fn names() -> Vec<String> {
         vec!["L".into(), "R".into()]
+    }
+
+    fn sine(amp: f32, hz: f32, n: usize, sr: f32) -> Vec<Vec<f32>> {
+        let mut s = vec![vec![0.0f32; n]; 2];
+        for i in 0..n {
+            let v = amp * (core::f32::consts::TAU * hz * i as f32 / sr).sin();
+            s[0][i] = v;
+            s[1][i] = v;
+        }
+        s
     }
 
     fn rms_db(samples: &[Vec<f32>], start: usize) -> f32 {
@@ -210,10 +232,9 @@ mod tests {
     }
 
     #[test]
-    fn dry_only_is_passthrough() {
+    fn mix_zero_is_passthrough() {
         let mut f = CompressorFilter::new(CompressorParams {
-            wet: 0.0,
-            dry: 1.0,
+            mix: 0.0,
             ..Default::default()
         });
         f.initialize(48000, &names());
@@ -241,61 +262,45 @@ mod tests {
     }
 
     #[test]
-    fn below_threshold_gets_makeup_only() {
-        // -40dBFS 输入（远低于阈值 -18）：只加 makeup，不压缩。
+    fn below_threshold_is_identity() {
+        // 阈下信号：不压、不抬，恒等透过（负增益模式：gain ≤ 1，无 makeup）。
         let mut f = CompressorFilter::new(CompressorParams {
-            makeup_gain_db: 6.0,
+            threshold_db: -12.0,
             ..Default::default()
         });
         f.initialize(48000, &names());
-        let n = 48_000usize;
-        let amp = 10.0f32.powf(-40.0 / 20.0);
-        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
-        for i in 0..n {
-            let v = amp * (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin();
-            s[0][i] = v;
-            s[1][i] = v;
+        let mut s = sine(10.0f32.powf(-40.0 / 20.0), 220.0, 48_000, 48000.0);
+        let before = s.clone();
+        f.process(&mut s, 48_000);
+        for (a, b) in s.iter().zip(before.iter()) {
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert!((x - y).abs() < 1e-6, "threshold 下必须恒等透过");
+            }
         }
-        f.process(&mut s, n);
-        let out_rms = rms_db(&s, 24_000);
-        let expect = -43.0 + 6.0; // 输入 RMS ≈ -43dB + makeup 6dB
-        assert!(
-            (out_rms - expect).abs() < 0.5,
-            "below threshold: got {out_rms:.1}, expected ≈{expect:.1}"
-        );
+        assert_eq!(f.gr_db, 0.0);
     }
 
     #[test]
     fn above_threshold_is_compressed_by_ratio() {
-        // 稳态超阈值信号：输出超出部分按 1/ratio 保留。
-        // 输入 RMS -6dB，阈值 -18 → over 12dB，ratio 4 → gr 9dB，输出 -15dB（+makeup 6 → -9dB）。
+        // 稳态超阈值信号：峰值包络 ≈ 峰值电平（-6dBFS），阈值 -18 → over 12dB。
+        // ratio 4 → gr 9dB；输入 RMS -9dB → 输出 ≈ -18dB。
         let run = |ratio: f32| -> f32 {
             let mut f = CompressorFilter::new(CompressorParams {
                 threshold_db: -18.0,
                 ratio,
-                knee_db: 0.0,
                 attack_ms: 1.0,
                 release_ms: 10.0,
-                makeup_gain_db: 0.0,
                 ..Default::default()
             });
             f.initialize(48000, &names());
-            let n = 96_000usize;
-            let amp = 10.0f32.powf(-6.0 / 20.0);
-            let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
-            for i in 0..n {
-                let v = amp * (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin();
-                s[0][i] = v;
-                s[1][i] = v;
-            }
-            f.process(&mut s, n);
+            let mut s = sine(10.0f32.powf(-6.0 / 20.0), 220.0, 96_000, 48000.0);
+            f.process(&mut s, 96_000);
             rms_db(&s, 48_000)
         };
         let out = run(4.0);
-        // 输入 RMS ≈ -9dB；over = 9dB；gr = 9×0.75 = 6.75 → 输出 -15.75dB。
         assert!(
-            (out + 15.75).abs() < 0.7,
-            "4:1 compression wrong: got {out:.1}, expected ≈-15.8"
+            (out + 18.0).abs() < 0.7,
+            "4:1 compression wrong: got {out:.1}, expected ≈-18.0"
         );
         // ratio 更高 → 压缩更多、输出更静。
         let out20 = run(20.0);
@@ -307,28 +312,27 @@ mod tests {
 
     #[test]
     fn attack_is_smoothed_no_jump() {
-        // 阶跃超阈值输入：增益削减逐帧逼近，无瞬时跳变。
+        // 阶跃超阈值输入：增益削减逐帧逼近，首2ms 内不得逼近目标（无瞬时跳变）。
         let mut f = CompressorFilter::new(CompressorParams {
             threshold_db: -12.0,
             ratio: 10.0,
-            knee_db: 0.0,
             attack_ms: 50.0,
             release_ms: 200.0,
-            makeup_gain_db: 0.0,
             ..Default::default()
         });
         f.initialize(48000, &names());
-        let n = 4800usize;
-        let mut s = vec![vec![0.0f32; n], vec![0.0f32; n]];
-        for i in 0..n {
-            let v = 0.7 * (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin();
-            s[0][i] = v;
-            s[1][i] = v;
-        }
-        f.process(&mut s, n);
+        let mut s = sine(0.7, 220.0, 4800, 48000.0);
+        f.process(&mut s, 96); // 2ms
+        let early = f.gr_db;
         assert!(
-            f.gr_db > 0.0 && f.gr_db < 5.5,
-            "gr must rise smoothly, got {}",
+            early > 0.0 && early < 1.5,
+            "gr must rise smoothly from0, got {early}"
+        );
+        f.process(&mut s, 4800 - 96);
+        // 目标 ≈8.0dB，50ms 起音走完100ms ≈86.5% → ≈6.9dB。
+        assert!(
+            f.gr_db > early && f.gr_db < 7.5,
+            "gr must keep rising smoothly, got {}",
             f.gr_db
         );
     }
@@ -345,6 +349,121 @@ mod tests {
         assert_eq!(below, 0.0);
         assert!(at > 0.0 && at < above);
         assert!(above > 0.0);
+    }
+
+    #[test]
+    fn bass_envelope_ripple_is_small() {
+        // 低频稳态正弦：峰值包络的释放纹波必须有界。线性释放的纹波 ≈ 速率×周期
+        // （20Hz: 30dB/s×50ms=1.5dB，40Hz:0.75dB），断言留余量；GR 再经球迹平滑
+        // 应更小。旧版对称单极点是2× 频率、±1dB 级的增益调制（低频发毛的来源）。
+        for (hz, env_bound, gr_bound) in [(20.0f32, 2.0f32, 1.2f32), (40.0, 1.2, 0.8)] {
+            let mut f = CompressorFilter::new(CompressorParams {
+                threshold_db: -12.0,
+                ratio: 3.0,
+                attack_ms: 1.0,
+                release_ms: 10.0,
+                ..Default::default()
+            });
+            f.initialize(48000, &names());
+            let n = 48000usize; //1s
+            let mut s = sine(10.0f32.powf(-6.0 / 20.0), hz, n, 48000.0);
+            //1ms 一块推进（process 只从头处理，分块以便在块边界采样状态）。
+            let mut env_min = f32::MAX;
+            let mut env_max = f32::MIN;
+            let mut gr_min = f32::MAX;
+            let mut gr_max = f32::MIN;
+            let step = 48usize;
+            let mut i = 0;
+            while i < n {
+                let take = step.min(n - i);
+                let mut chunk: Vec<Vec<f32>> = s.iter().map(|c| c[i..i + take].to_vec()).collect();
+                f.process(&mut chunk, take);
+                for c in 0..2 {
+                    s[c][i..i + take].copy_from_slice(&chunk[c]);
+                }
+                i += take;
+                if i > 4800 {
+                    // 跳过前100ms建立期
+                    env_min = env_min.min(f.env_db);
+                    env_max = env_max.max(f.env_db);
+                    gr_min = gr_min.min(f.gr_db);
+                    gr_max = gr_max.max(f.gr_db);
+                }
+            }
+            let env_ripple = env_max - env_min;
+            let gr_ripple = gr_max - gr_min;
+            assert!(
+                env_ripple <= env_bound,
+                "{hz}Hz 包络纹波 {env_ripple:.3}dB 超界（≤{env_bound}）"
+            );
+            assert!(
+                gr_ripple <= gr_bound,
+                "{hz}Hz GR 纹波 {gr_ripple:.3}dB 超界（≤{gr_bound}）"
+            );
+        }
+    }
+
+    #[test]
+    fn output_never_exceeds_input() {
+        // 负增益模式的机器证明：激进参数 + 满湿，任何采样 |out| ≤ |in|。
+        let mut f = CompressorFilter::new(CompressorParams {
+            threshold_db: -48.0,
+            ratio: 20.0,
+            attack_ms: 1.0,
+            release_ms: 1000.0,
+            mix: 1.0,
+        });
+        f.initialize(48000, &names());
+        let n = 48000usize;
+        let mut s = vec![vec![0.0f32; n]; 2];
+        for i in 0..n {
+            let t = i as f32 / 48000.0;
+            let v = 0.9 * (core::f32::consts::TAU * 220.0 * t).sin()
+                + 0.3 * (core::f32::consts::TAU * 55.0 * t).sin();
+            s[0][i] = v;
+            s[1][i] = v * 0.7;
+        }
+        let before = s.clone();
+        f.process(&mut s, n);
+        for (a, b) in s.iter().zip(before.iter()) {
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert!(
+                    x.abs() <= y.abs() + 1e-6,
+                    "|out|={:.6} 超过 |in|={:.6}",
+                    x.abs(),
+                    y.abs()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mix_is_exact_blend_of_dry_and_full_wet() {
+        // gr 轨迹与 mix 无关 → mix=0.5 的输出必须是 mix=0 与 mix=1 的精确中点。
+        let input = sine(0.5, 220.0, 4800, 48000.0);
+        let run = |mix: f32| -> Vec<Vec<f32>> {
+            let mut f = CompressorFilter::new(CompressorParams {
+                threshold_db: -18.0,
+                ratio: 4.0,
+                attack_ms: 5.0,
+                release_ms: 50.0,
+                mix,
+            });
+            f.initialize(48000, &names());
+            let mut s = input.clone();
+            f.process(&mut s, 4800);
+            s
+        };
+        let dry = run(0.0);
+        let wet = run(1.0);
+        let half = run(0.5);
+        for c in 0..2 {
+            for i in 0..4800 {
+                let expect = (dry[c][i] + wet[c][i]) * 0.5;
+                assert!((half[c][i] - expect).abs() < 1e-6, "mix=0.5 不是干湿中点");
+                assert!(half[c][i].abs() <= dry[c][i].abs().max(wet[c][i].abs()) + 1e-6);
+            }
+        }
     }
 
     #[test]
@@ -377,13 +496,11 @@ mod tests {
             ..Default::default()
         });
         f.initialize(48000, &names());
-        let mut s = vec![vec![0.0f32; 4800], vec![0.0f32; 4800]];
-        for i in 0..4800 {
-            s[0][i] = 0.8 * (core::f32::consts::TAU * 220.0 * i as f32 / 48000.0).sin();
-        }
+        let mut s = sine(0.8, 220.0, 4800, 48000.0);
         f.process(&mut s, 4800);
         assert!(f.gr_db > 0.0);
         f.reset();
         assert_eq!(f.gr_db, 0.0);
+        assert_eq!(f.env_db, LEVEL_FLOOR_DB);
     }
 }
