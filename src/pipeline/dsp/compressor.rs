@@ -1,30 +1,36 @@
 //! Compressor（动态范围压缩器）
 //!
-//! 按「合适、好懂、负增益」重做的参数模型，共五个参数：
-//! `threshold_db` / `ratio` / `attack_ms` / `release_ms` / `mix`。
+//! 按「合适、好懂、负增益」重做的参数模型，共六个参数：
+//! `threshold_db` / `ratio` / `lift` / `attack_ms` / `release_ms` / `mix`。
 //!
 //! 算法结构（每帧，全声道联动检测）：
 //! 1. 全声道瞬时功率 → dB 电平；
 //! 2. **峰值包络**（瞬时 attack + 固定速率释放，dB 域表针式）：对稳态低频近似平直，
 //!    旧版「对称单极点功率平均」残留的 2× 频率纹波（低频增益调制、听感发毛的来源）
 //!    不再进入增益；不设侧链高通，低频照常参与触发；
-//! 3. 静态压缩曲线（固定 3dB 软膝，膝宽不作参数——效果只在阈值附近一条缝里可感，
-//!    属于「不知道调了会干嘛」的旋钮）：超阈值部分按 `1 - 1/ratio` 削减；
-//! 4. 增益削减在 dB 域平滑：attack（压缩增加）快、release 慢；
+//! 3. 静态曲线（固定 3dB 软膝，膝宽不作参数——效果只在阈值附近一条缝里可感，
+//!    属于「不知道调了会干嘛」的旋钮）：阈值右侧按 `1 - 1/ratio` 削减（压大），
+//!    阈值左侧按 `lift` 朝阈值抬升（放小，抬升量 = `u × min(阈值-电平, 24dB)`，
+//!    恒不过阈值）；膝区用端点值/斜率匹配的 cubic Hermite 过渡，
+//!    `lift = 0` 时**逐位退化**为原 x² 插值，默认行为不变；
+//! 4. 目标增益在 dB 域平滑：attack（压缩增加）快、release 慢；
+//!    抬升生效走 release（慢、平滑）、退出走 attack（快、不漏瞬态）；
 //! 5. 输出 = 输入 × 10^(-gr/20)，按 `mix` 与原声等比混合（dry = 1 - mix）。
 //!
-//! **负增益保证**：`10^(-gr/20) ≤ 1` 恒成立，混合权重之和恒为 1，
-//! 因此恒有 `|out| ≤ |in|`——电平不抬升，本效果器就不可能制造削波；
-//! 不做 makeup、不做限幅，削波防护靠这一个自然属性。
+//! **不削波的自然保证**：lift=0 时 `10^(-gr/20) ≤ 1` 恒成立、混合权重和恒为 1，
+//! 恒有 `|out| ≤ |in|`；lift>0 时包络恒 ≥ 瞬时电平，抬升量按「阈值-包络」封顶，
+//! 输出电平恒 ≤ 阈值（≤0dBFS）。两种情况都不需要 makeup、不需要限幅。
 //!
 //! config 语法（`[[effects]]` 段）：
-//! `type = "compressor"` + `threshold_db` / `ratio` / `attack_ms` /
+//! `type = "compressor"` + `threshold_db` / `ratio` / `lift` / `attack_ms` /
 //! `release_ms` / `mix`（旧 `knee_db` / `makeup_gain_db` / `wet` / `dry` 字段忽略）。
 
 use crate::pipeline::dsp::filter::Filter;
 
 /// 固定软膝宽度（dB）。
 const KNEE_DB: f32 = 3.0;
+/// 抬升量的电平差上限（dB）：再深的安静部分也不再多抬。
+const LIFT_CAP_DB: f32 = 24.0;
 /// 包络释放速率（dB/s）。折中：40Hz 稳态纹波 ≈0.4dB（速率停在掩蔽区），
 /// 越过阈值后回到阈值约 `(峰值-阈值)/速率` 秒，与球迹 release 同量级。
 const ENVELOPE_RELEASE_DB_PER_S: f32 = 30.0;
@@ -37,9 +43,12 @@ pub struct CompressorParams {
     pub threshold_db: f32,
     /// 压缩比（1..20，1 = 不压）：超出阈值的部分按 x:1 压掉。
     pub ratio: f32,
+    /// 抬升（0..1，0 = 纯压大）：阈值以下的安静部分朝阈值抬
+    /// `u × min(阈值-电平, 24dB)`，恒不过阈值。
+    pub lift: f32,
     /// 起音时间（ms，1..100）：压下去的速度。
     pub attack_ms: f32,
-    /// 释放时间（ms，10..1000）：松开的速度。
+    /// 释放时间（ms，10..1000）：松开的速度（抬升生效也按这个速度）。
     pub release_ms: f32,
     /// 干湿混合（0..1，1 = 完全压过的信号，0 = 原声）。
     pub mix: f32,
@@ -50,6 +59,7 @@ impl Default for CompressorParams {
         Self {
             threshold_db: -12.0,
             ratio: 3.0,
+            lift: 0.0,
             attack_ms: 10.0,
             release_ms: 100.0,
             mix: 1.0,
@@ -61,7 +71,7 @@ impl Default for CompressorParams {
 pub struct CompressorFilter {
     params: CompressorParams,
     channel_indices: Vec<usize>,
-    /// 平滑后的增益削减（dB，>=0）。
+    /// 平滑后的目标增益改动（dB，可为负=抬升）。
     gr_db: f32,
     /// 峰值包络（dBFS）。
     env_db: f32,
@@ -84,20 +94,35 @@ impl CompressorFilter {
         }
     }
 
-    /// 静态压缩曲线：给定检测电平返回增益削减（dB，>=0）。
+    /// 静态曲线：给定检测电平返回目标增益改动（dB，可为负=抬升）。
     #[inline]
-    fn curve(level_db: f32, threshold_db: f32, ratio: f32, knee_db: f32) -> f32 {
+    fn curve(level_db: f32, threshold_db: f32, ratio: f32, knee_db: f32, lift: f32) -> f32 {
         let over = level_db - threshold_db;
         let half = knee_db * 0.5;
         let slope = 1.0 - 1.0 / ratio.max(1.0);
         if over <= -half {
-            0.0
+            // 阈下：抬升 = u × min(阈值-电平, 上限)，恒不过阈值。
+            if lift <= 0.0 {
+                0.0
+            } else {
+                -lift * (-over).min(LIFT_CAP_DB)
+            }
         } else if over >= half {
             over * slope
         } else {
-            // 软膝：二次插值从 0 平滑到 knee/2 处的压缩量。
+            // 膝区：cubic Hermite——两端值取左右分支在边缘的取值、两端斜率与左右
+            // 分支一致（C1 连续）。lift=0 时退化为原 x² 插值（h'(0)=0、h'(1)=2）。
             let x = (over + half) / knee_db.max(1e-3);
-            x * x * half * slope
+            let xx = x * x;
+            let xxx = xx * x;
+            let v0 = -lift * half;
+            let v1 = half * slope;
+            let n0 = lift * knee_db;
+            let n1 = slope * knee_db;
+            (2.0 * xxx - 3.0 * xx + 1.0) * v0
+                + (xxx - 2.0 * xx + x) * n0
+                + (-2.0 * xxx + 3.0 * xx) * v1
+                + (xxx - xx) * n1
         }
     }
 }
@@ -131,6 +156,7 @@ impl Filter for CompressorFilter {
         let frame_count = frame_count.min(samples[first].len());
         let threshold = self.params.threshold_db.clamp(-48.0, 0.0);
         let ratio = self.params.ratio.clamp(1.0, 20.0);
+        let lift = self.params.lift.clamp(0.0, 1.0);
         let mix = self.params.mix.clamp(0.0, 1.0);
         let dry = 1.0 - mix;
         let rel_step = self.env_rel_step;
@@ -155,7 +181,7 @@ impl Filter for CompressorFilter {
             };
 
             // 3) 静态曲线（固定软膝）→ 目标削减。
-            let target_gr = Self::curve(self.env_db, threshold, ratio, KNEE_DB);
+            let target_gr = Self::curve(self.env_db, threshold, ratio, KNEE_DB, lift);
 
             // 4) dB 域平滑：attack 快、release 慢。
             let coeff = if target_gr > self.gr_db {
@@ -343,12 +369,91 @@ mod tests {
         let th = -18.0f32;
         let ratio = 4.0f32;
         let knee = 6.0f32;
-        let below = CompressorFilter::curve(-18.0 - 3.1, th, ratio, knee);
-        let at = CompressorFilter::curve(-18.0, th, ratio, knee);
-        let above = CompressorFilter::curve(-18.0 + 3.1, th, ratio, knee);
+        let below = CompressorFilter::curve(-18.0 - 3.1, th, ratio, knee, 0.0);
+        let at = CompressorFilter::curve(-18.0, th, ratio, knee, 0.0);
+        let above = CompressorFilter::curve(-18.0 + 3.1, th, ratio, knee, 0.0);
         assert_eq!(below, 0.0);
         assert!(at > 0.0 && at < above);
         assert!(above > 0.0);
+    }
+
+    #[test]
+    fn knee_with_lift_is_value_continuous() {
+        // 膝区密集采样：lift>0 时值必须连续（无台阶）；
+        // lift=0 必须与解析式 x²×half×slope 逐点一致（默认行为逐位退化校验）。
+        let th = -12.0f32;
+        let ratio = 3.0f32;
+        let knee = 3.0f32;
+        let mut prev = CompressorFilter::curve(th - knee, th, ratio, knee, 0.8);
+        for i in 1..=600 {
+            let level = th - knee + (i as f32) * (knee / 600.0);
+            let v = CompressorFilter::curve(level, th, ratio, knee, 0.8);
+            assert!(
+                (v - prev).abs() < 0.05,
+                "膝区值不连续 @level={level}: {prev} → {v}"
+            );
+            prev = v;
+        }
+        for i in 0..=60 {
+            let over = -knee * 0.5 + (i as f32) * (knee / 60.0);
+            let x = (over + knee * 0.5) / knee;
+            let expect = x * x * (knee * 0.5) * (1.0 - 1.0 / ratio);
+            let got = CompressorFilter::curve(th + over, th, ratio, knee, 0.0);
+            assert!(
+                (got - expect).abs() < 1e-5,
+                "lift=0 未退化为 x² 插值 @over={over}: got {got}, expect {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn lift_boosts_quiet_toward_threshold() {
+        // 阈下 -30dBFS 正弦、u=0.5：抬升 = 0.5 × (-12 - (-30)) = 9dB。
+        let mut f = CompressorFilter::new(CompressorParams {
+            threshold_db: -12.0,
+            ratio: 3.0,
+            lift: 0.5,
+            attack_ms: 1.0,
+            release_ms: 50.0,
+            mix: 1.0,
+        });
+        f.initialize(48000, &names());
+        let mut s = sine(10.0f32.powf(-30.0 / 20.0), 220.0, 48_000, 48000.0);
+        let in_rms = rms_db(&s, 24_000);
+        f.process(&mut s, 48_000);
+        let out = rms_db(&s, 24_000);
+        assert!(
+            (out - (in_rms + 9.0)).abs() < 0.5,
+            "lift=0.5 应抬升 9dB: in {in_rms:.1} → out {out:.1}"
+        );
+        assert!(f.gr_db < -8.0, "gr 应为负（抬升），got {}", f.gr_db);
+    }
+
+    #[test]
+    fn lift_never_exceeds_threshold() {
+        // u=1、电平在阈下 4dB：抬升 4dB 后恰好回到阈值，输出峰值不得越过阈值线。
+        let th_lin = 10.0f32.powf(-12.0 / 20.0);
+        let mut f = CompressorFilter::new(CompressorParams {
+            threshold_db: -12.0,
+            ratio: 3.0,
+            lift: 1.0,
+            attack_ms: 1.0,
+            release_ms: 50.0,
+            mix: 1.0,
+        });
+        f.initialize(48000, &names());
+        let mut s = sine(10.0f32.powf(-16.0 / 20.0), 220.0, 48_000, 48000.0);
+        f.process(&mut s, 48_000);
+        let peak = s.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            peak <= th_lin * 1.03,
+            "lift 后峰值 {peak:.4} 越过阈值线 {th_lin:.4}"
+        );
+        let out = rms_db(&s, 24_000);
+        assert!(
+            (out - (-15.0)).abs() < 0.5,
+            "输入 RMS ≈-19dB、抬升 4dB → 期望 ≈-15dB，实测 {out:.1}"
+        );
     }
 
     #[test]
@@ -409,6 +514,7 @@ mod tests {
         let mut f = CompressorFilter::new(CompressorParams {
             threshold_db: -48.0,
             ratio: 20.0,
+            lift: 0.0,
             attack_ms: 1.0,
             release_ms: 1000.0,
             mix: 1.0,
@@ -445,6 +551,7 @@ mod tests {
             let mut f = CompressorFilter::new(CompressorParams {
                 threshold_db: -18.0,
                 ratio: 4.0,
+                lift: 0.0,
                 attack_ms: 5.0,
                 release_ms: 50.0,
                 mix,

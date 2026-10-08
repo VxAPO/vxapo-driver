@@ -160,6 +160,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     Some("dBFS"),
                 ),
                 spec("ratio", 1.0, 20.0, 0.5, q(compressor.ratio), None),
+                spec("lift", 0.0, 1.0, 0.01, q(compressor.lift), None),
                 spec(
                     "attack_ms",
                     1.0,

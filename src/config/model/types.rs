@@ -129,6 +129,8 @@ pub struct FileEffect {
     #[serde(default)]
     pub ratio: Option<f32>,
     #[serde(default)]
+    pub lift: Option<f32>,
+    #[serde(default)]
     pub attack_ms: Option<f32>,
     #[serde(default)]
     pub mix: Option<f32>,

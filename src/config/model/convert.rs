@@ -113,6 +113,7 @@ impl FileEffect {
             EffectType::Compressor => &[
                 "threshold_db",
                 "ratio",
+                "lift",
                 "attack_ms",
                 "release_ms",
                 "mix",
@@ -189,6 +190,7 @@ impl FileEffect {
             ("peak_limit_db", self.peak_limit_db.is_some()),
             ("threshold_db", self.threshold_db.is_some()),
             ("ratio", self.ratio.is_some()),
+            ("lift", self.lift.is_some()),
             ("attack_ms", self.attack_ms.is_some()),
             ("mix", self.mix.is_some()),
             ("intensity", self.intensity.is_some()),
@@ -394,6 +396,10 @@ impl FileEffect {
             ratio: match self.ratio {
                 Some(v) => finite_range(v, 1.0, 20.0, file, idx, "ratio")?,
                 None => d.ratio,
+            },
+            lift: match self.lift {
+                Some(v) => finite_range(v, 0.0, 1.0, file, idx, "lift")?,
+                None => d.lift,
             },
             attack_ms: match self.attack_ms {
                 Some(v) => finite_range(v, 1.0, 100.0, file, idx, "attack_ms")?,
