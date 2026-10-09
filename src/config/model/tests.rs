@@ -349,7 +349,7 @@ fn compressor_range_rejected() {
 fn legacy_maximizer_and_leveler_map_to_compressor() {
     // 旧 maximizer / leveler 段落：类型映射为 compressor，旧参数忽略。
     let model = convert(
-        "[[effects]]\ntype = \"maximizer\"\ngain_boost_db = 6.0\nmax_output_db = -0.3\nrelease_ms = 10.0\ntarget = 0.32\nlookahead_ms = 0.75\ndither = \"shaped\"\n",
+        "[[effects]]\ntype = \"maximizer\"\ngain_boost_db = 6.0\nmax_output_db = -0.3\ntarget = 0.32\nlookahead_ms = 0.75\ndither = \"shaped\"\n",
     )
     .unwrap();
     assert_eq!(model.effects.len(), 1);
@@ -372,6 +372,13 @@ fn legacy_maximizer_and_leveler_map_to_compressor() {
         }
         _ => panic!("expected compressor"),
     }
+}
+
+#[test]
+fn release_ms_rejected() {
+    // 释放固定自动：release_ms 参数已整体移除，配置中出现即按未知键拒绝。
+    let err = convert("[[effects]]\ntype = \"compressor\"\nrelease_ms = 100.0\n").unwrap_err();
+    assert!(err.to_string().contains("unknown key 'release_ms'"));
 }
 
 #[test]

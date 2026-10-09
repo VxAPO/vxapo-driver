@@ -110,12 +110,12 @@ impl FileEffect {
                 "dry",
             ][..],
             // 旧 maximizer / leveler 字段一并允许（旧配置映射时忽略）。
+            // `release_ms` 不在其列：释放固定自动，该键未声明 → 按未知键拒绝。
             EffectType::Compressor => &[
                 "threshold_db",
                 "ratio",
                 "lift",
                 "attack_ms",
-                "release_ms",
                 "mix",
                 // —— 旧干湿字段兼容（忽略，由 mix 取代）——
                 "wet",
@@ -178,7 +178,6 @@ impl FileEffect {
             ("low_cut_hz", self.low_cut_hz.is_some()),
             ("gain_boost_db", self.gain_boost_db.is_some()),
             ("max_output_db", self.max_output_db.is_some()),
-            ("release_ms", self.release_ms.is_some()),
             ("target", self.target.is_some()),
             ("lookahead_ms", self.lookahead_ms.is_some()),
             ("dither", self.dither.is_some()),
@@ -405,12 +404,7 @@ impl FileEffect {
                 Some(v) => finite_range(v, 1.0, 100.0, file, idx, "attack_ms")?,
                 None => d.attack_ms,
             },
-            release_ms: match self.release_ms {
-                // 0 = 自动（双极点）；手动值维持10ms下限（波形跟随失真区）。
-                Some(v) if v == 0.0 => 0.0,
-                Some(v) => finite_range(v, 10.0, 1000.0, file, idx, "release_ms")?,
-                None => d.release_ms,
-            },
+            // release_ms 已移除：释放固定自动（双极点），键未声明即拒绝。
             mix: match self.mix {
                 Some(v) => finite_range(v, 0.0, 1.0, file, idx, "mix")?,
                 None => d.mix,

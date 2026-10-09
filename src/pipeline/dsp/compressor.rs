@@ -1,7 +1,7 @@
 //! Compressor（动态范围压缩器）
 //!
-//! 按「合适、好懂、负增益」重做的参数模型，共六个参数：
-//! `threshold_db` / `ratio` / `lift` / `attack_ms` / `release_ms` / `mix`。
+//! 按「合适、好懂、负增益」重做的参数模型，共五个参数：
+//! `threshold_db` / `ratio` / `lift` / `attack_ms` / `mix`。
 //!
 //! 算法结构（每帧，全声道联动检测）：
 //! 1. 全声道瞬时功率 → dB 电平；
@@ -15,9 +15,8 @@
 //!    `lift = 0` 时**逐位退化**为原 x² 插值，默认行为不变；
 //! 4. 目标增益在 dB 域平滑：attack（压缩增加）快、release 慢；
 //!    抬升生效走 release（慢、平滑）、退出走 attack（快、不漏瞬态）；
-//!    **释放默认自动**（`release_ms = 0`）：双极点程序依赖释放（100ms 头部 +
-//!    600ms 尾巴按 0.3/0.7 混合），瞬态松得快、持续不泵浦，无需手调；
-//!    指定毫秒数（10..1000）则为手动单极点；
+//!    **释放固定自动**：双极点程序依赖释放（100ms 头部 + 600ms 尾巴按 0.3/0.7
+//!    混合），瞬态松得快、持续不泵浦，无需手调，也不存在手动档；
 //! 5. 输出 = 输入 × 10^(-gr/20)，按 `mix` 与原声等比混合（dry = 1 - mix）。
 //!
 //! **不削波的自然保证**：lift=0 时 `10^(-gr/20) ≤ 1` 恒成立、混合权重和恒为 1，
@@ -26,7 +25,8 @@
 //!
 //! config 语法（`[[effects]]` 段）：
 //! `type = "compressor"` + `threshold_db` / `ratio` / `lift` / `attack_ms` /
-//! `release_ms` / `mix`（旧 `knee_db` / `makeup_gain_db` / `wet` / `dry` 字段忽略）。
+//! `mix`（旧 `wet` / `dry` 字段忽略；`release_ms` 已移除——释放固定自动，
+//! 该键未声明，配置中出现会按未知键拒绝）。
 
 use crate::pipeline::dsp::filter::Filter;
 
@@ -34,7 +34,7 @@ use crate::pipeline::dsp::filter::Filter;
 const KNEE_DB: f32 = 3.0;
 /// 抬升量的电平差上限（dB）：再深的安静部分也不再多抬。
 const LIFT_CAP_DB: f32 = 24.0;
-/// 自动释放（`release_ms = 0`）的快极点时常数（ms）：给回弹的「头部」，瞬态段快速松开。
+/// 自动释放的快极点时常数（ms）：给回弹的「头部」，瞬态段快速松开。
 const AUTO_RELEASE_FAST_MS: f32 = 100.0;
 /// 自动释放的慢极点时常数（ms）：给平缓的「尾巴」，持续段不泵浦（光学式两段手感）。
 const AUTO_RELEASE_SLOW_MS: f32 = 600.0;
@@ -58,10 +58,6 @@ pub struct CompressorParams {
     pub lift: f32,
     /// 起音时间（ms，1..100）：压下去的速度。
     pub attack_ms: f32,
-    /// 释放时间（ms，0..1000）：松开的速度（抬升生效也按这个速度）。
-    /// **0 = 自动**（默认）：双极点程序依赖释放——快极点100ms给回弹头部、
-    /// 慢极点600ms给平缓尾巴，按0.3/0.7混合，瞬态松得快、持续不泵浦，无需手调。
-    pub release_ms: f32,
     /// 干湿混合（0..1，1 = 完全压过的信号，0 = 原声）。
     pub mix: f32,
 }
@@ -73,7 +69,6 @@ impl Default for CompressorParams {
             ratio: 3.0,
             lift: 0.0,
             attack_ms: 10.0,
-            release_ms: 0.0,
             mix: 1.0,
         }
     }
@@ -83,7 +78,7 @@ impl Default for CompressorParams {
 pub struct CompressorFilter {
     params: CompressorParams,
     channel_indices: Vec<usize>,
-    /// 平滑后的目标增益改动（dB，可为负=抬升）。自动释放时为双极点的加权混合。
+    /// 平滑后的目标增益改动（dB，可为负=抬升）：双极点的加权混合。
     gr_db: f32,
     /// 自动释放的快极点状态（dB）。
     gr_fast: f32,
@@ -94,11 +89,8 @@ pub struct CompressorFilter {
     /// 包络每样本的释放步进（dB）。
     env_rel_step: f32,
     attack_c: f32,
-    release_c: f32,
     release_fast_c: f32,
     release_slow_c: f32,
-    /// `release_ms = 0` → 双极点自动释放。
-    auto_release: bool,
 }
 
 impl CompressorFilter {
@@ -112,10 +104,8 @@ impl CompressorFilter {
             env_db: LEVEL_FLOOR_DB,
             env_rel_step: 0.0,
             attack_c: 0.0,
-            release_c: 0.0,
             release_fast_c: 0.0,
             release_slow_c: 0.0,
-            auto_release: false,
         }
     }
 
@@ -161,17 +151,11 @@ impl Filter for CompressorFilter {
         let p = self.params;
         let attack_s = p.attack_ms.clamp(1.0, 100.0) * 0.001;
         self.attack_c = 1.0 - (-1.0 / (attack_s * sr)).exp();
-        self.auto_release = p.release_ms <= 0.0;
-        if self.auto_release {
-            // 双极点自动释放：100ms 头部 + 600ms 尾巴，按固定权重混合。
-            let fast = AUTO_RELEASE_FAST_MS * 0.001;
-            let slow = AUTO_RELEASE_SLOW_MS * 0.001;
-            self.release_fast_c = 1.0 - (-1.0 / (fast * sr)).exp();
-            self.release_slow_c = 1.0 - (-1.0 / (slow * sr)).exp();
-        } else {
-            let release_s = p.release_ms.clamp(10.0, 1000.0) * 0.001;
-            self.release_c = 1.0 - (-1.0 / (release_s * sr)).exp();
-        }
+        // 双极点自动释放：100ms 头部 + 600ms 尾巴，按固定权重混合。
+        let fast = AUTO_RELEASE_FAST_MS * 0.001;
+        let slow = AUTO_RELEASE_SLOW_MS * 0.001;
+        self.release_fast_c = 1.0 - (-1.0 / (fast * sr)).exp();
+        self.release_slow_c = 1.0 - (-1.0 / (slow * sr)).exp();
         self.env_rel_step = ENVELOPE_RELEASE_DB_PER_S / sr;
         self.gr_db = 0.0;
         self.gr_fast = 0.0;
@@ -220,32 +204,21 @@ impl Filter for CompressorFilter {
             let target_gr = Self::curve(self.env_db, threshold, ratio, KNEE_DB, lift);
 
             // 4) dB 域平滑：attack 快、release 慢。
-            //    自动释放（release_ms=0）：双极点并行——快/慢极点各自朝目标平滑，
-            //    输出按 0.3/0.7 混合（头部回弹快、尾巴回落缓，无切换点）；
-            //    手动释放：单极点，行为与既往完全一致。
-            if self.auto_release {
-                let cf = if target_gr > self.gr_fast {
-                    self.attack_c
-                } else {
-                    self.release_fast_c
-                };
-                let cs = if target_gr > self.gr_slow {
-                    self.attack_c
-                } else {
-                    self.release_slow_c
-                };
-                self.gr_fast += (target_gr - self.gr_fast) * cf;
-                self.gr_slow += (target_gr - self.gr_slow) * cs;
-                self.gr_db =
-                    AUTO_RELEASE_FAST_W * self.gr_fast + AUTO_RELEASE_SLOW_W * self.gr_slow;
+            //    双极点并行——快/慢极点各自朝目标平滑，输出按 0.3/0.7 混合
+            //    （头部回弹快、尾巴回落缓，无切换点）。
+            let cf = if target_gr > self.gr_fast {
+                self.attack_c
             } else {
-                let coeff = if target_gr > self.gr_db {
-                    self.attack_c
-                } else {
-                    self.release_c
-                };
-                self.gr_db += (target_gr - self.gr_db) * coeff;
-            }
+                self.release_fast_c
+            };
+            let cs = if target_gr > self.gr_slow {
+                self.attack_c
+            } else {
+                self.release_slow_c
+            };
+            self.gr_fast += (target_gr - self.gr_fast) * cf;
+            self.gr_slow += (target_gr - self.gr_slow) * cs;
+            self.gr_db = AUTO_RELEASE_FAST_W * self.gr_fast + AUTO_RELEASE_SLOW_W * self.gr_slow;
 
             // 5) 增益应用 + 等比干湿混合（权重和恒为1；lift=0 时 |out| ≤ |in|）。
             let gain = 10.0f32.powf(-self.gr_db / 20.0);
@@ -373,7 +346,6 @@ mod tests {
                 threshold_db: -18.0,
                 ratio,
                 attack_ms: 1.0,
-                release_ms: 10.0,
                 ..Default::default()
             });
             f.initialize(48000, &names());
@@ -401,7 +373,6 @@ mod tests {
             threshold_db: -12.0,
             ratio: 10.0,
             attack_ms: 50.0,
-            release_ms: 200.0,
             ..Default::default()
         });
         f.initialize(48000, &names());
@@ -467,19 +438,19 @@ mod tests {
     #[test]
     fn lift_boosts_quiet_toward_threshold() {
         // 阈下 -30dBFS 正弦、u=0.5：抬升 = 0.5 × (-12 - (-30)) = 9dB。
+        // 抬升生效走 release——自动释放慢极点 τ=600ms，3s 才充分收敛。
         let mut f = CompressorFilter::new(CompressorParams {
             threshold_db: -12.0,
             ratio: 3.0,
             lift: 0.5,
             attack_ms: 1.0,
-            release_ms: 50.0,
             mix: 1.0,
         });
         f.initialize(48000, &names());
-        let mut s = sine(10.0f32.powf(-30.0 / 20.0), 220.0, 48_000, 48000.0);
-        let in_rms = rms_db(&s, 24_000);
-        f.process(&mut s, 48_000);
-        let out = rms_db(&s, 24_000);
+        let mut s = sine(10.0f32.powf(-30.0 / 20.0), 220.0, 144_000, 48000.0);
+        let in_rms = rms_db(&s, 72_000);
+        f.process(&mut s, 144_000);
+        let out = rms_db(&s, 72_000);
         assert!(
             (out - (in_rms + 9.0)).abs() < 0.5,
             "lift=0.5 应抬升 9dB: in {in_rms:.1} → out {out:.1}"
@@ -490,24 +461,24 @@ mod tests {
     #[test]
     fn lift_never_exceeds_threshold() {
         // u=1、电平在阈下 4dB：抬升 4dB 后恰好回到阈值，输出峰值不得越过阈值线。
+        // 同上：自动释放收敛需要时间，3s 后测稳态。
         let th_lin = 10.0f32.powf(-12.0 / 20.0);
         let mut f = CompressorFilter::new(CompressorParams {
             threshold_db: -12.0,
             ratio: 3.0,
             lift: 1.0,
             attack_ms: 1.0,
-            release_ms: 50.0,
             mix: 1.0,
         });
         f.initialize(48000, &names());
-        let mut s = sine(10.0f32.powf(-16.0 / 20.0), 220.0, 48_000, 48000.0);
-        f.process(&mut s, 48_000);
+        let mut s = sine(10.0f32.powf(-16.0 / 20.0), 220.0, 144_000, 48000.0);
+        f.process(&mut s, 144_000);
         let peak = s.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(
             peak <= th_lin * 1.03,
             "lift 后峰值 {peak:.4} 越过阈值线 {th_lin:.4}"
         );
-        let out = rms_db(&s, 24_000);
+        let out = rms_db(&s, 72_000);
         assert!(
             (out - (-15.0)).abs() < 0.5,
             "输入 RMS ≈-19dB、抬升 4dB → 期望 ≈-15dB，实测 {out:.1}"
@@ -524,7 +495,6 @@ mod tests {
                 threshold_db: -12.0,
                 ratio: 3.0,
                 attack_ms: 1.0,
-                release_ms: 10.0,
                 ..Default::default()
             });
             f.initialize(48000, &names());
@@ -574,7 +544,6 @@ mod tests {
             ratio: 20.0,
             lift: 0.0,
             attack_ms: 1.0,
-            release_ms: 1000.0,
             mix: 1.0,
         });
         f.initialize(48000, &names());
@@ -611,7 +580,6 @@ mod tests {
                 ratio: 4.0,
                 lift: 0.0,
                 attack_ms: 5.0,
-                release_ms: 50.0,
                 mix,
             });
             f.initialize(48000, &names());
@@ -672,53 +640,48 @@ mod tests {
     }
 
     #[test]
-    fn release_defaults_to_auto() {
-        // 默认 release_ms = 0 → 双极点自动释放。
-        assert_eq!(CompressorParams::default().release_ms, 0.0);
+    fn auto_release_is_always_dual_pole() {
+        // 释放固定自动：初始化后必为双极点（快极点系数 > 慢极点系数 > 0），
+        // 不存在手动单极点模式。
         let mut f = CompressorFilter::new(CompressorParams::default());
         f.initialize(48000, &names());
-        assert!(f.auto_release);
-        let mut manual = CompressorFilter::new(CompressorParams {
-            release_ms: 100.0,
-            ..Default::default()
-        });
-        manual.initialize(48000, &names());
-        assert!(!manual.auto_release);
+        assert!(f.release_fast_c > f.release_slow_c);
+        assert!(f.release_slow_c > 0.0);
     }
 
     #[test]
-    fn auto_release_sits_between_manual_extremes() {
-        // 同一信号（2s 过阈值建立 GR → 骤降 400ms），自动释放的恢复量必须
-        // 严格介于手动100ms（快）与手动600ms（慢）之间：有头部、也有尾巴。
-        let run = |release_ms: f32| -> (f32, f32) {
-            let mut f = CompressorFilter::new(CompressorParams {
-                threshold_db: -12.0,
-                ratio: 4.0,
-                lift: 0.0,
-                attack_ms: 1.0,
-                release_ms,
-                mix: 1.0,
-            });
-            f.initialize(48000, &names());
-            let mut burst = sine(0.5, 220.0, 96_000, 48000.0); //2s
-            f.process(&mut burst, 96_000);
-            let gr_peak = f.gr_db;
-            assert!(gr_peak > 1.0, "burst 应建立 GR，got {gr_peak}");
-            let mut dip = sine(0.001, 220.0, 19_200, 48000.0); //400ms
-            f.process(&mut dip, 19_200);
-            (gr_peak, f.gr_db)
-        };
-        let (peak100, end100) = run(100.0);
-        let (peak600, end600) = run(600.0);
-        let (peakAuto, endAuto) = run(0.0);
-        // 建立的 GR 应一致（释放不参与起音段）。
-        assert!((peak100 - peak600).abs() < 0.05 && (peak100 - peakAuto).abs() < 0.05);
-        let rec100 = peak100 - end100;
-        let rec600 = peak600 - end600;
-        let rec_auto = peakAuto - endAuto;
+    fn auto_release_has_head_and_tail() {
+        // 同一信号（2s 过阈值建立 GR → 骤降 400ms）：双极点结构必须可检出——
+        // 快极点（头部）比慢极点（尾巴）释放得多，输出严格介于两者之间。
+        let mut f = CompressorFilter::new(CompressorParams {
+            threshold_db: -12.0,
+            ratio: 4.0,
+            lift: 0.0,
+            attack_ms: 1.0,
+            mix: 1.0,
+        });
+        f.initialize(48000, &names());
+        let mut burst = sine(0.5, 220.0, 96_000, 48000.0); //2s
+        f.process(&mut burst, 96_000);
+        let gr_peak = f.gr_db;
+        assert!(gr_peak > 1.0, "burst 应建立 GR，got {gr_peak}");
+        let mut dip = sine(0.001, 220.0, 19_200, 48000.0); //400ms
+        f.process(&mut dip, 19_200);
+        // 头部已明显松开、尾巴还挂着，输出按 0.3/0.7 落在两者之间。
         assert!(
-            rec600 < rec_auto && rec_auto < rec100,
-            "自动释放恢复量应介于600/100之间：600={rec600:.2}dB auto={rec_auto:.2}dB100={rec100:.2}dB"
+            f.gr_fast < f.gr_slow,
+            "快极点应比慢极点多释放：fast={:.3} slow={:.3}",
+            f.gr_fast,
+            f.gr_slow
         );
+        assert!(
+            f.gr_fast < f.gr_db && f.gr_db < f.gr_slow,
+            "输出应严格介于两极点之间：fast={:.3} db={:.3} slow={:.3}",
+            f.gr_fast,
+            f.gr_db,
+            f.gr_slow
+        );
+        let rec = gr_peak - f.gr_db;
+        assert!(rec > 0.2, "400ms 内应有实质释放，got {rec:.3}dB");
     }
 }

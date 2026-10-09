@@ -169,14 +169,6 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                     q(compressor.attack_ms),
                     Some("ms"),
                 ),
-                spec(
-                    "release_ms",
-                    0.0,
-                    1000.0,
-                    10.0,
-                    q(compressor.release_ms),
-                    Some("ms"),
-                ),
                 spec("mix", 0.0, 1.0, 0.01, q(compressor.mix), None),
             ],
         },
@@ -266,7 +258,7 @@ mod tests {
         assert_eq!(find("reverb", "decay"), q(reverb.decay));
         let compressor = CompressorParams::default();
         assert_eq!(find("compressor", "ratio"), q(compressor.ratio));
-        assert_eq!(find("compressor", "release_ms"), q(compressor.release_ms));
+        assert_eq!(find("compressor", "attack_ms"), q(compressor.attack_ms));
         // loudness 无 Default 实现：默认值来自文档典型值与解析层回退（见参数表注释）。
         assert_eq!(find("loudness", "phon"), 80.0);
         assert_eq!(find("loudness", "reference_phon"), 80.0);

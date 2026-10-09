@@ -105,8 +105,6 @@ pub struct FileEffect {
     #[serde(default)]
     pub max_output_db: Option<f32>,
     #[serde(default)]
-    pub release_ms: Option<f32>,
-    #[serde(default)]
     pub target: Option<f32>,
     #[serde(default)]
     pub lookahead_ms: Option<f32>,
