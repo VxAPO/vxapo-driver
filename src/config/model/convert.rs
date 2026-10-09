@@ -406,6 +406,8 @@ impl FileEffect {
                 None => d.attack_ms,
             },
             release_ms: match self.release_ms {
+                // 0 = 自动（双极点）；手动值维持10ms下限（波形跟随失真区）。
+                Some(v) if v == 0.0 => 0.0,
                 Some(v) => finite_range(v, 10.0, 1000.0, file, idx, "release_ms")?,
                 None => d.release_ms,
             },

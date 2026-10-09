@@ -171,7 +171,7 @@ pub fn effect_param_specs() -> Vec<EffectSpec> {
                 ),
                 spec(
                     "release_ms",
-                    10.0,
+                    0.0,
                     1000.0,
                     10.0,
                     q(compressor.release_ms),
