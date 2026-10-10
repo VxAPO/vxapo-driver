@@ -102,7 +102,7 @@ driver 内部按实时性划分为两条路径。
 | `preamp` | 基准电平增益（-120..+48 dB），峰值对齐 |
 | `aural` | 谐波激励器：二阶 Butterworth 高通提取频段 → 电平无关软饱和（tanh 奇次 + 半波整流偶次，DC 阻断）→ 湿干混合 |
 | `reverb` | Dattorro 板式混响：4 级 AllPass 扩散 + 双槽交叉反馈环路（调制 AllPass → 主延迟 → 槽内滤波 → 扩散 → 尾延迟）+ 14 抽头输出；房间大小 / 衰减 / 阻尼 / 带宽 / 密度 / 预延迟 / 调制可调 |
-| `compressor` | 全声道联动 RMS 检测，软膝静态曲线，dB 域 attack/release 平滑，makeup 增益 |
+| `compressor` | 全声道联动瞬时功率与峰值包络（瞬时 attack、30 dB/s 线性释放，稳态低频近似平直），3 dB 软膝（超阈按 ratio 削减，阈下按 `lift` 朝阈值抬升、恒不过阈），dB 域增益平滑。attack 1–100 ms 可调，**释放固定自动**：100/600 ms 双极点 0.3/0.7 混合，`mix` 干湿混合，无需 makeup |
 | `wide` | 线性相位 FIR 分频（Kaiser，抽头随采样率与分频点缩放）→ 低频直通、高频 M/S；中置走空气吸收（4k–5.5k 高架 + 10k–16k 二阶 Bessel 低通，按 f² 物理曲线）；侧通道动态增益（10 ms 攻击 / 120 ms 释放）+ 双路全通 / ITD 去相关（限 1.5 kHz 以上泛音区）；增量 tanh 限幅后按 `mix` 渗入 |
 | `loudness` | 等响度补偿：按目标 / 参考 phon 以 1/3 倍频程 GraphicEq **近似** ISO 226 等响曲线（简化实现，非完整查表；完整查表与曲线拟合见 `CHANGELOG.md` 的 roadmap） |
 
@@ -332,7 +332,7 @@ The type system expresses real-time safety. It does not depend on convention:
 | `preamp` | Reference-level gain (-120..+48 dB), peak alignment |
 | `aural` | Harmonic exciter: 2nd-order Butterworth high-pass → level-independent soft saturation (odd-order tanh + half-wave-rectified even order, DC-blocked) → wet/dry mix |
 | `reverb` | Dattorro plate reverb: 4-stage AllPass diffusion plus dual cross-coupled feedback loops (modulated AllPass → main delay → in-loop filtering → diffusion → tail delay) with 14-tap output; room size / decay / damping / bandwidth / density / pre-delay / modulation |
-| `compressor` | Linked all-channel RMS detection, soft-knee static curve, dB-domain attack/release smoothing, makeup gain |
+| `compressor` | Linked all-channel instantaneous power feeds a peak envelope with instant attack and a 30 dB/s linear release. It keeps steady low frequencies nearly flat. The fixed 3 dB soft-knee curve reduces over threshold by ratio. Below threshold `lift` raises the level toward the threshold and never crosses it. The filter smooths gain in the dB domain. You set attack from 1–100 ms. Release stays automatic with a dual-pole 100 ms + 600 ms blend at 0.3/0.7: transients let go fast and sustained material never pumps. `mix` blends dry and wet proportionally. The design needs no makeup. |
 | `wide` | Linear-phase FIR crossover (Kaiser; taps scale with sample rate and crossover frequency) → low band bypassed, high band into M/S; center channel through air absorption (4k–5.5k shelf + 10k–16k 2nd-order Bessel low-pass, following the f² physical curve); dynamic side gain (10 ms attack / 120 ms release) plus dual allpass / ITD decorrelation (1.5 kHz+ region only); tanh-limited delta mixed in by `mix` |
 | `loudness` | Loudness compensation: 1/3-octave GraphicEq **approximating** the ISO 226 equal-loudness curves by target/reference phon (simplified, no full table lookup; full lookup and curve fitting are tracked in the `CHANGELOG.md` roadmap) |
 
