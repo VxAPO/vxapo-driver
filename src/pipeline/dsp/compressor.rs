@@ -5,7 +5,9 @@
 //!
 //! 算法结构（每帧，全声道联动检测）：
 //! 1. 全声道瞬时功率 → 两级检测：
-//!    - **慢轴响度**（主检测，mean-square 对称极点，τ = `AXIS_TIME_CONST_S`）
+//!    - **慢轴响度**（主检测，mean-square 非对称极点：上行 `AXIS_RISE_TIME_CONST_S`、
+//!      下行 `AXIS_FALL_TIME_CONST_S`——上行慢是「整体平移」成立的前提，下行快
+//!      保证段落结束后恢复不拖沓）
 //!      加 `AXIS_CREST_COMP_DB` crest 补偿对齐原峰值口径：检测的是段落响度轴，
 //!      增益在音符/瞬态尺度上近似恒定 → 每个音符的峰与峰身**等比平移**
 //!      （crest 原样保留，EQ 式搬运），响度控制只发生在段落之间。
@@ -22,7 +24,8 @@
 //!    膝区用端点值/斜率匹配的 cubic Hermite 过渡，
 //!    `lift = 0` 时**逐位退化**为原 x² 插值，默认行为不变；
 //! 4. 目标增益在 dB 域平滑：attack（压缩增加）快、release 慢
-//!    （慢轴的目标本身以 ≤ `4.343/τ` dB/s 缓变，attack 主要作用于抬升退出等快变场景）；
+//!    （慢轴目标缓变：上行 ≤8.7dB/s、下行 ≤21.7dB/s，attack 主要作用于
+//!    抬升退出等快变场景）；
 //!    抬升生效走 release（慢、平滑）、退出走 attack（快、不漏瞬态）；
 //!    **释放固定自动，双极点权重随压制深度加权**：快极点 100ms、慢极点 600ms，
 //!    深压（≥`AUTO_RELEASE_DEPTH_FULL_DB`）按 0.3/0.7 混合——慢尾巴保证持续段
@@ -46,10 +49,14 @@ use crate::pipeline::dsp::filter::Filter;
 const KNEE_DB: f32 = 3.0;
 /// 抬升量的电平差上限（dB）：再深的安静部分也不再多抬。
 const LIFT_CAP_DB: f32 = 24.0;
-/// 慢轴时间常数（s）：mean-square 对称极点。音符尺度上增益近似恒定（等比平移、
-/// crest 保留），段落尺度跟随响度（轴斜率上限 ≈ 4.343/τ dB/s）。0.5s 对应音乐
-/// 短时响度的时间尺度；比音符间隔长是「整体平移」成立的前提。
-const AXIS_TIME_CONST_S: f32 = 0.5;
+/// 慢轴上升时间常数（s）：音符尺度上增益近似恒定（等比平移、crest 保留）的来源，
+/// 比音符间隔长是「整体平移」成立的前提——**上行不得缩短**。
+const AXIS_RISE_TIME_CONST_S: f32 = 0.5;
+/// 慢轴回落时间常数（s）：段落结束后的恢复速度（回落斜率 ≈ 4.343/τ dB/s）。
+/// 对称 0.5s 时深压目标归零要 1.5s+，响亮段落后的安静内容被压着不放——
+/// 「慢吞吞的闷感」来源。0.2s 把该段压到 ≈0.6s；下行加速不经过上行期的
+/// 平移性质（平移由上升常数决定），代价是节奏型素材的轴读数略偏低。
+const AXIS_FALL_TIME_CONST_S: f32 = 0.2;
 /// crest 补偿（dB）：慢轴读数对齐原峰值口径的偏移。音乐典型峰均差 ~10dB，
 /// 令 threshold 旋钮的大致触发点与旧峰值检测一致（材料 crest 偏离时漂移 ±几 dB）。
 const AXIS_CREST_COMP_DB: f32 = 10.0;
@@ -121,8 +128,10 @@ pub struct CompressorFilter {
     env_rel_step: f32,
     /// 慢轴 mean-square 状态（线性功率域）。
     axis_ms: f32,
-    /// 慢轴每样本系数（由 `AXIS_TIME_CONST_S` 折算）。
-    axis_c: f32,
+    /// 慢轴每样本上升系数（由 `AXIS_RISE_TIME_CONST_S` 折算）。
+    axis_c_up: f32,
+    /// 慢轴每样本回落系数（由 `AXIS_FALL_TIME_CONST_S` 折算）。
+    axis_c_down: f32,
     attack_c: f32,
     release_fast_c: f32,
     release_slow_c: f32,
@@ -139,7 +148,8 @@ impl CompressorFilter {
             env_db: LEVEL_FLOOR_DB,
             env_rel_step: 0.0,
             axis_ms: POWER_FLOOR,
-            axis_c: 0.0,
+            axis_c_up: 0.0,
+            axis_c_down: 0.0,
             attack_c: 0.0,
             release_fast_c: 0.0,
             release_slow_c: 0.0,
@@ -191,8 +201,9 @@ impl Filter for CompressorFilter {
         self.release_fast_c = 1.0 - (-1.0 / (fast * sr)).exp();
         self.release_slow_c = 1.0 - (-1.0 / (slow * sr)).exp();
         self.env_rel_step = ENVELOPE_RELEASE_DB_PER_S / sr;
-        // 慢轴：mean-square 对称极点（主检测）。
-        self.axis_c = 1.0 - (-1.0 / (AXIS_TIME_CONST_S * sr)).exp();
+        // 慢轴：mean-square 非对称极点（主检测）——上行慢（保平移）、下行快（保恢复）。
+        self.axis_c_up = 1.0 - (-1.0 / (AXIS_RISE_TIME_CONST_S * sr)).exp();
+        self.axis_c_down = 1.0 - (-1.0 / (AXIS_FALL_TIME_CONST_S * sr)).exp();
         self.axis_ms = POWER_FLOOR;
         self.gr_db = 0.0;
         self.gr_fast = 0.0;
@@ -232,7 +243,12 @@ impl Filter for CompressorFilter {
             }
             let p = (sum_sq / n as f64) as f32;
             let level_db = 10.0 * p.max(POWER_FLOOR).log10();
-            self.axis_ms += (p - self.axis_ms) * self.axis_c;
+            let axis_c = if p > self.axis_ms {
+                self.axis_c_up
+            } else {
+                self.axis_c_down
+            };
+            self.axis_ms += (p - self.axis_ms) * axis_c;
             // 慢轴读数：RMS 轴 + crest 补偿（对齐原峰值口径）。
             let axis_db = 10.0 * self.axis_ms.max(POWER_FLOOR).log10() + AXIS_CREST_COMP_DB;
 
@@ -406,9 +422,11 @@ mod tests {
             rms_db(&s, 48_000)
         };
         let out = run(4.0);
+        // 非对称回落（0.2s 快于上升 0.5s）使功率平均的平衡点略偏低：
+        // 连续正弦上轴读数比对称口径低 ~1dB → 期望从 -23.3 修正为 -22.1。
         assert!(
-            (out + 23.25).abs() < 0.7,
-            "4:1 compression wrong: got {out:.1}, expected ≈-23.3"
+            (out + 22.1).abs() < 0.7,
+            "4:1 compression wrong: got {out:.1}, expected ≈-22.1"
         );
         // ratio 更高 → 压缩更多、输出更静。
         let out20 = run(20.0);
@@ -420,7 +438,7 @@ mod tests {
 
     #[test]
     fn attack_is_smoothed_no_jump() {
-        // 阶跃超阈值输入：慢轴检测下目标以 ≤4.343/τ dB/s 缓变（冷启动从底噪充电），
+        // 阶跃超阈值输入：慢轴检测下目标上行以 ≤8.7dB/s 缓变（冷启动从底噪充电），
         // 增益削减必须从 0 平滑爬升——首 2ms 无跳变（=0），100ms 内仍在轴速率给出的
         // 上界之内且单调上升。
         let mut f = CompressorFilter::new(CompressorParams {
@@ -746,7 +764,7 @@ mod tests {
     #[test]
     fn shallow_release_much_faster_than_deep() {
         // 慢轴口径下的释放分层：骤降到静音后，目标归零由慢轴回落
-        // （≈4.343/τ = 8.7dB/s 线性下行）主导，残余再走深度加权双极点尾巴。
+        // （非对称回落 ≈4.343/0.2 = 21.7dB/s 线性下行）主导，残余再走深度加权双极点尾巴。
         // 浅压轴程短（≈4.5dB）→ 先归零；深压轴程长（≈13.5dB）+ 慢尾巴 →
         // t10 必须显著更长（深压不泵浦的口径保留）。
         let t10_after_drop = |amp: f32| -> (f32, f32) {
@@ -772,12 +790,13 @@ mod tests {
             }
             (peak, i as f32 / 48000.0)
         };
-        // 慢轴口径选幅：读数 = 峰值 -3(正弦) +10(补偿)，浅压 GR≈2.25（over 3）、深压 GR≈9（over 12）。
+        // 慢轴口径选幅：读数 = 峰值 -3(正弦) +10(补偿) − 非对称偏置(~1.2)，
+        // 浅压 GR≈1.2~2.3、深压 GR≈8+。
         let (shallow_peak, shallow_t10) = t10_after_drop(10.0f32.powf(-16.0 / 20.0));
         let (deep_peak, deep_t10) = t10_after_drop(10.0f32.powf(-7.0 / 20.0));
         assert!(
-            shallow_peak > 1.5 && shallow_peak < 4.0,
-            "浅压峰值应 ≈2dB，got {shallow_peak:.2}"
+            (0.8..4.0).contains(&shallow_peak),
+            "浅压峰值应 ≈1~2dB（含非对称偏置），got {shallow_peak:.2}"
         );
         assert!(deep_peak > 6.0, "深压峰值应 ≥6dB，got {deep_peak:.2}");
         assert!(
@@ -786,8 +805,8 @@ mod tests {
             shallow_t10 * 1000.0
         );
         assert!(
-            deep_t10 > 1.0,
-            "深压应保留慢尾巴（轴程长 + 慢极点），got {:.0}ms",
+            deep_t10 > 0.45,
+            "深压释放需慢于浅压但不再拖沓（非对称回落后 t10 ≈570ms），got {:.0}ms",
             deep_t10 * 1000.0
         );
         assert!(
@@ -827,9 +846,11 @@ mod tests {
         let (lmin, lmax) = late
             .iter()
             .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        // 非对称回落（下行 0.2s）在 50% 占空比的节奏型素材上把轴平衡点压低
+        // ~2dB（上行追、下行放得快）→ 稳态 GR ≈5.0dB（对称口径为 6.7dB）。
         assert!(
-            (5.5..8.0).contains(&gr_ends[19]),
-            "稳态 GR 应收敛到解析值 ≈6.7dB，got {:.2}",
+            (4.0..6.5).contains(&gr_ends[19]),
+            "稳态 GR 应收敛到 ≈5.0dB（含非对称偏置），got {:.2}",
             gr_ends[19]
         );
         assert!(
