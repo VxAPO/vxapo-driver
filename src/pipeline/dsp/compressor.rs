@@ -4,18 +4,25 @@
 //! `threshold_db` / `ratio` / `lift` / `attack_ms` / `mix`。
 //!
 //! 算法结构（每帧，全声道联动检测）：
-//! 1. 全声道瞬时功率 → dB 电平；
-//! 2. **峰值包络**（瞬时 attack + 深度加权速率释放，dB 域表针式）：对稳态低频近似平直，
-//!    旧版「对称单极点功率平均」残留的 2× 频率纹波（低频增益调制、听感发毛的来源）
-//!    不再进入增益；不设侧链高通，低频照常参与触发。释放速率随压制深度加权：
-//!    深压 30dB/s（基准，低频纹波停在掩蔽区），浅压加速到 180dB/s——否则快节奏
-//!    音符间隙里目标回落不够，双极点再怎么松也追不出呼吸感；
+//! 1. 全声道瞬时功率 → 两级检测：
+//!    - **慢轴响度**（主检测，mean-square 对称极点，τ = `AXIS_TIME_CONST_S`）
+//!      加 `AXIS_CREST_COMP_DB` crest 补偿对齐原峰值口径：检测的是段落响度轴，
+//!      增益在音符/瞬态尺度上近似恒定 → 每个音符的峰与峰身**等比平移**
+//!      （crest 原样保留，EQ 式搬运），响度控制只发生在段落之间。
+//!      旧版以峰值包络直接驱动曲线时，attack 拉开让峰漏过、峰身被全额压掉
+//!      （同击内峰/身偏移差可达 9dB，crest 被吹大）——这就是「强行压下去、不自然」的来源；
+//!    - **峰值包络**（瞬时 attack + 深度加权速率释放，dB 域表针式）降级为
+//!      **抬升封顶专用**：`lift` 量按「阈值-包络」封顶，保住「lift>0 输出恒 ≤ 阈值」
+//!      的不削波契约；电平突增的瞬态瞬间撤销抬升（绝不对瞬时大信号做提升）。
+//!      释放速率仍随压制深度加权（深压 30dB/s、浅压 180dB/s，低频纹波停在掩蔽区）；
 //! 3. 静态曲线（固定 3dB 软膝，膝宽不作参数——效果只在阈值附近一条缝里可感，
-//!    属于「不知道调了会干嘛」的旋钮）：阈值右侧按 `1 - 1/ratio` 削减（压大），
-//!    阈值左侧按 `lift` 朝阈值抬升（放小，抬升量 = `u × min(阈值-电平, 24dB)`，
-//!    恒不过阈值）；膝区用端点值/斜率匹配的 cubic Hermite 过渡，
+//!    属于「不知道调了会干嘛」的旋钮）：判定分支按**慢轴读数**——
+//!    阈值右侧按 `1 - 1/ratio` 削减（压大），阈值左侧按 `lift` 朝阈值抬升
+//!    （放小，抬升量 = `u × min(阈值-峰值包络, 24dB)`，恒不过阈值）；
+//!    膝区用端点值/斜率匹配的 cubic Hermite 过渡，
 //!    `lift = 0` 时**逐位退化**为原 x² 插值，默认行为不变；
-//! 4. 目标增益在 dB 域平滑：attack（压缩增加）快、release 慢；
+//! 4. 目标增益在 dB 域平滑：attack（压缩增加）快、release 慢
+//!    （慢轴的目标本身以 ≤ `4.343/τ` dB/s 缓变，attack 主要作用于抬升退出等快变场景）；
 //!    抬升生效走 release（慢、平滑）、退出走 attack（快、不漏瞬态）；
 //!    **释放固定自动，双极点权重随压制深度加权**：快极点 100ms、慢极点 600ms，
 //!    深压（≥`AUTO_RELEASE_DEPTH_FULL_DB`）按 0.3/0.7 混合——慢尾巴保证持续段
@@ -39,6 +46,15 @@ use crate::pipeline::dsp::filter::Filter;
 const KNEE_DB: f32 = 3.0;
 /// 抬升量的电平差上限（dB）：再深的安静部分也不再多抬。
 const LIFT_CAP_DB: f32 = 24.0;
+/// 慢轴时间常数（s）：mean-square 对称极点。音符尺度上增益近似恒定（等比平移、
+/// crest 保留），段落尺度跟随响度（轴斜率上限 ≈ 4.343/τ dB/s）。0.5s 对应音乐
+/// 短时响度的时间尺度；比音符间隔长是「整体平移」成立的前提。
+const AXIS_TIME_CONST_S: f32 = 0.5;
+/// crest 补偿（dB）：慢轴读数对齐原峰值口径的偏移。音乐典型峰均差 ~10dB，
+/// 令 threshold 旋钮的大致触发点与旧峰值检测一致（材料 crest 偏离时漂移 ±几 dB）。
+const AXIS_CREST_COMP_DB: f32 = 10.0;
+/// 检测功率下限：静音时 mean-square / 对数电平停在这里（≈ -140dBFS）。
+const POWER_FLOOR: f32 = 1.0e-14;
 /// 自动释放的快极点时常数（ms）：给回弹的「头部」，瞬态段快速松开。
 const AUTO_RELEASE_FAST_MS: f32 = 100.0;
 /// 自动释放的慢极点时常数（ms）：给平缓的「尾巴」，持续段不泵浦（光学式两段手感）。
@@ -62,14 +78,16 @@ const LEVEL_FLOOR_DB: f32 = -140.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompressorParams {
-    /// 阈值（dBFS，-48..0）。检测的是峰值包络电平：包络超过它才开始压。
+    /// 阈值（dBFS，-48..0）。检测的是慢轴响度（RMS 轴 + 10dB crest 补偿）：
+    /// 段落读数超过它才开始压；触发点大致对齐原峰值口径。
     pub threshold_db: f32,
     /// 压缩比（1..20，1 = 不压）：超出阈值的部分按 x:1 压掉。
     pub ratio: f32,
     /// 抬升（0..1，0 = 纯压大）：阈值以下的安静部分朝阈值抬
-    /// `u × min(阈值-电平, 24dB)`，恒不过阈值。
+    /// `u × min(阈值-峰值包络, 24dB)`，恒不过阈值。
     pub lift: f32,
-    /// 起音时间（ms，1..100）：压下去的速度。
+    /// 起音时间（ms，1..100）：压下去的速度（慢轴目标本身缓变，
+    /// 此项主要作用于抬升退出等快变场景）。
     pub attack_ms: f32,
     /// 干湿混合（0..1，1 = 完全压过的信号，0 = 原声）。
     pub mix: f32,
@@ -97,10 +115,14 @@ pub struct CompressorFilter {
     gr_fast: f32,
     /// 自动释放的慢极点状态（dB）。
     gr_slow: f32,
-    /// 峰值包络（dBFS）。
+    /// 峰值包络（dBFS）：仅供 lift 封顶与瞬态撤销抬升。
     env_db: f32,
     /// 包络每样本的释放步进（dB）。
     env_rel_step: f32,
+    /// 慢轴 mean-square 状态（线性功率域）。
+    axis_ms: f32,
+    /// 慢轴每样本系数（由 `AXIS_TIME_CONST_S` 折算）。
+    axis_c: f32,
     attack_c: f32,
     release_fast_c: f32,
     release_slow_c: f32,
@@ -116,25 +138,24 @@ impl CompressorFilter {
             gr_slow: 0.0,
             env_db: LEVEL_FLOOR_DB,
             env_rel_step: 0.0,
+            axis_ms: POWER_FLOOR,
+            axis_c: 0.0,
             attack_c: 0.0,
             release_fast_c: 0.0,
             release_slow_c: 0.0,
         }
     }
 
-    /// 静态曲线：给定检测电平返回目标增益改动（dB，可为负=抬升）。
+    /// 静态曲线：慢轴读数 `level_db` → 目标增益改动（dB，可为负=抬升）。
+    /// `lift_db` 是已按峰值包络封顶的绝对抬升量（`u × min(max(阈值-包络,0), 24)`）。
     #[inline]
-    fn curve(level_db: f32, threshold_db: f32, ratio: f32, knee_db: f32, lift: f32) -> f32 {
+    fn curve(level_db: f32, threshold_db: f32, ratio: f32, knee_db: f32, lift_db: f32) -> f32 {
         let over = level_db - threshold_db;
         let half = knee_db * 0.5;
         let slope = 1.0 - 1.0 / ratio.max(1.0);
         if over <= -half {
-            // 阈下：抬升 = u × min(阈值-电平, 上限)，恒不过阈值。
-            if lift <= 0.0 {
-                0.0
-            } else {
-                -lift * (-over).min(LIFT_CAP_DB)
-            }
+            // 膝下：抬升量只随峰值包络慢变（对慢轴读数斜率为 0），恒不过阈值。
+            -lift_db
         } else if over >= half {
             over * slope
         } else {
@@ -143,9 +164,9 @@ impl CompressorFilter {
             let x = (over + half) / knee_db.max(1e-3);
             let xx = x * x;
             let xxx = xx * x;
-            let v0 = -lift * half;
+            let v0 = -lift_db;
             let v1 = half * slope;
-            let n0 = lift * knee_db;
+            let n0 = 0.0;
             let n1 = slope * knee_db;
             (2.0 * xxx - 3.0 * xx + 1.0) * v0
                 + (xxx - 2.0 * xx + x) * n0
@@ -170,6 +191,9 @@ impl Filter for CompressorFilter {
         self.release_fast_c = 1.0 - (-1.0 / (fast * sr)).exp();
         self.release_slow_c = 1.0 - (-1.0 / (slow * sr)).exp();
         self.env_rel_step = ENVELOPE_RELEASE_DB_PER_S / sr;
+        // 慢轴：mean-square 对称极点（主检测）。
+        self.axis_c = 1.0 - (-1.0 / (AXIS_TIME_CONST_S * sr)).exp();
+        self.axis_ms = POWER_FLOOR;
         self.gr_db = 0.0;
         self.gr_fast = 0.0;
         self.gr_slow = 0.0;
@@ -192,12 +216,12 @@ impl Filter for CompressorFilter {
         let lift = self.params.lift.clamp(0.0, 1.0);
         let mix = self.params.mix.clamp(0.0, 1.0);
         let dry = 1.0 - mix;
-        // 包络释放速率按压制深度在浅/深两档间线性插值：浅压加速（快节奏音符
-        // 间隙里目标能回落到位），深压基准（低频纹波与不泵浦口径不变）。
+        // 峰值包络的释放速率按压制深度在浅/深两档间线性插值（包络现在只喂
+        // lift 封顶：浅压下更快回落 → 安静段的抬升更跟手，深压基准不变）。
         let shallow_ratio = ENVELOPE_RELEASE_SHALLOW_DB_PER_S / ENVELOPE_RELEASE_DB_PER_S;
 
         for f in 0..frame_count {
-            // 1) 全声道瞬时功率 → dB 电平。
+            // 1) 全声道瞬时功率 → 瞬时 dB 电平 + 慢轴 mean-square（主检测）。
             let mut sum_sq = 0.0f64;
             for k in 0..n {
                 let slot = self.channel_indices[k];
@@ -206,9 +230,13 @@ impl Filter for CompressorFilter {
                     sum_sq += x * x;
                 }
             }
-            let level_db = (10.0 * (sum_sq / n as f64).max(1e-14).log10()) as f32;
+            let p = (sum_sq / n as f64) as f32;
+            let level_db = 10.0 * p.max(POWER_FLOOR).log10();
+            self.axis_ms += (p - self.axis_ms) * self.axis_c;
+            // 慢轴读数：RMS 轴 + crest 补偿（对齐原峰值口径）。
+            let axis_db = 10.0 * self.axis_ms.max(POWER_FLOOR).log10() + AXIS_CREST_COMP_DB;
 
-            // 2) 峰值包络：瞬时 attack，深度加权速率释放。
+            // 2) 峰值包络（仅供 lift 封顶）：瞬时 attack，深度加权速率释放。
             let depth01 = (self.gr_db.abs() / AUTO_RELEASE_DEPTH_FULL_DB).min(1.0);
             let rel_step = self.env_rel_step * (1.0 + (shallow_ratio - 1.0) * (1.0 - depth01));
             self.env_db = if level_db > self.env_db {
@@ -216,15 +244,18 @@ impl Filter for CompressorFilter {
             } else {
                 (self.env_db - rel_step).max(level_db)
             };
+            // 抬升量按「阈值-峰值包络」封顶：恒不过阈值（不削波契约），
+            // 电平突增的瞬态瞬间撤销抬升。
+            let lift_db = lift * (threshold - self.env_db).clamp(0.0, LIFT_CAP_DB);
 
-            // 3) 静态曲线（固定软膝）→ 目标削减。
-            let target_gr = Self::curve(self.env_db, threshold, ratio, KNEE_DB, lift);
+            // 3) 静态曲线（固定软膝，判定按慢轴读数）→ 目标削减。
+            let target_gr = Self::curve(axis_db, threshold, ratio, KNEE_DB, lift_db);
 
             // 4) dB 域平滑：attack 快、release 慢。双极点并行——快/慢极点各自朝
             //    目标平滑，无切换点。慢极点权重随当前压制深度加权：深压 0.7
-            //    （600ms 尾巴，持续段与低频不泵浦），浅压按深度立方退到 0（快极点
-            //    100ms，快节奏拍间能恢复）。attack 阶段两极点同系数，混合权重
-            //    不影响攻击速度（d(gr)/dt = c·(target−gr)），仅释放阶段生效。
+            //    （600ms 尾巴，持续段与低频不泵浦），浅压按深度立方退到 0（快极点）。
+            //    attack 阶段两极点同系数，混合权重不影响攻击速度
+            //    （d(gr)/dt = c·(target−gr)），仅释放阶段生效。
             let w_slow = AUTO_RELEASE_SLOW_W * depth01 * depth01 * depth01;
             let cf = if target_gr > self.gr_fast {
                 self.attack_c
@@ -267,6 +298,7 @@ impl Filter for CompressorFilter {
         self.gr_fast = 0.0;
         self.gr_slow = 0.0;
         self.env_db = LEVEL_FLOOR_DB;
+        self.axis_ms = POWER_FLOOR;
     }
 }
 
@@ -359,8 +391,8 @@ mod tests {
 
     #[test]
     fn above_threshold_is_compressed_by_ratio() {
-        // 稳态超阈值信号：峰值包络 ≈ 峰值电平（-6dBFS），阈值 -18 → over 12dB。
-        // ratio 4 → gr 9dB；输入 RMS -9dB → 输出 ≈ -18dB。
+        // 稳态超阈值信号（慢轴口径）：慢轴读数 = 正弦 RMS(-9dBFS) + crest 补偿 10
+        // = +1dBFS，阈值 -18 → over 19dB。ratio 4 → gr 14.25dB → 输出 RMS ≈ -23.25dB。
         let run = |ratio: f32| -> f32 {
             let mut f = CompressorFilter::new(CompressorParams {
                 threshold_db: -18.0,
@@ -375,8 +407,8 @@ mod tests {
         };
         let out = run(4.0);
         assert!(
-            (out + 18.0).abs() < 0.7,
-            "4:1 compression wrong: got {out:.1}, expected ≈-18.0"
+            (out + 23.25).abs() < 0.7,
+            "4:1 compression wrong: got {out:.1}, expected ≈-23.3"
         );
         // ratio 更高 → 压缩更多、输出更静。
         let out20 = run(20.0);
@@ -388,7 +420,9 @@ mod tests {
 
     #[test]
     fn attack_is_smoothed_no_jump() {
-        // 阶跃超阈值输入：增益削减逐帧逼近，首2ms 内不得逼近目标（无瞬时跳变）。
+        // 阶跃超阈值输入：慢轴检测下目标以 ≤4.343/τ dB/s 缓变（冷启动从底噪充电），
+        // 增益削减必须从 0 平滑爬升——首 2ms 无跳变（=0），100ms 内仍在轴速率给出的
+        // 上界之内且单调上升。
         let mut f = CompressorFilter::new(CompressorParams {
             threshold_db: -12.0,
             ratio: 10.0,
@@ -400,13 +434,14 @@ mod tests {
         f.process(&mut s, 96); // 2ms
         let early = f.gr_db;
         assert!(
-            early > 0.0 && early < 1.5,
-            "gr must rise smoothly from0, got {early}"
+            (0.0..0.1).contains(&early),
+            "gr must not jump at onset, got {early}"
         );
         f.process(&mut s, 4800 - 96);
-        // 目标 ≈8.0dB，50ms 起音走完100ms ≈86.5% → ≈6.9dB。
+        // 100ms 处慢轴读数 ≈-3.5dBFS → over 8.5 → 目标 ≈7.6dB（10:1），
+        // attack 起音与轴斜率共同限速 → 实测应落在 (early, 7.8)。
         assert!(
-            f.gr_db > early && f.gr_db < 7.5,
+            f.gr_db > early && f.gr_db < 7.8,
             "gr must keep rising smoothly, got {}",
             f.gr_db
         );
@@ -480,7 +515,8 @@ mod tests {
 
     #[test]
     fn lift_never_exceeds_threshold() {
-        // u=1、电平在阈下 4dB：抬升 4dB 后恰好回到阈值，输出峰值不得越过阈值线。
+        // u=1、峰值在阈下 9dB（慢轴读数 -14dBFS，恰在膝区下缘之下）：
+        // 抬升量按「阈值-峰值包络」= 9dB 封顶 → 输出峰值恰好回到阈值线，恒不越过。
         // 同上：自动释放收敛需要时间，3s 后测稳态。
         let th_lin = 10.0f32.powf(-12.0 / 20.0);
         let mut f = CompressorFilter::new(CompressorParams {
@@ -491,7 +527,7 @@ mod tests {
             mix: 1.0,
         });
         f.initialize(48000, &names());
-        let mut s = sine(10.0f32.powf(-16.0 / 20.0), 220.0, 144_000, 48000.0);
+        let mut s = sine(10.0f32.powf(-21.0 / 20.0), 220.0, 144_000, 48000.0);
         f.process(&mut s, 144_000);
         let peak = s.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(
@@ -501,16 +537,16 @@ mod tests {
         let out = rms_db(&s, 72_000);
         assert!(
             (out - (-15.0)).abs() < 0.5,
-            "输入 RMS ≈-19dB、抬升 4dB → 期望 ≈-15dB，实测 {out:.1}"
+            "输入 RMS ≈-24dB、抬升 9dB → 期望 ≈-15dB，实测 {out:.1}"
         );
     }
 
     #[test]
     fn bass_envelope_ripple_is_small() {
         // 低频稳态正弦：释放纹波必须有界。env 纹波 ≈ 当前速率×半周期——本条件
-        // （gr≈4dB，浅压插值速率 ≈80dB/s）20Hz ≈2.0dB、40Hz ≈1.0dB，按速率感知
-        // 口径断言；**可听的是 GR 纹波**（两级分离正是为把 env 纹波滤掉），
-        // 维持原严口径。旧版对称单极点是2× 频率、±1dB 级的增益调制（低频发毛的来源）。
+        // （gr≈8.7dB，深压口径速率 30dB/s）20Hz ≈0.75dB、40Hz ≈0.4dB，按速率感知
+        // 口径断言；**可听的是 GR 纹波**（慢轴 + 两级分离把 env 纹波滤干净），
+        // 维持原严口径。慢轴冷启动 τ=0.5s 收敛约 1.5s，采样跳过前 2s。
         for (hz, env_bound, gr_bound) in [(20.0f32, 2.6f32, 1.2f32), (40.0, 1.4, 0.8)] {
             let mut f = CompressorFilter::new(CompressorParams {
                 threshold_db: -12.0,
@@ -519,7 +555,7 @@ mod tests {
                 ..Default::default()
             });
             f.initialize(48000, &names());
-            let n = 48000usize; //1s
+            let n = 144_000usize; //3s
             let mut s = sine(10.0f32.powf(-6.0 / 20.0), hz, n, 48000.0);
             //1ms 一块推进（process 只从头处理，分块以便在块边界采样状态）。
             let mut env_min = f32::MAX;
@@ -536,8 +572,8 @@ mod tests {
                     s[c][i..i + take].copy_from_slice(&chunk[c]);
                 }
                 i += take;
-                if i > 4800 {
-                    // 跳过前100ms建立期
+                if i > 96_000 {
+                    // 跳过前 2s：慢轴冷启动充电期
                     env_min = env_min.min(f.env_db);
                     env_max = env_max.max(f.env_db);
                     gr_min = gr_min.min(f.gr_db);
@@ -658,6 +694,7 @@ mod tests {
         assert_eq!(f.gr_fast, 0.0);
         assert_eq!(f.gr_slow, 0.0);
         assert_eq!(f.env_db, LEVEL_FLOOR_DB);
+        assert_eq!(f.axis_ms, POWER_FLOOR);
     }
 
     #[test]
@@ -708,9 +745,10 @@ mod tests {
 
     #[test]
     fn shallow_release_much_faster_than_deep() {
-        // 深度加权自动释放：同样骤降到静音，浅压（≈2dB）到 10% 残留的用时
-        // 必须显著短于深压（≈9dB）——浅压靠快极点在拍间喘气（快节奏不发闷），
-        // 深压保留慢尾巴（持续段与低频不泵浦）。固定 0.3/0.7 的旧口径两者同速。
+        // 慢轴口径下的释放分层：骤降到静音后，目标归零由慢轴回落
+        // （≈4.343/τ = 8.7dB/s 线性下行）主导，残余再走深度加权双极点尾巴。
+        // 浅压轴程短（≈4.5dB）→ 先归零；深压轴程长（≈13.5dB）+ 慢尾巴 →
+        // t10 必须显著更长（深压不泵浦的口径保留）。
         let t10_after_drop = |amp: f32| -> (f32, f32) {
             let mut f = CompressorFilter::new(CompressorParams {
                 threshold_db: -12.0,
@@ -734,21 +772,22 @@ mod tests {
             }
             (peak, i as f32 / 48000.0)
         };
-        let (shallow_peak, shallow_t10) = t10_after_drop(10.0f32.powf(-9.0 / 20.0));
-        let (deep_peak, deep_t10) = t10_after_drop(1.0);
+        // 慢轴口径选幅：读数 = 峰值 -3(正弦) +10(补偿)，浅压 GR≈2.25（over 3）、深压 GR≈9（over 12）。
+        let (shallow_peak, shallow_t10) = t10_after_drop(10.0f32.powf(-16.0 / 20.0));
+        let (deep_peak, deep_t10) = t10_after_drop(10.0f32.powf(-7.0 / 20.0));
         assert!(
             shallow_peak > 1.5 && shallow_peak < 4.0,
             "浅压峰值应 ≈2dB，got {shallow_peak:.2}"
         );
         assert!(deep_peak > 6.0, "深压峰值应 ≥6dB，got {deep_peak:.2}");
         assert!(
-            shallow_t10 < 0.5,
-            "浅压 t10 应 ≤500ms（实测 310ms，旧口径 ≈1.2s），got {:.0}ms",
+            shallow_t10 < 1.5,
+            "浅压 t10 应 ≤1.5s（轴程短），got {:.0}ms",
             shallow_t10 * 1000.0
         );
         assert!(
-            deep_t10 > 0.45,
-            "深压仍须慢于浅压、保留尾巴，got {:.0}ms",
+            deep_t10 > 1.0,
+            "深压应保留慢尾巴（轴程长 + 慢极点），got {:.0}ms",
             deep_t10 * 1000.0
         );
         assert!(
@@ -761,9 +800,10 @@ mod tests {
 
     #[test]
     fn fast_tempo_gr_does_not_accumulate() {
-        // 快节奏场景回归：160BPM 八分音符连打（107ms 音 + 107ms 静音 ×20），
-        // 每个间隙浅压必须恢复大半——旧口径（固定 0.3/0.7，t10≈1.2s）在
-        // 间隙内只恢复约 4 成，GR 跨拍累积成持续压制（听感发闷）。
+        // 快节奏场景回归（慢轴口径）：160BPM 八分连打 ×20（107ms 音 + 107ms 静音）。
+        // 段落响度恒定 → 慢轴收敛后 GR 稳定在解析值（轴 -13dBFS + 10 补偿 → over 9 →
+        // 4:1 下 ≈6.7dB）并保持：后半程逐拍不爬升（不累积）、拍间不抖动（整体平移性质，
+        // 旧峰值检测在此场景 GR 逐击累积、听感发闷）。
         let mut f = CompressorFilter::new(CompressorParams {
             threshold_db: -12.0,
             ratio: 4.0,
@@ -772,27 +812,36 @@ mod tests {
             mix: 1.0,
         });
         f.initialize(48000, &names());
-        let amp = 10.0f32.powf(-7.0 / 20.0); // 峰值包络 ≈-7dB → 超阈 5dB → GR ≈3.75dB
+        let amp = 10.0f32.powf(-7.0 / 20.0);
         let hit = 5_136usize; // 107ms
         let gap = 5_136usize;
-        let mut min_in_gap = f32::MAX;
-        let mut peak_first = 0.0f32;
-        for cycle in 0..20 {
+        let mut gr_ends = Vec::new();
+        for _ in 0..20 {
             let mut loud = sine(amp, 220.0, hit, 48000.0);
             f.process(&mut loud, hit);
-            if cycle == 0 {
-                peak_first = f.gr_db;
-            }
-            min_in_gap = f.gr_db.min(min_in_gap);
             let mut quiet = vec![vec![0.0f32; gap]; 2];
             f.process(&mut quiet, gap);
-            min_in_gap = f.gr_db.min(min_in_gap);
+            gr_ends.push(f.gr_db);
         }
-        assert!(peak_first > 2.0, "首个音应建立 GR，got {peak_first:.2}");
-        // 间隙末端是 GR 最低点：连打全程不得抬到持续压制的量级。
+        let late = &gr_ends[10..];
+        let (lmin, lmax) = late
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
         assert!(
-            min_in_gap < peak_first * 0.5,
-            "八分音符间隙内 GR 应恢复过半：min={min_in_gap:.2}dB peak={peak_first:.2}dB"
+            (5.5..8.0).contains(&gr_ends[19]),
+            "稳态 GR 应收敛到解析值 ≈6.7dB，got {:.2}",
+            gr_ends[19]
+        );
+        assert!(
+            lmax - lmin <= 1.0,
+            "后半程拍间 GR 应稳定（整体平移），极差 {:.2}dB",
+            lmax - lmin
+        );
+        assert!(
+            (gr_ends[19] - gr_ends[10]).abs() <= 0.75,
+            "GR 不得跨拍累积爬升：cycle10={:.2} cycle19={:.2}",
+            gr_ends[10],
+            gr_ends[19]
         );
     }
 }
