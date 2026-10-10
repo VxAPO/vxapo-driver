@@ -28,7 +28,7 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置。
 | 用 windows-rs 类型化绑定代替手写 COM 样板 | APO 接口取自 windows-rs 0.62 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 由 `#[implement]` 生成 vtable 与引用计数 | `object/apo/factory.rs` |
 | `unsafe` 收敛在 FFI 边界并逐处注明 | 391 处 / 26 个文件（`aggregate.rs` 109 · `audiodg.rs` 51 · `child.rs` 31 · `process.rs` 29 · `factory.rs` 27 …），配 315 处 `// SAFETY:` 说明；唯一手写 vtable 偏移在 COM 聚合外壳（引擎要求多接口固定 offset 布局），该处注明布局依据 | `src/`（搜索 `unsafe`）、`object/apo/aggregate.rs` |
 | 实时约束写进类型系统 | `unsafe trait RtSafe` / `RtCopy` 约束「无分配、无锁、无 I/O、无 panic」；`RealtimeContext` 为零尺寸编译期见证；发布构建 `panic = "abort"`；链上零分配 | `pipeline/realtime/` |
-| 以测试与告警作为回归基线 | **481** 个测试（release 471）；`cargo build` 与 `cargo build --tests` 均 0 告警；`cargo clippy --all-targets -- -D warnings` 退出码 0 | `cargo test`、`cargo build --tests`、`cargo clippy` |
+| 以测试与告警作为回归基线 | **492** 个测试（release 482）；`cargo build` 与 `cargo build --tests` 均 0 告警；`cargo clippy --all-targets -- -D warnings` 退出码 0 | `cargo test`、`cargo build --tests`、`cargo clippy` |
 
 ## 2 · 与 Equalizer APO 的差异
 
@@ -102,7 +102,7 @@ driver 内部按实时性划分为两条路径。
 | `preamp` | 基准电平增益（-120..+48 dB），峰值对齐 |
 | `aural` | 谐波激励器：二阶 Butterworth 高通提取频段 → 电平无关软饱和（tanh 奇次 + 半波整流偶次，DC 阻断）→ 湿干混合 |
 | `reverb` | Dattorro 板式混响：4 级 AllPass 扩散 + 双槽交叉反馈环路（调制 AllPass → 主延迟 → 槽内滤波 → 扩散 → 尾延迟）+ 14 抽头输出；房间大小 / 衰减 / 阻尼 / 带宽 / 密度 / 预延迟 / 调制可调 |
-| `compressor` | 全声道联动瞬时功率与峰值包络（瞬时 attack、30 dB/s 线性释放，稳态低频近似平直），3 dB 软膝（超阈按 ratio 削减，阈下按 `lift` 朝阈值抬升、恒不过阈），dB 域增益平滑。attack 1–100 ms 可调，**释放固定自动**：100/600 ms 双极点 0.3/0.7 混合，`mix` 干湿混合，无需 makeup |
+| `compressor` | 全声道联动瞬时功率与峰值包络（瞬时 attack、释放速率随深度加权：深压 30 dB/s、浅压 180 dB/s），3 dB 软膝（超阈按 ratio 削减，阈下按 `lift` 抬升、恒不过阈），dB 域增益平滑。attack 1–100 ms 可调，**释放固定自动**：100/600 ms 双极点按深度加权混合（深压 0.3/0.7 保尾巴，浅压走快极点），`mix` 干湿混合，无需 makeup |
 | `wide` | 线性相位 FIR 分频（Kaiser，抽头随采样率与分频点缩放）→ 低频直通、高频 M/S；中置走空气吸收（4k–5.5k 高架 + 10k–16k 二阶 Bessel 低通，按 f² 物理曲线）；侧通道动态增益（10 ms 攻击 / 120 ms 释放）+ 双路全通 / ITD 去相关（限 1.5 kHz 以上泛音区）；增量 tanh 限幅后按 `mix` 渗入 |
 | `loudness` | 等响度补偿：按目标 / 参考 phon 以 1/3 倍频程 GraphicEq **近似** ISO 226 等响曲线（简化实现，非完整查表；完整查表与曲线拟合见 `CHANGELOG.md` 的 roadmap） |
 
@@ -168,7 +168,7 @@ App / CLI / Driver 共享同一份配置契约，三者的行为必须一致：
 测试规模与运行方式：
 
 ```bash
-cargo test              # 481 个测试（release 471）
+cargo test              # 492 个测试（release 482）
 cargo build --tests     # 构建测试目标（预期 0 告警）
 cargo clippy --all-targets -- -D warnings   # 预期退出码 0
 ```
@@ -243,7 +243,7 @@ them.** This section lists the practices and where each can be checked.
 | Typed windows-rs bindings instead of hand-written COM plumbing | APO interfaces from windows-rs 0.62 `Win32::Media::Audio::Apo` (incl. `*_Impl` traits); `ClassFactory` uses `#[implement]` for vtables and reference counting | `object/apo/factory.rs` |
 | `unsafe` confined to the FFI boundary, documented per site | 391 occurrences / 26 files (`aggregate.rs` 109 · `audiodg.rs` 51 · `child.rs` 31 · `process.rs` 29 · `factory.rs` 27 …) with 315 `// SAFETY:` notes; the only hand-written vtable offsets are in the COM aggregate shell (the engine requires fixed multi-interface offsets there), with the layout rationale documented on site | `src/` (search `unsafe`), `object/apo/aggregate.rs` |
 | Real-time constraints encoded in the type system | `unsafe trait RtSafe` / `RtCopy` require no allocation, no locking, no I/O and no panics; `RealtimeContext` is a zero-sized compile-time witness; release builds use `panic = "abort"`; zero-allocation chain | `pipeline/realtime/` |
-| Tests and warning-free builds as the regression baseline | **481** tests (release 471); `cargo build` and `cargo build --tests` report zero warnings; `cargo clippy --all-targets -- -D warnings` exits 0 | `cargo test`, `cargo build --tests`, `cargo clippy` |
+| Tests and warning-free builds as the regression baseline | **492** tests (release 482); `cargo build` and `cargo build --tests` report zero warnings; `cargo clippy --all-targets -- -D warnings` exits 0 | `cargo test`, `cargo build --tests`, `cargo clippy` |
 
 ## 2 · Differences from Equalizer APO
 
@@ -332,7 +332,7 @@ The type system expresses real-time safety. It does not depend on convention:
 | `preamp` | Reference-level gain (-120..+48 dB), peak alignment |
 | `aural` | Harmonic exciter: 2nd-order Butterworth high-pass → level-independent soft saturation (odd-order tanh + half-wave-rectified even order, DC-blocked) → wet/dry mix |
 | `reverb` | Dattorro plate reverb: 4-stage AllPass diffusion plus dual cross-coupled feedback loops (modulated AllPass → main delay → in-loop filtering → diffusion → tail delay) with 14-tap output; room size / decay / damping / bandwidth / density / pre-delay / modulation |
-| `compressor` | Linked all-channel instantaneous power feeds a peak envelope with instant attack and a 30 dB/s linear release. It keeps steady low frequencies nearly flat. The fixed 3 dB soft-knee curve reduces over threshold by ratio. Below threshold `lift` raises the level toward the threshold and never crosses it. The filter smooths gain in the dB domain. You set attack from 1–100 ms. Release stays automatic with a dual-pole 100 ms + 600 ms blend at 0.3/0.7: transients let go fast and sustained material never pumps. `mix` blends dry and wet proportionally. The design needs no makeup. |
+| `compressor` | Linked all-channel instantaneous power feeds a peak envelope with instant attack. Its release rate scales with reduction depth: 30 dB/s when deep and 180 dB/s when shallow, so steady bass stays nearly flat. The fixed 3 dB soft-knee curve reduces over threshold by ratio. Below threshold `lift` raises the level and never crosses it. The filter smooths gain in the dB domain. You set attack from 1–100 ms. Release stays automatic: dual-pole 100 ms + 600 ms poles whose slow weight scales with the cube of reduction depth. Deep reductions keep the 0.3/0.7 blend and its long tail. Shallow ones lean on the fast pole, so fast material breathes between hits. `mix` blends dry and wet proportionally. The design needs no makeup. |
 | `wide` | Linear-phase FIR crossover (Kaiser; taps scale with sample rate and crossover frequency) → low band bypassed, high band into M/S; center channel through air absorption (4k–5.5k shelf + 10k–16k 2nd-order Bessel low-pass, following the f² physical curve); dynamic side gain (10 ms attack / 120 ms release) plus dual allpass / ITD decorrelation (1.5 kHz+ region only); tanh-limited delta mixed in by `mix` |
 | `loudness` | Loudness compensation: 1/3-octave GraphicEq **approximating** the ISO 226 equal-loudness curves by target/reference phon (simplified, no full table lookup; full lookup and curve fitting are tracked in the `CHANGELOG.md` roadmap) |
 
@@ -409,7 +409,7 @@ App, CLI and Driver share one configuration contract and must stay consistent:
 Scale and invocation:
 
 ```bash
-cargo test              # 481 tests (release 471)
+cargo test              # 492 tests (release 482)
 cargo build --tests     # build test targets (expect zero warnings)
 cargo clippy --all-targets -- -D warnings   # expect exit 0
 ```
