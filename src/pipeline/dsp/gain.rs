@@ -131,15 +131,46 @@ impl Filter for GainFilter {
     }
 
     fn process(&mut self, samples: &mut [Vec<f32>], frame_count: usize) {
-        for f in 0..frame_count {
-            if self.current_gain != self.target_gain {
-                self.advance();
+        // 稳态快路径：增益恒定时按通道连续扫描（可自动向量化）；
+        // 帧主序跨通道步进无法向量化，且逐帧重复 `!=` 判断与 get_mut 边界检查。
+        // unity 增益直接跳过整个缓冲遍历（唯一数值差异：DAZ 下 ×1.0 会把
+        // denormal 输入清零，跳过则保留——denormal 本身不可闻，后续任何
+        // 算术都会清掉，无功能影响）。
+        if self.current_gain == self.target_gain {
+            if self.current_gain == 1.0 {
+                return;
             }
+            let gain = self.current_gain;
+            for &ch in &self.channel_indices {
+                if let Some(buf) = samples.get_mut(ch) {
+                    for v in &mut buf[..frame_count] {
+                        *v *= gain;
+                    }
+                }
+            }
+            return;
+        }
 
+        // 平滑过渡路径：增益逐帧推进，必须按帧序处理；中途收敛（snap 到位）
+        // 后剩余帧切回连续扫描，不再逐帧跨通道步进。
+        let mut f = 0;
+        while f < frame_count && self.current_gain != self.target_gain {
+            self.advance();
             let gain = self.current_gain;
             for &ch in &self.channel_indices {
                 if let Some(buf) = samples.get_mut(ch) {
                     buf[f] *= gain;
+                }
+            }
+            f += 1;
+        }
+        if f < frame_count {
+            let gain = self.current_gain;
+            for &ch in &self.channel_indices {
+                if let Some(buf) = samples.get_mut(ch) {
+                    for v in &mut buf[f..frame_count] {
+                        *v *= gain;
+                    }
                 }
             }
         }

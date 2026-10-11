@@ -277,12 +277,6 @@ impl ChildApo {
 
     // ── IAudioProcessingObjectRT 委托 ────────────────────────────────────────
 
-    /// 子 APO 计算输入帧数（`CalcInputFrames`）。
-    pub fn calc_input_frames(&self, output_frames: u32) -> u32 {
-        // SAFETY: self.iapo_rt 是本结构持有的有效实时接口引用；纯数值入参/返回值。
-        unsafe { self.iapo_rt.CalcInputFrames(output_frames) }
-    }
-
     /// 子 APO 计算输出帧数（`CalcOutputFrames`）。
     #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
     pub fn calc_output_frames(&self, input_frames: u32) -> u32 {

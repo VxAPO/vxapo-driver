@@ -49,6 +49,21 @@ impl Default for ProcessStatistics {
     }
 }
 
+/// 覆盖式旁路复制：`dst[i] = src[i]`（memmove 语义，允许 in-place 重叠）+ 尾部清零。
+///
+/// 三处兜底共用（错误恢复 / 缓冲不就绪 / 过渡旁通）：输入输出可能是同一块
+/// in-place 缓冲，不能用 `copy_from_slice`（重叠 UB）；逐元素拷贝等价 memmove。
+pub(crate) fn bypass_copy(src: &[f32], dst: &mut [f32]) {
+    let copy_len = src.len().min(dst.len());
+    #[allow(clippy::manual_memcpy)]
+    for i in 0..copy_len {
+        dst[i] = src[i];
+    }
+    if dst.len() > copy_len {
+        dst[copy_len..].fill(0.0);
+    }
+}
+
 /// 统一错误恢复：链处理失败时按策略恢复输出。
 pub fn apply_error_policy(
     result: Result<()>,
@@ -62,18 +77,7 @@ pub fn apply_error_policy(
         Err(_) => {
             stats.error_count.fetch_add(1, Ordering::Relaxed);
             match policy {
-                ErrorPolicy::Bypass => {
-                    let copy_len = input_slice.len().min(output_buffer.len());
-                    // 输入输出可能是同一块 in-place 缓冲，不能用 copy_from_slice
-                    // （重叠 UB）；逐元素拷贝等价 memmove。
-                    #[allow(clippy::manual_memcpy)]
-                    for i in 0..copy_len {
-                        output_buffer[i] = input_slice[i];
-                    }
-                    if output_buffer.len() > copy_len {
-                        output_buffer[copy_len..].fill(0.0);
-                    }
-                }
+                ErrorPolicy::Bypass => bypass_copy(input_slice, output_buffer),
                 ErrorPolicy::Silence => {
                     output_buffer.fill(0.0);
                 }
@@ -99,16 +103,7 @@ pub fn process_chain_interleaved(
     let ready =
         temp.len() >= channels && temp[..channels].iter().all(|b| b.len() >= frame_count) && io_ok;
     if !ready {
-        let copy_len = input.len().min(output.len());
-        // 输入输出可能是同一块 in-place 缓冲，不能用 copy_from_slice（重叠 UB）；
-        // 逐元素拷贝等价 memmove。
-        #[allow(clippy::manual_memcpy)]
-        for i in 0..copy_len {
-            output[i] = input[i];
-        }
-        if output.len() > copy_len {
-            output[copy_len..].fill(0.0);
-        }
+        bypass_copy(input, output);
         return Ok(());
     }
     deinterleave_into(input, temp, channels, frame_count);

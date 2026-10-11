@@ -626,8 +626,8 @@ impl ApoObject {
         {
             // SAFETY: 引擎保证 pp_inputs/pp_outputs 有效（APOProcess 契约）。
             unsafe { child.apo_process(num_input, pp_inputs, num_output, pp_outputs) };
-            // 委托帧数计算（RT 无锁，object 7.1.11：每帧委托）。
-            let _ = child.calc_input_frames(0);
+            // CalcInputFrames 是引擎按需调用的 COM 查询（纯读 atomic、无副作用），
+            // RT 路径无需替引擎预调——曾在此每帧调一次，结果被丢弃，纯开销。
         }
 
         // 锁被前序 panic 污染时继续使用数据（PoisonError::into_inner），
@@ -740,15 +740,8 @@ impl ApoObject {
                         max_frames,
                     )
                 };
-                let copy_len = src.len().min(dst.len());
-                // in-place 场景 src/dst 可能重叠，逐元素拷贝（memmove 语义）。
-                #[allow(clippy::manual_memcpy)]
-                for i in 0..copy_len {
-                    dst[i] = src[i];
-                }
-                if dst.len() > copy_len {
-                    dst[copy_len..].fill(0.0);
-                }
+                // in-place 场景 src/dst 可能重叠，bypass_copy 为 memmove 语义。
+                crate::pipeline::process::bypass_copy(src, dst);
                 output_prop.u32ValidFrameCount = frames as u32;
                 output_prop.u32BufferFlags = BUFFER_VALID;
                 // 诊断：过渡旁通帧也记录输入/输出峰值。
