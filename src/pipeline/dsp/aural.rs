@@ -9,6 +9,8 @@
 //!
 //! config 语法（EAPO 风格）：
 //! `AuralEnhancer: TuneHz 1760 Drive 1.77 Odd 1.5 Even 0.0 Wet 1.0 Dry 0.0`
+//! （以上为原端命令示例；当前默认 Odd 1 / Even 0.2——Odd 1.5 是量程上限，
+//! 作为默认值谐波过量、听感发毛）
 
 use crate::pipeline::dsp::filter::Filter;
 
@@ -36,8 +38,9 @@ impl Default for AuralParams {
         Self {
             tune_hz: DEFAULT_TUNE_HZ,
             drive: 1.76993,
-            odd: 1.5,
-            even: 0.25,
+            // odd/even 默认曾为 1.5/0.25（odd 即量程上限）：谐波过量、听感发毛。
+            odd: 1.0,
+            even: 0.2,
             wet: 0.5,
             dry: 0.5,
         }
