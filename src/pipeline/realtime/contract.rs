@@ -1,4 +1,4 @@
-//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（规范 4.5）
+//! pipeline/realtime/contract.rs — 实时安全（RT-safety）契约（规范 4.7）
 //!
 //! 生产路径的接入点：`object/apo/process.rs::apo_process`（RT 线程入口，创建
 //! `RtGuard`）与热重载线程的 `hot_reload_impl`（用 `rt_require_non_rt!` 断言

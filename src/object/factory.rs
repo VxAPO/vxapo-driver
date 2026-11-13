@@ -296,6 +296,10 @@ mod tests {
         use std::ffi::c_void;
         use std::sync::atomic::{AtomicU32, Ordering};
 
+        // 本测试经 CreateInstance→create_aggregate 真实创建并 drop ApoObject，
+        // 会触碰进程级 INST_COUNT/LOCK_COUNT——按 AGENTS §11 先取共享串行锁。
+        let _serial = crate::object::ref_count::serial_lock();
+
         type QiFn =
             unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT;
         type RefFn = unsafe extern "system" fn(*mut c_void) -> u32;

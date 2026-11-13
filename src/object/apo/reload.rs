@@ -146,7 +146,7 @@ pub(crate) fn hot_reload_impl(
     clsid: GUID,
     obj_ptr: usize,
 ) {
-    // RT-safety 契约（规范 4.5）：本函数取 Mutex、做文件 I/O、分配内存，
+    // RT-safety 契约（规范 4.7）：本函数取 Mutex、做文件 I/O、分配内存，
     // **绝不允许**在实时线程上执行（会造成爆音/死锁）。它由 watcher 后台线程调用，
     // 该线程与 RT 线程并发——用 thread-local 上下文断言二者不会串。
     rt_require_non_rt!("hot_reload_impl");

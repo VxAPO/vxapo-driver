@@ -15,7 +15,8 @@ pub enum LogLevel {
     Info,
     Warning,
     Error,
-    #[allow(dead_code)] // 死簇：仅被已死的调用链引用，删除需整链评估
+    // RtViolation 由 panic.rs 的 panic hook 使用；该链路在 lib test 目标下不可见，--all-targets 需保留
+    #[allow(dead_code)]
     RtViolation,
 }
 
