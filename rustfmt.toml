@@ -1,6 +1,6 @@
 # VxAPO 统一格式配置（四个仓库逐字节一致；改动必须同步全部仓库）
 #
-# 决策依据见 vxapo-format-policy-plan.md §3 D1。
+# 决策依据见 vxapo-docs/driver 格式规范文档（Code Format Specification）。
 # 本文件刻意保持最小：折行策略就是 rustfmt 默认值，不设任何 width 类参数。
 
 # 风格版本钉死：即使以后 crate 的 edition 升到 2024，rustfmt 的默认风格也不会跟着变，

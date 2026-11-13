@@ -94,8 +94,8 @@ rustfmt 的输出随版本漂移。**不要**把升级和格式化混在一起�
 ## 7. 质量基线（改动前后都不得回退）
 
 ```sh
-cargo test                                   # 481 passed; 0 failed; 1 ignored
-cargo test --release                         # 471 passed; 0 failed; 1 ignored
+cargo test                                   # 492 passed; 0 failed; 1 ignored
+cargo test --release                         # 482 passed; 0 failed; 1 ignored
 cargo clippy --all-targets -- -D warnings    # 退出码 0
 cargo fmt --all -- --check                   # 退出码 0
 ```
