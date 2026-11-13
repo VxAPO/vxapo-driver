@@ -12,3 +12,6 @@
 
 # style: cargo fmt --all（无逻辑改动）
 79b8729115a6fcfe85db73eb14db039bdbc6ef84
+
+# style(driver): style_edition 2021→2024 全仓重排（无逻辑改动）
+c4b9f0c37b7f2f6625402580073f68758ff33a08
