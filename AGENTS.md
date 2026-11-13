@@ -6,7 +6,7 @@
 
 ## 1. 格式：`cargo fmt` 是唯一权威
 
-- 风格配置在 `rustfmt.toml`（`style_edition = "2021"`、`newline_style = "Unix"`）。
+- 风格配置在 `rustfmt.toml`（`style_edition = "2024"`、`newline_style = "Unix"`）。
   折行策略就是 rustfmt 默认值，**没有任何自定义 width 参数**——这是刻意的，
   目的是让任何编辑器 / CI / 工具开箱即产出同一格式。
 - 工具链钉在 `rust-toolchain.toml`（`channel = "1.100.0"`）。**不要**在本地随意升级，
