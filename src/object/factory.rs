@@ -318,14 +318,16 @@ mod tests {
             riid: *const GUID,
             ppv: *mut *mut c_void,
         ) -> HRESULT {
-            let outer = &mut *(this as *mut Outer);
+            // SAFETY: this 指向用例栈上存活的 Outer（COM this 契约）。
+            let outer = unsafe { &mut *(this as *mut Outer) };
             // SAFETY: 本函数是 COM Outer::QueryInterface 实现，COM 契约保证 riid 指向
             // 有效 GUID（只读一次）。
             let iid = unsafe { *riid };
             if iid == IUnknown::IID {
                 // SAFETY: 同一契约保证 ppv 可写；this 是合法的 Outer* 且引用计数在此 +1。
                 unsafe { *ppv = this };
-                outer_addref(this);
+                // SAFETY: this 指向用例栈上存活的 Outer，AddRef 只增计数。
+                unsafe { outer_addref(this) };
                 S_OK
             } else if outer.inner.is_null() {
                 E_NOINTERFACE
@@ -341,12 +343,14 @@ mod tests {
         }
 
         unsafe extern "system" fn outer_addref(this: *mut c_void) -> u32 {
-            let outer = &*(this as *mut Outer);
+            // SAFETY: this 指向用例栈上存活的 Outer（COM this 契约），只读字段。
+            let outer = unsafe { &*(this as *mut Outer) };
             outer.refs.fetch_add(1, Ordering::SeqCst) + 1
         }
 
         unsafe extern "system" fn outer_release(this: *mut c_void) -> u32 {
-            let outer = &*(this as *mut Outer);
+            // SAFETY: this 指向用例栈上存活的 Outer（COM this 契约），只读字段。
+            let outer = unsafe { &*(this as *mut Outer) };
             outer.refs.fetch_sub(1, Ordering::SeqCst) - 1
         }
 

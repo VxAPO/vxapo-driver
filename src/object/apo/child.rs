@@ -196,11 +196,14 @@ impl ChildApo {
         p_requested: Option<&IAudioMediaType>,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
-        self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
-            // SAFETY: self.iapo 有效；a/b 由 resolve_supported 保证是引擎传入的
-            // 有效 IAudioMediaType 引用。
-            unsafe { self.iapo.IsInputFormatSupported(a, b) }
-        })
+        // SAFETY: pp_supported 由调用方契约保证有效（# Safety）；self.iapo 为
+        // ChildApo 持有的有效接口引用，a/b 由 COM 契约保证有效；resolve_supported
+        // 仅按 COM 契约转发到 self.iapo 的格式协商接口。
+        unsafe {
+            self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
+                self.iapo.IsInputFormatSupported(a, b)
+            })
+        }
     }
 
     /// 检查输出格式是否支持（`IsOutputFormatSupported`， 参数采纳）。
@@ -217,10 +220,14 @@ impl ChildApo {
         p_requested: Option<&IAudioMediaType>,
         pp_supported: *mut *mut IAudioMediaType,
     ) -> HRESULT {
-        self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
-            // SAFETY: 同上（输出侧）——self.iapo 与 a/b 均由 COM 契约保证有效。
-            unsafe { self.iapo.IsOutputFormatSupported(a, b) }
-        })
+        // SAFETY: pp_supported 由调用方契约保证有效（# Safety）；self.iapo 为
+        // ChildApo 持有的有效接口引用，a/b 由 COM 契约保证有效；resolve_supported
+        // 仅按 COM 契约转发到 self.iapo 的格式协商接口（输出侧）。
+        unsafe {
+            self.resolve_supported(p_opposite, p_requested, pp_supported, |a, b| {
+                self.iapo.IsOutputFormatSupported(a, b)
+            })
+        }
     }
 
     /// 格式协商公共出口：调用具体接口方法，把返回的 `IAudioMediaType` 以 COM 输出指针移交。

@@ -52,8 +52,10 @@ unsafe fn dot_avx2_fma(a: &[f32], b: &[f32]) -> f32 {
     let mut acc = _mm256_setzero_ps();
     let mut i = 0;
     while i + 8 <= n {
-        let va = _mm256_loadu_ps(a.as_ptr().add(i));
-        let vb = _mm256_loadu_ps(b.as_ptr().add(i));
+        // SAFETY: i + 8 <= n <= a.len()，add(i) 与 loadu（允许非对齐）均在界内。
+        let va = unsafe { _mm256_loadu_ps(a.as_ptr().add(i)) };
+        // SAFETY: 同上——b.len() 同样覆盖 i + 8。
+        let vb = unsafe { _mm256_loadu_ps(b.as_ptr().add(i)) };
         acc = _mm256_fmadd_ps(va, vb, acc);
         i += 8;
     }
@@ -65,7 +67,8 @@ unsafe fn dot_avx2_fma(a: &[f32], b: &[f32]) -> f32 {
     let s2 = _mm_add_ss(s1, _mm_shuffle_ps(s1, s1, 0b0000_0001));
     let mut s = _mm_cvtss_f32(s2);
     while i < n {
-        s = a.get_unchecked(i).mul_add(*b.get_unchecked(i), s);
+        // SAFETY: i < n <= a.len()/b.len()，get_unchecked 不会越界。
+        s = unsafe { a.get_unchecked(i).mul_add(*b.get_unchecked(i), s) };
         i += 1;
     }
     s

@@ -359,17 +359,21 @@ mod simd_df2t {
         s2: __m128d,
         x: __m128d,
     ) -> (__m128d, __m128d, __m128d) {
-        let b0 = _mm_set1_pd(coeffs.b0 as f64);
-        let b1 = _mm_set1_pd(coeffs.b1 as f64);
-        let b2 = _mm_set1_pd(coeffs.b2 as f64);
-        let na1 = _mm_set1_pd(-(coeffs.a1 as f64));
-        let a2 = _mm_set1_pd(coeffs.a2 as f64);
+        // SAFETY: SSE2 是 x86_64 基线指令集，本函数可在任何 x86_64 目标上执行；
+        // coeffs 为有效引用，仅读取标量字段。
+        unsafe {
+            let b0 = _mm_set1_pd(coeffs.b0 as f64);
+            let b1 = _mm_set1_pd(coeffs.b1 as f64);
+            let b2 = _mm_set1_pd(coeffs.b2 as f64);
+            let na1 = _mm_set1_pd(-(coeffs.a1 as f64));
+            let a2 = _mm_set1_pd(coeffs.a2 as f64);
 
-        let out = _mm_add_pd(_mm_mul_pd(b0, x), s1);
-        let new_s1 = _mm_add_pd(_mm_add_pd(_mm_mul_pd(b1, x), _mm_mul_pd(na1, out)), s2);
-        // 标量语义：s2 = b2*x - a2*out（逐项乘后相减）。
-        let new_s2 = _mm_sub_pd(_mm_mul_pd(b2, x), _mm_mul_pd(a2, out));
-        (out, new_s1, new_s2)
+            let out = _mm_add_pd(_mm_mul_pd(b0, x), s1);
+            let new_s1 = _mm_add_pd(_mm_add_pd(_mm_mul_pd(b1, x), _mm_mul_pd(na1, out)), s2);
+            // 标量语义：s2 = b2*x - a2*out（逐项乘后相减）。
+            let new_s2 = _mm_sub_pd(_mm_mul_pd(b2, x), _mm_mul_pd(a2, out));
+            (out, new_s1, new_s2)
+        }
     }
 
     /// FMA 路径：与标量 `mul_add` 表达式逐位一致。
@@ -409,37 +413,37 @@ mod simd_df2t {
         x_r: f32,
         use_fma: bool,
     ) -> (f32, f32) {
-        let x = _mm_set_pd(x_r as f64, x_l as f64);
-        let s1 = _mm_set_pd(st1.s1, st0.s1);
-        let s2 = _mm_set_pd(st1.s2, st0.s2);
+        // SAFETY: SSE2 是 x86_64 基线指令集，下列 _mm_* 装载/提取在任何 x86_64
+        // 目标上均安全；step_fma 的前提由 use_fma（is_x86_feature_detected!("fma")
+        // 求得）保证；st0/st1 为已初始化的有效状态引用（见函数 Safety 契约）。
+        unsafe {
+            let x = _mm_set_pd(x_r as f64, x_l as f64);
+            let s1 = _mm_set_pd(st1.s1, st0.s1);
+            let s2 = _mm_set_pd(st1.s2, st0.s2);
 
-        let (out, new_s1, new_s2) = if use_fma {
-            // SAFETY: use_fma 由 std::is_x86_feature_detected!("fma") 求得，
-            // 满足 step_fma 的 #[target_feature(enable = "fma")] 前提；
-            // coeffs/st1/st2 均为有效引用（借用期内不会被释放或别名改写）。
-            unsafe { step_fma(coeffs, s1, s2, x) }
-        } else {
-            // SAFETY: SSE2 是 x86_64 的基线指令集，任何 x86_64 CPU 均支持；
-            // coeffs/st1/st2 均为有效引用。
-            unsafe { step_sse2(coeffs, s1, s2, x) }
-        };
+            let (out, new_s1, new_s2) = if use_fma {
+                step_fma(coeffs, s1, s2, x)
+            } else {
+                step_sse2(coeffs, s1, s2, x)
+            };
 
-        st0.s1 = _mm_cvtsd_f64(new_s1);
-        st1.s1 = _mm_cvtsd_f64(_mm_unpackhi_pd(new_s1, new_s1));
-        st0.s2 = _mm_cvtsd_f64(new_s2);
-        st1.s2 = _mm_cvtsd_f64(_mm_unpackhi_pd(new_s2, new_s2));
+            st0.s1 = _mm_cvtsd_f64(new_s1);
+            st1.s1 = _mm_cvtsd_f64(_mm_unpackhi_pd(new_s1, new_s1));
+            st0.s2 = _mm_cvtsd_f64(new_s2);
+            st1.s2 = _mm_cvtsd_f64(_mm_unpackhi_pd(new_s2, new_s2));
 
-        let mut out_l = _mm_cvtsd_f64(out) as f32;
-        let mut out_r = _mm_cvtsd_f64(_mm_unpackhi_pd(out, out)) as f32;
-        if !out_l.is_finite() {
-            st0.clear();
-            out_l = 0.0;
+            let mut out_l = _mm_cvtsd_f64(out) as f32;
+            let mut out_r = _mm_cvtsd_f64(_mm_unpackhi_pd(out, out)) as f32;
+            if !out_l.is_finite() {
+                st0.clear();
+                out_l = 0.0;
+            }
+            if !out_r.is_finite() {
+                st1.clear();
+                out_r = 0.0;
+            }
+            (out_l, out_r)
         }
-        if !out_r.is_finite() {
-            st1.clear();
-            out_r = 0.0;
-        }
-        (out_l, out_r)
     }
 }
 

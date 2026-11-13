@@ -575,7 +575,9 @@ unsafe fn checked_interleaved_slice<'a>(
     if n == 0 {
         return &[];
     }
-    std::slice::from_raw_parts(ptr, n)
+    // SAFETY: 调用方契约（见上）：ptr 指向容量至少 max_frames * ch 的引擎缓冲；
+    // n = min(frames, max_frames) * ch 不会超出该容量。
+    unsafe { std::slice::from_raw_parts(ptr, n) }
 }
 
 /// [`checked_interleaved_slice`] 的可变版本。
@@ -594,7 +596,8 @@ unsafe fn checked_interleaved_slice_mut<'a>(
     if n == 0 {
         return &mut [];
     }
-    std::slice::from_raw_parts_mut(ptr, n)
+    // SAFETY: 同上——ptr 为可写引擎缓冲，容量覆盖 n 个 f32。
+    unsafe { std::slice::from_raw_parts_mut(ptr, n) }
 }
 
 impl ApoObject {

@@ -7,7 +7,7 @@
 //! - `DllCanUnloadNow`：检查 `INST_COUNT == 0 && LOCK_COUNT == 0`，判定可否卸载
 //! - `DllMain`：DLL 入口，仅保存模块句柄到全局 `static`，始终返回 `TRUE`
 //!
-//! 全部函数标记 `#[no_mangle] pub extern "system"`。
+//! 全部函数标记 `#[unsafe(no_mangle)] pub extern "system"`。
 //!
 //! DllMain 约束：
 //! 禁止在 `DLL_PROCESS_ATTACH` 中执行以下操作：
@@ -66,7 +66,7 @@ static MODULE_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::nul
 ///
 /// 由 Windows 加载器在进程/线程 attach/detach 时调用。
 /// 在 Loader Lock 持有期间执行，必须保持极简。
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllMain(
     h_module: HMODULE,
@@ -108,7 +108,7 @@ pub unsafe extern "system" fn DllMain(
 ///
 /// COM 运行时（`CoCreateInstance` 内部）调用此函数获取工厂。
 /// 使用 `#[implement]` COM 智能指针，自动管理引用计数。
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
@@ -184,7 +184,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 /// 检查 DLL 是否可以安全卸载。
 ///
 /// COM 运行时定期调用此函数。INST_COUNT 与 LOCK_COUNT 均为零时可以卸载。
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     if inst_count::is_zero() && factory::lock_is_zero() {
@@ -216,7 +216,7 @@ const AE_INTERFACE0: &str = "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"; // IAudioP
 ///
 /// 由 `regsvr32 vxapo.dll` 调用。幂等：键已存在时覆盖写入。
 /// 注册顺序：PostMix → PreMix；失败逆序回滚 → `SELFREG_E_CLASS`。
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
     // 获取 DLL 路径 — 需要 HMODULE（DllMain 中保存）。
@@ -263,7 +263,7 @@ pub fn register_apo_with_path(dll_path: &str) -> HRESULT {
 /// 由 `regsvr32 /u vxapo.dll` 调用。
 /// 注销顺序：PreMix → PostMix（与注册相反）。
 /// 尽力清理，即使某条目注销失败也继续。
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
     // 注销顺序：PreMix → PostMix（与注册相反）
@@ -396,11 +396,14 @@ mod tests {
         if ptr.is_null() {
             return;
         }
-        let vtbl = *(ptr as *const *const usize);
+        // SAFETY: ptr 非空（上方已判空）；COM 布局保证接口指针首字段为 vtable。
+        let vtbl = unsafe { *(ptr as *const *const usize) };
         type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
         // vtable[2] = Release
-        let release: ReleaseFn = std::mem::transmute(*vtbl.add(2));
-        release(ptr);
+        // SAFETY: vtable 槽 2 为 Release，签名与 ReleaseFn 一致。
+        let release: ReleaseFn = unsafe { std::mem::transmute(*vtbl.add(2)) };
+        // SAFETY: ptr 有效且持有引用（本函数 # Safety 契约），按 COM 规则释放。
+        unsafe { release(ptr) };
     }
 
     // ── DllCanUnloadNow ─────────────────────────────────────────────────────

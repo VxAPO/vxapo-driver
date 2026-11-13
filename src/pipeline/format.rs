@@ -74,11 +74,15 @@ pub(crate) fn is_float_wave_format(wf: &WAVEFORMATEX) -> bool {
 /// # Safety
 /// `media_type` 必须指向有效的 IAudioMediaType COM 对象，或为 null。
 pub unsafe fn extract_format(media_type: *mut IAudioMediaType) -> Result<AudioFormat> {
-    let Some(media) = media_type.as_ref() else {
+    // SAFETY: 调用方契约：media_type 指向有效 IAudioMediaType 或为 null；
+    // as_ref 仅在非空时构造引用。
+    let Some(media) = (unsafe { media_type.as_ref() }) else {
         return Err(VxApoError::format("media_type is null"));
     };
-    let wfx = media.GetAudioFormat();
-    let Some(fmt) = (wfx as *const WAVEFORMATEX).as_ref() else {
+    // SAFETY: media 是上方构造的有效 COM 接口引用。
+    let wfx = unsafe { media.GetAudioFormat() };
+    // SAFETY: wfx 由 COM 返回、可能为 null；as_ref 仅在非空时构造引用。
+    let Some(fmt) = (unsafe { (wfx as *const WAVEFORMATEX).as_ref() }) else {
         return Err(VxApoError::format("GetAudioFormat returned null"));
     };
     Ok(format_from_wave_format(fmt))
@@ -91,11 +95,15 @@ pub unsafe fn extract_format(media_type: *mut IAudioMediaType) -> Result<AudioFo
 /// # Safety
 /// `media_type` 必须指向有效的 IAudioMediaType COM 对象，或为 null。
 pub unsafe fn is_float_format(media_type: *mut IAudioMediaType) -> Result<bool> {
-    let Some(media) = media_type.as_ref() else {
+    // SAFETY: 调用方契约：media_type 指向有效 IAudioMediaType 或为 null；
+    // as_ref 仅在非空时构造引用。
+    let Some(media) = (unsafe { media_type.as_ref() }) else {
         return Err(VxApoError::format("media_type is null"));
     };
-    let wfx = media.GetAudioFormat();
-    let Some(fmt) = (wfx as *const WAVEFORMATEX).as_ref() else {
+    // SAFETY: media 是上方构造的有效 COM 接口引用。
+    let wfx = unsafe { media.GetAudioFormat() };
+    // SAFETY: wfx 由 COM 返回、可能为 null；as_ref 仅在非空时构造引用。
+    let Some(fmt) = (unsafe { (wfx as *const WAVEFORMATEX).as_ref() }) else {
         return Err(VxApoError::format("GetAudioFormat returned null"));
     };
     Ok(is_float_wave_format(fmt))

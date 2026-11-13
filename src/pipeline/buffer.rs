@@ -45,7 +45,8 @@ impl BufferInfo {
     /// # Safety
     /// 调用方必须保证 ptr 指向至少 total_samples() 个 f32 元素。
     pub unsafe fn as_slice(&self) -> &[f32] {
-        std::slice::from_raw_parts(self.ptr, self.total_samples())
+        // SAFETY: 调用方契约（见上）：ptr 指向至少 total_samples() 个有效 f32。
+        unsafe { std::slice::from_raw_parts(self.ptr, self.total_samples()) }
     }
 
     /// 交织格式连续可变切片。
@@ -53,7 +54,9 @@ impl BufferInfo {
     /// # Safety
     /// 调用方必须保证 ptr 指向至少 total_samples() 个 f32 元素。
     pub unsafe fn as_slice_mut(&mut self) -> &mut [f32] {
-        std::slice::from_raw_parts_mut(self.ptr, self.total_samples())
+        // SAFETY: 调用方契约（见上）：ptr 指向至少 total_samples() 个有效 f32，
+        // 且 &mut self 保证独占访问。
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.total_samples()) }
     }
 
     /// 清零缓冲区。

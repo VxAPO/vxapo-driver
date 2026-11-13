@@ -242,7 +242,9 @@ pub unsafe fn rt_index<T>(slice: &[T], index: usize) -> &T {
         index,
         slice.len()
     );
-    slice.get_unchecked(index)
+    // SAFETY: 上方 debug_assert 与 # Safety 契约均保证 index < slice.len()，
+    // get_unchecked 不会越界。
+    unsafe { slice.get_unchecked(index) }
 }
 
 /// RT 安全的可变 slice 索引。
@@ -259,7 +261,9 @@ pub unsafe fn rt_index_mut<T>(slice: &mut [T], index: usize) -> &mut T {
         index,
         slice.len()
     );
-    slice.get_unchecked_mut(index)
+    // SAFETY: 上方 debug_assert 与 # Safety 契约均保证 index < slice.len()，
+    // get_unchecked_mut 不会越界。
+    unsafe { slice.get_unchecked_mut(index) }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

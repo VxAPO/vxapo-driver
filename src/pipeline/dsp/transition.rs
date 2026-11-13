@@ -88,9 +88,13 @@ pub unsafe fn mix_buffers(
     let inv_factor = 1.0 - factor;
 
     for f in 0..frame_count {
-        let old = *old_samples.add(f);
-        let new = *new_samples.add(f);
-        *output.add(f) = old * inv_factor + new * factor;
+        // SAFETY: 调用方契约：三个指针均指向至少 frame_count 个有效 f32，
+        // f < frame_count，add(f) 与解引用均在界内。
+        unsafe {
+            let old = *old_samples.add(f);
+            let new = *new_samples.add(f);
+            *output.add(f) = old * inv_factor + new * factor;
+        }
     }
 }
 

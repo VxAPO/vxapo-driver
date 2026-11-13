@@ -178,7 +178,8 @@ unsafe fn base_from_this(this: *mut c_void) -> *mut NApo {
 unsafe fn delegate_qi_at(base: *mut NApo, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
     let apo = as_apo(base);
     if apo.p_unk_outer.is_null() {
-        return na_qi(base as *mut c_void, riid, ppv);
+        // SAFETY: base 指向有效 NApo（本 unsafe fn 的指针契约）；riid/ppv 由 COM 契约保证。
+        return unsafe { na_qi(base as *mut c_void, riid, ppv) };
     }
     // ★ 委托 outer——引擎身份检查通过（IAPO->QI(IUnknown） = outer IUnknown)
     // SAFETY: COM 聚合契约保证 p_unk_outer 是有效 IUnknown 实现（引擎外壳，
@@ -194,7 +195,8 @@ unsafe fn delegate_qi_at(base: *mut NApo, riid: *const GUID, ppv: *mut *mut c_vo
 unsafe fn delegate_addref_at(base: *mut NApo) -> u32 {
     let apo = as_apo(base);
     if apo.p_unk_outer.is_null() {
-        return na_addref(base as *mut c_void);
+        // SAFETY: base 指向有效 NApo（本 unsafe fn 的指针契约）。
+        return unsafe { na_addref(base as *mut c_void) };
     }
     // SAFETY: 同 delegate_qi_at——p_unk_outer 为有效聚合外壳，槽 1 为 AddRef。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
@@ -208,7 +210,8 @@ unsafe fn delegate_addref_at(base: *mut NApo) -> u32 {
 unsafe fn delegate_release_at(base: *mut NApo) -> u32 {
     let apo = as_apo(base);
     if apo.p_unk_outer.is_null() {
-        return na_release(base as *mut c_void);
+        // SAFETY: base 指向有效 NApo（本 unsafe fn 的指针契约）。
+        return unsafe { na_release(base as *mut c_void) };
     }
     // SAFETY: 同 delegate_qi_at——p_unk_outer 为有效聚合外壳，槽 2 为 Release。
     let outer_vtbl = unsafe { *(apo.p_unk_outer as *const *const usize) };
@@ -224,13 +227,16 @@ unsafe extern "system" fn apo_dl_qi(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    delegate_qi_at(this as *mut NApo, riid, ppv)
+    // SAFETY: this 是 COM 传入的 IAPO 视图指针（base+0），指向有效 NApo。
+    unsafe { delegate_qi_at(this as *mut NApo, riid, ppv) }
 }
 unsafe extern "system" fn apo_dl_addref(this: *mut c_void) -> u32 {
-    delegate_addref_at(this as *mut NApo)
+    // SAFETY: this 是 COM 传入的 IAPO 视图指针（base+0），指向有效 NApo。
+    unsafe { delegate_addref_at(this as *mut NApo) }
 }
 unsafe extern "system" fn apo_dl_release(this: *mut c_void) -> u32 {
-    delegate_release_at(this as *mut NApo)
+    // SAFETY: this 是 COM 传入的 IAPO 视图指针（base+0），指向有效 NApo。
+    unsafe { delegate_release_at(this as *mut NApo) }
 }
 
 // IAPO_RT 接口 ptr = base+8，需回退。
@@ -239,13 +245,17 @@ unsafe extern "system" fn rt_dl_qi(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    delegate_qi_at(base_from_iface(this, OFF_RT), riid, ppv)
+    // SAFETY: base_from_iface 把 RT 视图指针（base+8）回退为对象基址；
+    // delegate_qi_at 按其 # Safety 契约处理。
+    unsafe { delegate_qi_at(base_from_iface(this, OFF_RT), riid, ppv) }
 }
 unsafe extern "system" fn rt_dl_addref(this: *mut c_void) -> u32 {
-    delegate_addref_at(base_from_iface(this, OFF_RT))
+    // SAFETY: base_from_iface 把 RT 视图指针（base+8）回退为对象基址。
+    unsafe { delegate_addref_at(base_from_iface(this, OFF_RT)) }
 }
 unsafe extern "system" fn rt_dl_release(this: *mut c_void) -> u32 {
-    delegate_release_at(base_from_iface(this, OFF_RT))
+    // SAFETY: base_from_iface 把 RT 视图指针（base+8）回退为对象基址。
+    unsafe { delegate_release_at(base_from_iface(this, OFF_RT)) }
 }
 
 // IAPO_CFG 接口 ptr = base+16，需回退。
@@ -254,13 +264,17 @@ unsafe extern "system" fn cfg_dl_qi(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    delegate_qi_at(base_from_iface(this, OFF_CFG), riid, ppv)
+    // SAFETY: base_from_iface 把 CFG 视图指针（base+16）回退为对象基址；
+    // delegate_qi_at 按其 # Safety 契约处理。
+    unsafe { delegate_qi_at(base_from_iface(this, OFF_CFG), riid, ppv) }
 }
 unsafe extern "system" fn cfg_dl_addref(this: *mut c_void) -> u32 {
-    delegate_addref_at(base_from_iface(this, OFF_CFG))
+    // SAFETY: base_from_iface 把 CFG 视图指针（base+16）回退为对象基址。
+    unsafe { delegate_addref_at(base_from_iface(this, OFF_CFG)) }
 }
 unsafe extern "system" fn cfg_dl_release(this: *mut c_void) -> u32 {
-    delegate_release_at(base_from_iface(this, OFF_CFG))
+    // SAFETY: base_from_iface 把 CFG 视图指针（base+16）回退为对象基址。
+    unsafe { delegate_release_at(base_from_iface(this, OFF_CFG)) }
 }
 
 // IAPO_ASE 接口 ptr = base+24，需回退。
@@ -269,13 +283,17 @@ unsafe extern "system" fn ase_dl_qi(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    delegate_qi_at(base_from_iface(this, OFF_ASE), riid, ppv)
+    // SAFETY: base_from_iface 把 ASE 视图指针（base+24）回退为对象基址；
+    // delegate_qi_at 按其 # Safety 契约处理。
+    unsafe { delegate_qi_at(base_from_iface(this, OFF_ASE), riid, ppv) }
 }
 unsafe extern "system" fn ase_dl_addref(this: *mut c_void) -> u32 {
-    delegate_addref_at(base_from_iface(this, OFF_ASE))
+    // SAFETY: base_from_iface 把 ASE 视图指针（base+24）回退为对象基址。
+    unsafe { delegate_addref_at(base_from_iface(this, OFF_ASE)) }
 }
 unsafe extern "system" fn ase_dl_release(this: *mut c_void) -> u32 {
-    delegate_release_at(base_from_iface(this, OFF_ASE))
+    // SAFETY: base_from_iface 把 ASE 视图指针（base+24）回退为对象基址。
+    unsafe { delegate_release_at(base_from_iface(this, OFF_ASE)) }
 }
 
 // ── NonDelegatingQI（EAPO:519-538）───────────────────────────
@@ -297,7 +315,7 @@ unsafe extern "system" fn na_qi(
     // 判断当前视图：this 指向的 vtable 地址 = ND_UNKNOWN_VTBL → 非委托 IUnknown 视图（offset 32）。
     // 否则视为对象基址（offset 0，非聚合直接对对象调 QI 的路径）。
     // SAFETY: this 必须是 NApo 内某视图字段地址（create_aggregate 返回的偏移指针）。
-    let base = base_from_this(this);
+    let base = unsafe { base_from_this(this) };
     let apo = as_apo(base);
 
     // QI(IUnknown) → 返回非委托 IUnknown 视图（EAPO:521-522，NonDelegatingUnknown 身份）。
@@ -343,12 +361,14 @@ unsafe extern "system" fn na_qi(
 
 // ── NonDelegatingAddRef/Release（EAPO:541-555，自维护）────────
 unsafe extern "system" fn na_addref(this: *mut c_void) -> u32 {
-    let apo = as_apo(base_from_this(this));
+    // SAFETY: this 指向本对象某视图字段（vtable 契约），base_from_this 回退基址。
+    let apo = as_apo(unsafe { base_from_this(this) });
     apo.cref.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
-    let base = base_from_this(this);
+    // SAFETY: this 指向本对象某视图字段（vtable 契约），base_from_this 回退基址。
+    let base = unsafe { base_from_this(this) };
     let apo = as_apo(base);
     let r = apo.cref.fetch_sub(1, Ordering::Release) - 1;
     if r == 0 {
@@ -373,7 +393,7 @@ unsafe extern "system" fn na_release(this: *mut c_void) -> u32 {
         release_inner(apo.i_ase);
         // SAFETY: base 由 create_aggregate 用 Box::into_raw 交出所有权，且引用计数已
         // 归零（上面 r==0 分支），此处是唯一一次回收，随后不再使用 base。
-        drop(Box::from_raw(base));
+        drop(unsafe { Box::from_raw(base) });
     }
     r
 }
@@ -499,9 +519,13 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
     let unknown: IUnknown = apo.into();
 
     // 2. QI 出 4 个内部接口指针（缓存供转发）。
-    let raw = std::mem::transmute_copy::<IUnknown, *mut c_void>(&unknown);
-    let vtbl = *(raw as *const *const usize);
-    let qi: QiFn = std::mem::transmute(*vtbl);
+    // SAFETY: unknown 是刚构造的有效 COM 接口引用；transmute_copy 仅复制出其
+    // 原始接口指针（unknown 仍在本作用域内负责释放）。
+    let raw = unsafe { std::mem::transmute_copy::<IUnknown, *mut c_void>(&unknown) };
+    // SAFETY: COM 布局保证接口指针首字段为 vtable 指针。
+    let vtbl = unsafe { *(raw as *const *const usize) };
+    // SAFETY: vtable 槽 0 为 QueryInterface，签名与 QiFn 一致。
+    let qi: QiFn = unsafe { std::mem::transmute(*vtbl) };
 
     let iapoid = IID_IAPO;
     let rtid = IID_IAPO_RT;
@@ -509,20 +533,28 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
     let aseid = IID_IAUDIO_SYSTEM_EFFECTS;
 
     let mut i_apo: *mut c_void = std::ptr::null_mut();
-    let hr_apo = qi(raw, &iapoid, &mut i_apo);
+    // SAFETY: qi/raw 来自上方 vtable 构造；IID 为静态常量，出参为本地变量，满足 QI 契约。
+    let hr_apo = unsafe { qi(raw, &iapoid, &mut i_apo) };
     let mut i_apo_rt: *mut c_void = std::ptr::null_mut();
-    let hr_rt = qi(raw, &rtid, &mut i_apo_rt);
+    // SAFETY: 同上——RT 接口 QI。
+    let hr_rt = unsafe { qi(raw, &rtid, &mut i_apo_rt) };
     let mut i_cfg: *mut c_void = std::ptr::null_mut();
-    let hr_cfg = qi(raw, &cfgid, &mut i_cfg);
+    // SAFETY: 同上——CFG 接口 QI。
+    let hr_cfg = unsafe { qi(raw, &cfgid, &mut i_cfg) };
     let mut i_ase: *mut c_void = std::ptr::null_mut();
-    let hr_ase = qi(raw, &aseid, &mut i_ase);
+    // SAFETY: 同上——ASE 接口 QI。
+    let hr_ase = unsafe { qi(raw, &aseid, &mut i_ase) };
 
     if hr_apo.0 != 0 || hr_rt.0 != 0 || hr_cfg.0 != 0 || hr_ase.0 != 0 {
         let rel = |p: *mut c_void| {
             if !p.is_null() {
-                let v = *(p as *const *const usize);
-                let r: RefFn = std::mem::transmute(*v.add(2));
-                r(p);
+                // SAFETY: p 非空（上方判空），是 QI 成功取得的接口指针；COM 布局
+                // 保证首字段为 vtable。
+                let v = unsafe { *(p as *const *const usize) };
+                // SAFETY: vtable 槽 2 为 Release，签名与 RefFn 一致。
+                let r: RefFn = unsafe { std::mem::transmute(*v.add(2)) };
+                // SAFETY: p 持有 QI 取得的 +1 引用，按 COM 规则释放。
+                unsafe { r(p) };
             }
         };
         rel(i_apo);
@@ -566,7 +598,8 @@ pub unsafe fn create_aggregate(p_unk_outer: *mut c_void, clsid: GUID) -> *mut c_
 pub unsafe fn release_aggregate(obj: *mut c_void) {
     if !obj.is_null() {
         // na_release 现在能自动识别非委托 IUnknown 视图并回退基址。
-        na_release(obj);
+        // SAFETY: obj 非空（上方判空）且是 create_aggregate 返回的有效指针（# Safety 契约）。
+        unsafe { na_release(obj) };
     }
 }
 
@@ -713,14 +746,16 @@ mod tests {
             riid: *const GUID,
             ppv: *mut *mut c_void,
         ) -> HRESULT {
-            let outer = &mut *(this as *mut Outer);
+            // SAFETY: this 指向用例栈上存活的 Outer（COM this 契约）。
+            let outer = unsafe { &mut *(this as *mut Outer) };
             // SAFETY: 本函数是测试用 outer 的 QueryInterface；COM 契约保证 riid 有效
             // （用例传入 &IUnknown::IID），只读一次。
             let iid = unsafe { *riid };
             if iid == IUnknown::IID {
                 // SAFETY: ppv 由用例传入（&mut unk），this 指向栈上存活的 Outer。
                 unsafe { *ppv = this };
-                outer_addref(this);
+                // SAFETY: this 指向栈上存活的 Outer（见上），AddRef 只增计数。
+                unsafe { outer_addref(this) };
                 S_OK
             } else if outer.inner.is_null() {
                 E_NOINTERFACE
@@ -736,12 +771,14 @@ mod tests {
         }
 
         unsafe extern "system" fn outer_addref(this: *mut c_void) -> u32 {
-            let outer = &*(this as *mut Outer);
+            // SAFETY: this 指向用例栈上存活的 Outer（COM this 契约），只读字段。
+            let outer = unsafe { &*(this as *mut Outer) };
             outer.refs.fetch_add(1, Ordering::SeqCst) + 1
         }
 
         unsafe extern "system" fn outer_release(this: *mut c_void) -> u32 {
-            let outer = &*(this as *mut Outer);
+            // SAFETY: this 指向用例栈上存活的 Outer（COM this 契约），只读字段。
+            let outer = unsafe { &*(this as *mut Outer) };
             outer.refs.fetch_sub(1, Ordering::SeqCst) - 1
         }
 
