@@ -23,10 +23,10 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置。
 
 | 做法 | 说明 | 可核验位置 |
 |---|---|---|
-| 按标准 APO 契约实现并被引擎加载 | 实现 `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`，在聚合模式（`pUnkOuter` 非空）下工作；导出 `DllGetClassObject` / `DllRegisterServer`，自维护实例与锁计数以支撑 `DllCanUnloadNow` | `object/apo/`、`object/apo/dll_exports.rs`；注册项 `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
+| 按标准 APO 契约实现并被引擎加载 | 实现 `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`，在聚合模式（`pUnkOuter` 非空）下工作；导出 `DllGetClassObject` / `DllRegisterServer`，自维护实例与锁计数以支撑 `DllCanUnloadNow` | `object/apo/`、`object/dll_exports.rs`；注册项 `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
 | 安装/卸载走事务，并带安装后自检 | `install --verify`：停/启音频服务 → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe` 回环；卸载后槽位与 `childApoKeyExists` 复原，设备配置与起始逐字节一致 | `install/selector/operation.rs`；CLI `vxapo-cli install --verify` |
-| 用 windows-rs 类型化绑定代替手写 COM 样板 | APO 接口取自 windows-rs 0.62 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 由 `#[implement]` 生成 vtable 与引用计数 | `object/apo/factory.rs` |
-| `unsafe` 收敛在 FFI 边界并逐处注明 | 391 处 / 26 个文件（`aggregate.rs` 109 · `audiodg.rs` 51 · `child.rs` 31 · `process.rs` 29 · `factory.rs` 27 …），配 315 处 `// SAFETY:` 说明；唯一手写 vtable 偏移在 COM 聚合外壳（引擎要求多接口固定 offset 布局），该处注明布局依据 | `src/`（搜索 `unsafe`）、`object/apo/aggregate.rs` |
+| 用 windows-rs 类型化绑定代替手写 COM 样板 | APO 接口取自 windows-rs 0.62 `Win32::Media::Audio::Apo`（含 `*_Impl` traits）；`ClassFactory` 由 `#[implement]` 生成 vtable 与引用计数 | `object/factory.rs` |
+| `unsafe` 收敛在 FFI 边界并逐处注明 | 457 处 / 27 个文件（截至 2026-11-13；大头在 `aggregate.rs`、`audiodg.rs`、`child.rs`、`process.rs`、`factory.rs`），配 352 处 `// SAFETY:` 说明；唯一手写 vtable 偏移在 COM 聚合外壳（引擎要求多接口固定 offset 布局），该处注明布局依据 | `src/`（搜索 `unsafe`）、`object/apo/aggregate.rs` |
 | 实时约束写进类型系统 | `unsafe trait RtSafe` / `RtCopy` 约束「无分配、无锁、无 I/O、无 panic」；`RealtimeContext` 为零尺寸编译期见证；发布构建 `panic = "abort"`；链上零分配 | `pipeline/realtime/` |
 | 以测试与告警作为回归基线 | **492** 个测试（release 482）；`cargo build` 与 `cargo build --tests` 均 0 告警；`cargo clippy --all-targets -- -D warnings` 退出码 0 | `cargo test`、`cargo build --tests`、`cargo clippy` |
 
@@ -50,7 +50,7 @@ COM/APO 约定而不绕开它们。** 本节只列做法与可核验位置。
 | 许可 | GPL-2.0（© Jonas Thedering） | GPL-3.0-or-later，独立实现，不含 EAPO 代码 |
 
 EAPO 侧行为记录见 `vxapo-docs/driver/zh/配置与DSP设计.md` §5「EqualizerAPO 行为参考」，
-各模块规范里也重复了细节，见 `模块引用规范/`。`Equalizer 行为文档` 本身已移除。
+各模块规范里也重复了细节，见 `vxapo-docs/driver` 的架构与模块规范。`Equalizer 行为文档` 本身已移除。
 当前保留四项可对照机制：子 APO 创建与委托、安装模式探测、槽位备份与恢复、安装后自检。
 
 ## 3 · 架构
@@ -110,7 +110,7 @@ driver 内部按实时性划分为两条路径。
 
 | 项 | 范围 | 实现位置 |
 |---|---|---|
-| 采样率 | 44.1 – 192 kHz | `object/apo/negotiate.rs`（范围校验） |
+| 采样率 | 不设硬限制（协商阶段仅校验 float 格式与 1–8 声道） | `object/apo/negotiate.rs` |
 | 通道数 | 1 – 8（含 7.1） | 同上；通道名由 `dwChannelMask` 推导 |
 | 位深 | 引擎侧 16 / 24 / 32-bit；APO 内部与连接格式为 32-bit float | `pipeline/context.rs`；`negotiate.rs` 校验 `WAVE_FORMAT_IEEE_FLOAT` |
 | 音频方向 | 播放与采集端点 | `pipeline/context.rs`（`DeviceType::Render / Capture`） |
@@ -238,10 +238,10 @@ them.** This section lists the practices and where each can be checked.
 
 | Practice | What it means | Where to check |
 |---|---|---|
-| Implements the standard APO contracts and is loaded by the engine | Implements `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`, works in aggregated mode (`pUnkOuter` non-null); exports `DllGetClassObject` / `DllRegisterServer` and tracks instance/lock counts for `DllCanUnloadNow` | `object/apo/`, `object/apo/dll_exports.rs`; registry entry `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
+| Implements the standard APO contracts and is loaded by the engine | Implements `IAudioProcessingObject` / `…RT` / `IAudioFormat` / `IPropertyStore`, works in aggregated mode (`pUnkOuter` non-null); exports `DllGetClassObject` / `DllRegisterServer` and tracks instance/lock counts for `DllCanUnloadNow` | `object/apo/`, `object/dll_exports.rs`; registry entry `HKLM\SOFTWARE\…\AudioEngine\AudioProcessingObjects\{CLSID}` |
 | Install/uninstall as transactions with a post-install self-check | `install --verify`: stop/start audio service → `CoCreateInstance` → `GetMixFormat` → `Initialize` → `test_pipe`; after uninstall the slots and `childApoKeyExists` are restored and the device config is byte-identical to its starting state | `install/selector/operation.rs`; CLI `vxapo-cli install --verify` |
-| Typed windows-rs bindings instead of hand-written COM plumbing | APO interfaces from windows-rs 0.62 `Win32::Media::Audio::Apo` (incl. `*_Impl` traits); `ClassFactory` uses `#[implement]` for vtables and reference counting | `object/apo/factory.rs` |
-| `unsafe` confined to the FFI boundary, documented per site | 391 occurrences / 26 files (`aggregate.rs` 109 · `audiodg.rs` 51 · `child.rs` 31 · `process.rs` 29 · `factory.rs` 27 …) with 315 `// SAFETY:` notes; the only hand-written vtable offsets are in the COM aggregate shell (the engine requires fixed multi-interface offsets there), with the layout rationale documented on site | `src/` (search `unsafe`), `object/apo/aggregate.rs` |
+| Typed windows-rs bindings instead of hand-written COM plumbing | APO interfaces from windows-rs 0.62 `Win32::Media::Audio::Apo` (incl. `*_Impl` traits); `ClassFactory` uses `#[implement]` for vtables and reference counting | `object/factory.rs` |
+| `unsafe` confined to the FFI boundary, documented per site | 457 occurrences / 27 files (as of 2026-11-13; mostly `aggregate.rs`, `audiodg.rs`, `child.rs`, `process.rs`, `factory.rs`) with 352 `// SAFETY:` notes; the only hand-written vtable offsets are in the COM aggregate shell (the engine requires fixed multi-interface offsets there), with the layout rationale documented on site | `src/` (search `unsafe`), `object/apo/aggregate.rs` |
 | Real-time constraints encoded in the type system | `unsafe trait RtSafe` / `RtCopy` require no allocation, no locking, no I/O and no panics; `RealtimeContext` is a zero-sized compile-time witness; release builds use `panic = "abort"`; zero-allocation chain | `pipeline/realtime/` |
 | Tests and warning-free builds as the regression baseline | **492** tests (release 482); `cargo build` and `cargo build --tests` report zero warnings; `cargo clippy --all-targets -- -D warnings` exits 0 | `cargo test`, `cargo build --tests`, `cargo clippy` |
 
@@ -265,7 +265,7 @@ different routes. Only the **differences** are listed.
 | License | GPL-2.0 (© Jonas Thedering) | GPL-3.0-or-later, independent implementation, no EAPO code |
 
 `vxapo-docs/driver/zh/配置与DSP设计.md` §5 ("EqualizerAPO 行为参考") records the EAPO-side
-behaviour, and the per-module specs under `模块引用规范/` repeat the details. The
+behaviour, and the architecture and module specs under `vxapo-docs/driver` repeat the details. The
 `Equalizer 行为文档` document no longer exists. Four comparable mechanisms remain: child APO
 creation and delegation, install mode detection, slot backup and restore, and post-install
 self-check.
@@ -340,7 +340,7 @@ The support surface follows. Each row names the implementation location.
 
 | Item | Range | Where implemented |
 |---|---|---|
-| Sample rate | 44.1 – 192 kHz | `object/apo/negotiate.rs` (range check) |
+| Sample rate | no hard limit (negotiation only checks the float format and 1–8 channels) | `object/apo/negotiate.rs` |
 | Channels | 1 – 8 (incl. 7.1) | same; channel names derived from `dwChannelMask` |
 | Bit depth | 16 / 24 / 32-bit on the engine side; 32-bit float internally and on the connection format | `pipeline/context.rs`; `negotiate.rs` checks `WAVE_FORMAT_IEEE_FLOAT` |
 | Direction | Render and capture endpoints | `pipeline/context.rs` (`DeviceType::Render / Capture`) |

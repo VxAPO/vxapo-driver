@@ -116,7 +116,7 @@ cargo fmt --all -- --check                   # 退出码 0
 
 ## 8. 公开 API 只经 `lib.rs` 的 facade
 
-**所有模块都是 `pub(crate)`**，对外只经 `src/lib.rs` 末尾的 facade（约 20 个 `pub use`）
+**所有模块都是 `pub(crate)`**，对外只经 `src/lib.rs` 末尾的 facade（14 条 `pub use`，41 个对外条目）
 暴露：`pub(crate) mod pipeline;` … + `pub use crate::pipeline::dsp::specs::{...}`。
 
 **新增对外 API 必须同时在此登记**（`lib.rs` 顶部已注明），否则实现细节会随模块路径泄漏。
@@ -167,7 +167,7 @@ cargo fmt --all -- --check                   # 退出码 0
 
 ---
 
-## 10. RT-safety 契约已接入生产路径（规范 4.5）
+## 10. RT-safety 契约已接入生产路径（规范 4.7）
 
 `pipeline/realtime/contract.rs` 的契约**已在生产路径生效**（此前是未接线的死设施）：
 
