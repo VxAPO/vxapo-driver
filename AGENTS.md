@@ -9,7 +9,7 @@
 - 风格配置在 `rustfmt.toml`（`style_edition = "2021"`、`newline_style = "Unix"`）。
   折行策略就是 rustfmt 默认值，**没有任何自定义 width 参数**——这是刻意的，
   目的是让任何编辑器 / CI / 工具开箱即产出同一格式。
-- 工具链钉在 `rust-toolchain.toml`（`channel = "1.97.1"`）。**不要**在本地随意升级，
+- 工具链钉在 `rust-toolchain.toml`（`channel = "1.100.0"`）。**不要**在本地随意升级，
   见 §4。
 - **不要手工微调格式**，也**不要**为局部观感引入新的格式化工具（prettier-rs、dprint 等）。
   觉得某处折行难看，先确认是不是真读不懂；真有问题用 §5 的定点豁免，并写明理由。
