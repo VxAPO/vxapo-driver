@@ -30,16 +30,16 @@ use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
 use crate::install::device::endpoint::query_endpoint;
 use crate::install::device::identity::{
-    identity_from_key, identity_from_values, merge_endpoint_history, normalize_device_id,
-    read_endpoint_identity, write_identity_values, EndpointIdentity,
+    EndpointIdentity, identity_from_key, identity_from_values, merge_endpoint_history,
+    normalize_device_id, read_endpoint_identity, write_identity_values,
 };
 use crate::install::device::info::{detect_mode_for_guid, enumerate_devices, find_endpoint_path};
 use crate::install::device::slots::{
-    child_apo_key_exists, ChildApoKind, InstallMode, CHILD_APO_PATH_ROOT, FX_PROPERTIES_KEY,
-    INSTALL_VERSION,
+    CHILD_APO_PATH_ROOT, ChildApoKind, FX_PROPERTIES_KEY, INSTALL_VERSION, InstallMode,
+    child_apo_key_exists,
 };
-use crate::install::device::sysfx::{decode_backups, SYSFX_BACKUP_VALUE};
-use crate::sys::registry::{delete_tree, split_key, RegKey, RegValue};
+use crate::install::device::sysfx::{SYSFX_BACKUP_VALUE, decode_backups};
+use crate::sys::registry::{RegKey, RegValue, delete_tree, split_key};
 use crate::utils::guid::parse_guid_string;
 use crate::utils::vx_error::{Result, VxApoError};
 

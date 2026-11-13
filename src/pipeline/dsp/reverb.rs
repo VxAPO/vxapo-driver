@@ -439,11 +439,7 @@ impl Filter for ReverbFilter {
         // 防止 decay > 1 等越界输入让环路发散（配置解析层已做一次校验）。
         let mut p = self.params;
         let clamp_param = |v: f32, lo: f32, hi: f32, def: f32| -> f32 {
-            if !v.is_finite() {
-                def
-            } else {
-                v.clamp(lo, hi)
-            }
+            if !v.is_finite() { def } else { v.clamp(lo, hi) }
         };
         p.room_size = clamp_param(p.room_size, 0.5, 1.5, 1.0);
         p.decay = clamp_param(p.decay, 0.0, 1.0, 0.41);

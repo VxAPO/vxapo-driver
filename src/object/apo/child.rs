@@ -29,7 +29,7 @@ use crate::sys::com::apo_types::{
     APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APO_REG_PROPERTIES, REFERENCE_TIME,
 };
 use crate::sys::com::prelude::{
-    CoCreateInstance, IUnknown, Interface, CLSCTX_ALL, E_POINTER, GUID, HRESULT, S_OK,
+    CLSCTX_ALL, CoCreateInstance, E_POINTER, GUID, HRESULT, IUnknown, Interface, S_OK,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

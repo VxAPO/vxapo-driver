@@ -26,9 +26,9 @@
 use std::ffi::c_void;
 use std::sync::atomic::AtomicPtr;
 
-use windows::core::BOOL;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::Registry::HKEY_CLASSES_ROOT;
+use windows::core::BOOL;
 
 use crate::object::factory;
 use crate::object::ref_count as inst_count;
@@ -376,7 +376,7 @@ fn unregister_com_class(entry: &vx_reg_props::ClsidEntry) -> crate::utils::vx_er
 mod tests {
     use super::*;
     use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
-    use crate::sys::com::prelude::{IUnknown, Interface, GUID};
+    use crate::sys::com::prelude::{GUID, IUnknown, Interface};
 
     /// 本模块测试读写**进程级**全局计数（`inst_count` / `factory` 锁计数），
     /// 且各自先 `reset_for_test()` 再断言精确值。锁必须与 `object/factory.rs` 的

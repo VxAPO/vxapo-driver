@@ -3,9 +3,9 @@
 # 决策依据见 vxapo-docs/driver 格式规范文档（Code Format Specification）。
 # 本文件刻意保持最小：折行策略就是 rustfmt 默认值，不设任何 width 类参数。
 
-# 风格版本钉死：即使以后 crate 的 edition 升到 2024，rustfmt 的默认风格也不会跟着变，
-# 避免升级 edition 时被迫再做一次全仓重排。
-style_edition = "2021"
+# 风格版本钉死：2024（与 crate edition 对齐；本次风格重排已作为独立 style: 提交完成）。
+# 显式钉死可避免 rustfmt 默认风格漂移悄悄重排全仓。
+style_edition = "2024"
 
 # 与 .gitattributes 的 eol=lf 对齐：rustfmt 默认 newline_style="Auto" 会按文件现有行尾
 # 写回，混合行尾时会把行尾噪声混进 diff。这里强制 Unix。

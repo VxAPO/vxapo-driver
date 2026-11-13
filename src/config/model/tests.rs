@@ -177,9 +177,10 @@ gain_db = 0.0
 q = 1.0
 "#;
     let err = convert(toml).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("bands[0].type 'ring_mod' is invalid"));
+    assert!(
+        err.to_string()
+            .contains("bands[0].type 'ring_mod' is invalid")
+    );
 }
 
 #[test]
@@ -259,9 +260,10 @@ fn total_peq_band_cap_enforced() {
         }
     }
     let err = convert(&s).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("unscoped 'peq' bands count 32 exceeds max 31"));
+    assert!(
+        err.to_string()
+            .contains("unscoped 'peq' bands count 32 exceeds max 31")
+    );
 }
 
 #[test]
@@ -293,9 +295,10 @@ fn per_channel_peq_band_cap() {
         ));
     }
     let err = convert(&s).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("channel 'L' peq bands count 32 exceeds max 31"));
+    assert!(
+        err.to_string()
+            .contains("channel 'L' peq bands count 32 exceeds max 31")
+    );
 }
 
 #[test]

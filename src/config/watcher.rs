@@ -19,8 +19,8 @@ use std::path::PathBuf;
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
-    FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
-    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification,
+    FindFirstChangeNotificationW, FindNextChangeNotification,
 };
 use windows::Win32::System::Threading::WaitForMultipleObjects;
 // SetEvent 仅被 cfg(test) 下的用例使用。

@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::pipeline::buffer::{evaluate_buffer, BufferAction, BufferInfo};
+use crate::pipeline::buffer::{BufferAction, BufferInfo, evaluate_buffer};
 use crate::pipeline::chain::Chain;
 use crate::pipeline::interleave::{deinterleave_into, interleave_from_guarded};
 use crate::sys::com::apo_types::{APO_CONNECTION_PROPERTY, BUFFER_SILENT, BUFFER_VALID};

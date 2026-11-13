@@ -10,14 +10,14 @@ use windows::core::Result;
 use crate::config::parser::ConfigParser;
 use crate::config::watcher::ConfigWatcher;
 use crate::pipeline::chain::Chain;
-use crate::pipeline::dsp::transition::{default_smoothing_length, SmoothingProvider};
+use crate::pipeline::dsp::transition::{SmoothingProvider, default_smoothing_length};
 use crate::rt_require_non_rt;
 use crate::sys::com::prelude::GUID;
 
-use super::config::diag_append;
-use super::inner::{build_dsp_context, ApoObjectInner};
-use super::rtdump::rt_dump_open;
 use super::ApoObject_Impl;
+use super::config::diag_append;
+use super::inner::{ApoObjectInner, build_dsp_context};
+use super::rtdump::rt_dump_open;
 
 /// watcher 运行时状态（外部驱动模型）。
 #[derive(Default)]
@@ -85,12 +85,14 @@ pub(crate) fn start_watcher(apo: &ApoObject_Impl) -> Result<()> {
     let clsid = apo.clsid;
     // 仅诊断日志用（不 deref）：用 mutex Arc 的稳定堆地址，避免 &ApoObject 生命周期耦合。
     let obj_ptr = Arc::as_ptr(&apo.mutex) as usize;
-    let handle = std::thread::spawn(move || loop {
-        if !watcher.wait_and_handle() {
-            break; // shutdown 或句柄失效。
+    let handle = std::thread::spawn(move || {
+        loop {
+            if !watcher.wait_and_handle() {
+                break; // shutdown 或句柄失效。
+            }
+            // 目录级变更 → 热重载（spec 短路 + 128KB 闸门内部处理）。
+            hot_reload_impl(&cfg, &inner, clsid, obj_ptr);
         }
-        // 目录级变更 → 热重载（spec 短路 + 128KB 闸门内部处理）。
-        hot_reload_impl(&cfg, &inner, clsid, obj_ptr);
     });
 
     // 4. 记录 watcher 运行时状态（&self 可写：Arc<Mutex> 内部可变性）。

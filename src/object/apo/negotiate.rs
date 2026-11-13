@@ -5,7 +5,7 @@
 
 use windows::core::Ref;
 
-use crate::pipeline::format::{extract_format, is_float_format, AudioFormat};
+use crate::pipeline::format::{AudioFormat, extract_format, is_float_format};
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{APOERR_FORMAT_NOT_SUPPORTED, APOERR_INVALID_CONNECTION_FORMAT};
 use windows::core::Result;

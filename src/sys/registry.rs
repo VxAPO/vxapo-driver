@@ -1,13 +1,13 @@
 //! sys/registry.rs — 注册表模块（规范 3.4，按 windows-rs 0.62.2 真实 API）
 
-use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW,
-    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG,
-    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS, REG_BINARY, REG_DWORD, REG_MULTI_SZ,
-    REG_OPEN_CREATE_OPTIONS, REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    HKEY_USERS, REG_BINARY, REG_DWORD, REG_MULTI_SZ, REG_OPEN_CREATE_OPTIONS, REG_QWORD,
+    REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW,
+    RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
+use windows::core::{HSTRING, PCWSTR};
 
 use crate::utils::vx_error::{Result, VxApoError};
 

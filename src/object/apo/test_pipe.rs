@@ -9,13 +9,13 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use windows::core::HSTRING;
 use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    OPEN_EXISTING,
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    WriteFile,
 };
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+use windows::core::HSTRING;
 
 use crate::sys::registry::RegKey;
 

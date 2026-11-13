@@ -45,22 +45,22 @@ pub use crate::install::audiodg::{
 pub use crate::install::device::endpoint::{EndpointInfo, EndpointState, Flow};
 pub use crate::install::device::format::AudioFormat;
 pub use crate::install::device::info::{
-    detect_mode_for_guid, enumerate_devices, find_endpoint_path, DeviceInfo,
+    DeviceInfo, detect_mode_for_guid, enumerate_devices, find_endpoint_path,
 };
 pub use crate::install::device::slots::{
-    child_apo_key_exists, read_child_apo_guid, ChildApoKind, InstallMode, SlotValue,
+    ChildApoKind, InstallMode, SlotValue, child_apo_key_exists, read_child_apo_guid,
 };
 pub use crate::install::device::stale::{
-    cleanup_orphan, fix_config_acl, list_stale_installs, snapshot_dir, MigrationReport,
-    StaleInstall,
+    MigrationReport, StaleInstall, cleanup_orphan, fix_config_acl, list_stale_installs,
+    snapshot_dir,
 };
 // object：per-device 配置路径（cli 与 driver 共用同一路径布局）
 pub use crate::object::apo::config::device_config_path;
 // pipeline/dsp：效果器参数表（UI 契约单一来源，cli `effects schema` 透传）
-pub use crate::pipeline::dsp::specs::{effect_param_specs, EffectParamSpec, EffectSpec};
+pub use crate::pipeline::dsp::specs::{EffectParamSpec, EffectSpec, effect_param_specs};
 // install/selector：安装/卸载/迁移编排
 pub use crate::install::selector::operation::{
-    install_endpoint, migrate_install, uninstall_endpoint, write_install_config, InstallConfig,
+    InstallConfig, install_endpoint, migrate_install, uninstall_endpoint, write_install_config,
 };
 // object：COM 注册与 CLSID
 pub use crate::object::dll_exports::register_apo_with_path;

@@ -16,8 +16,8 @@
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{
-    clamp_gain_db, is_stable_biquad, warn_rate_limited, FILTER_CUT_FLOOR_DB, FILTER_FREQ_MAX_RATIO,
-    FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN,
+    FILTER_CUT_FLOOR_DB, FILTER_FREQ_MAX_RATIO, FILTER_FREQ_MIN_HZ, Q_MAX, Q_MIN, clamp_gain_db,
+    is_stable_biquad, warn_rate_limited,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

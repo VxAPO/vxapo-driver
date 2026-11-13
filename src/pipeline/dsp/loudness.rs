@@ -13,7 +13,7 @@
 //! 当前为简化实现：以 1/3 倍频程 GraphicEq 近似 ISO 226 等响曲线；
 //! 完整查表与曲线拟合见 CHANGELOG 的 roadmap。
 
-use crate::pipeline::dsp::biquad::{compute_coeffs, BiquadFilter, BiquadStructure, BiquadType};
+use crate::pipeline::dsp::biquad::{BiquadFilter, BiquadStructure, BiquadType, compute_coeffs};
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::clamp_gain_db;
 

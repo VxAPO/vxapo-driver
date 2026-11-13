@@ -6,9 +6,9 @@
 
 use crate::sys::registry::RegKey;
 use crate::utils::vx_error::{Result, VxApoError};
-use windows::core::PWSTR;
 use windows::Win32::System::Registry::{HKEY, HKEY_LOCAL_MACHINE};
 use windows::Win32::System::Services::SC_HANDLE;
+use windows::core::PWSTR;
 
 /// 注册表路径：HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio。
 const AUDIO_KEY_PATH: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Audio";
@@ -80,12 +80,12 @@ pub(crate) fn ensure_can_load() -> Result<()> {
 /// 与 `restart_audio_service` 共用停服逻辑，但**不开起**（uninstall 删槽位后由
 /// CLI 层调 `restart_audio_service` 恢复）。
 pub fn stop_audio_service() -> Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Services::{
         CloseServiceHandle, ControlService, OpenSCManagerW, OpenServiceW, QueryServiceStatus,
         SC_HANDLE, SC_MANAGER_ALL_ACCESS, SERVICE_ALL_ACCESS, SERVICE_CONTROL_STOP,
         SERVICE_RUNNING, SERVICE_STATUS, SERVICE_STOPPED,
     };
+    use windows::core::{HSTRING, PCWSTR};
 
     // SAFETY: 本函数在非 RT 控制线程调用（install/CLI），无实时约束。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
@@ -149,11 +149,11 @@ pub fn stop_audio_service() -> Result<()> {
 /// 安装/卸载收尾在端点设备重启后调用，避免“pnputil 重启端点成功但服务仍停”
 /// 导致音频服务未被重新启用。
 pub fn ensure_audio_service_running() -> Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Services::{
-        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW,
-        SC_HANDLE, SC_MANAGER_ALL_ACCESS, SERVICE_ALL_ACCESS, SERVICE_RUNNING, SERVICE_STATUS,
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_HANDLE,
+        SC_MANAGER_ALL_ACCESS, SERVICE_ALL_ACCESS, SERVICE_RUNNING, SERVICE_STATUS, StartServiceW,
     };
+    use windows::core::{HSTRING, PCWSTR};
 
     // SAFETY: 非 RT 控制线程调用（install/CLI）。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
@@ -211,7 +211,7 @@ pub fn wait_for_audiodg_exit(timeout_ms: u32) -> bool {
     use std::time::{Duration, Instant};
     use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
@@ -244,7 +244,7 @@ pub fn wait_for_audiodg_exit(timeout_ms: u32) -> bool {
 fn audiodg_pids() -> Vec<u32> {
     use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
 
@@ -289,11 +289,11 @@ fn audiodg_pids() -> Vec<u32> {
 /// 轮询到 STOPPED，再停止 AudioSrv 并轮询——SCM 不允许在依赖服务运行时停止
 /// 父服务（ERROR_DEPENDENT_SERVICES_RUNNING），必须先停依赖。
 pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_HANDLE, SC_MANAGER_ALL_ACCESS,
         SERVICE_ENUMERATE_DEPENDENTS, SERVICE_QUERY_STATUS, SERVICE_STOP,
     };
+    use windows::core::{HSTRING, PCWSTR};
 
     // SAFETY: 非 RT 控制线程调用（install/CLI）。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
@@ -349,11 +349,11 @@ pub fn stop_audio_service_with_dependents(stop_timeout_secs: u32) -> Result<()> 
 /// 顺序与 `stop_audio_service_with_dependents` 相反：先启动 AudioSrv 并轮询到
 /// RUNNING，再枚举依赖服务逐个启动（启动失败按 5s 间隔重试一次，EAPO 同款）。
 pub fn start_audio_service_with_dependents(start_timeout_secs: u32) -> Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_HANDLE, SC_MANAGER_ALL_ACCESS,
         SERVICE_ENUMERATE_DEPENDENTS, SERVICE_QUERY_STATUS, SERVICE_START,
     };
+    use windows::core::{HSTRING, PCWSTR};
 
     // SAFETY: 非 RT 控制线程调用（install/CLI）。
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
@@ -413,7 +413,7 @@ pub fn restart_audio_service_wait(stop_timeout_secs: u32, start_timeout_secs: u3
 /// 枚举指定服务的活动依赖服务（短名列表）。
 fn active_dependents(svc: SC_HANDLE) -> Result<Vec<String>> {
     use windows::Win32::System::Services::{
-        EnumDependentServicesW, ENUM_SERVICE_STATUSW, SERVICE_ACTIVE,
+        ENUM_SERVICE_STATUSW, EnumDependentServicesW, SERVICE_ACTIVE,
     };
 
     let mut needed = 0u32;
@@ -491,7 +491,7 @@ fn stop_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Resul
 /// 启动单个服务并轮询到 RUNNING（5s 无进展重试一次，EAPO 同款）。
 fn start_service_and_wait(svc: SC_HANDLE, name: &str, timeout_secs: u32) -> Result<()> {
     use windows::Win32::System::Services::{
-        QueryServiceStatus, StartServiceW, SERVICE_RUNNING, SERVICE_STATUS,
+        QueryServiceStatus, SERVICE_RUNNING, SERVICE_STATUS, StartServiceW,
     };
 
     // SAFETY: SERVICE_STATUS 为 POD，全零位模式合法（初值，随即被 SCM 覆写）。
@@ -692,11 +692,11 @@ mod tests {
     #[test]
     #[ignore = "需要本机 SCM 访问权限"]
     fn active_dependents_enumerates_active_dependents() {
-        use windows::core::{HSTRING, PCWSTR};
         use windows::Win32::System::Services::{
             CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT,
             SERVICE_ENUMERATE_DEPENDENTS, SERVICE_QUERY_STATUS,
         };
+        use windows::core::{HSTRING, PCWSTR};
 
         // SAFETY: 打开本机 SCM（只申请 CONNECT）；失败直接 panic 视为环境不满足。
         let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) }

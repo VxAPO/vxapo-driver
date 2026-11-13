@@ -5,14 +5,14 @@
 //! 不包含 COM 接口方法本体，由 `apo.rs` 的 trait 实现转发调用。
 use windows::core::Result;
 
+use super::ApoObject_Impl;
 use super::child::ChildApo;
 use super::config::{extract_endpoint_guid, resolve_config_path};
 use super::state::ApoState;
-use super::ApoObject_Impl;
-use crate::install::device::slots::{read_child_apo_guid, ChildApoKind};
+use crate::install::device::slots::{ChildApoKind, read_child_apo_guid};
 use crate::object::vx_reg_props::{CLSID_VXAPO_PRE_MIX, REG_PROPS_POST_MIX, REG_PROPS_PRE_MIX};
-use crate::sys::com::apo_types::{APOInitSystemEffects, APO_REG_PROPERTIES};
-use crate::sys::com::prelude::{guid_to_string, CoTaskMemAlloc, E_OUTOFMEMORY, HRESULT};
+use crate::sys::com::apo_types::{APO_REG_PROPERTIES, APOInitSystemEffects};
+use crate::sys::com::prelude::{CoTaskMemAlloc, E_OUTOFMEMORY, HRESULT, guid_to_string};
 
 /// `Initialize`：解析端点 GUID、创建子 APO、确定 per-device 配置路径。
 ///

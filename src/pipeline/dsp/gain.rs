@@ -12,12 +12,12 @@
 
 // GAIN_DB_MAX / linear_to_db 仅被 cfg(test) 下的用例与辅助函数使用。
 #[cfg(test)]
-use crate::pipeline::dsp::math::{linear_to_db as math_linear_to_db, GAIN_DB_MAX};
+use crate::pipeline::dsp::math::{GAIN_DB_MAX, linear_to_db as math_linear_to_db};
 
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::math::{
-    db_to_linear as math_db_to_linear, GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT,
-    GAIN_SNAP_THRESHOLD, MAX_GAIN_STEP_RATIO,
+    GAIN_SMOOTH_RERATE, GAIN_SMOOTH_STEPS_DEFAULT, GAIN_SNAP_THRESHOLD, MAX_GAIN_STEP_RATIO,
+    db_to_linear as math_db_to_linear,
 };
 
 // ── 参数模型（随实现；聚合见 `dsp::model` 的 re-export）────────────────────

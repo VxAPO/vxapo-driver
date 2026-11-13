@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn channel_selection_applies_to_selected_slot_only() {
-        use crate::pipeline::dsp::gain::{db_to_linear, GainFilter};
+        use crate::pipeline::dsp::gain::{GainFilter, db_to_linear};
 
         let mut chain = Chain::new();
         chain

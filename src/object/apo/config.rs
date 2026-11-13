@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use crate::sys::com::apo_types::{
     APOInitSystemEffects, PKEY_AudioEndpoint_GUID, PROPVARIANT, VT_CLSID, VT_LPWSTR,
 };
-use crate::sys::com::prelude::{guid_to_string, GUID};
+use crate::sys::com::prelude::{GUID, guid_to_string};
 
 /// 配置文件默认路径（兜底：无设备 GUID / 配置根创建失败时回退单实例共用路径）。
 pub(crate) const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VxAPO\config.toml";
@@ -157,5 +157,5 @@ pub(crate) fn diag_append(line: &str) {
 }
 // ── 子模块 re-export（实现见 object/apo/reload.rs 与 rtdump.rs）────────────
 
-pub(crate) use super::reload::{hot_reload_impl, start_watcher, stop_watcher, WatcherState};
+pub(crate) use super::reload::{WatcherState, hot_reload_impl, start_watcher, stop_watcher};
 pub(crate) use super::rtdump::{rt_dump_flush, rt_dump_open};

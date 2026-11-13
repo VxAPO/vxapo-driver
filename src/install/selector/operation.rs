@@ -15,14 +15,14 @@ use crate::install::device::identity::{
 };
 use crate::install::device::info::find_endpoint_path;
 use crate::install::device::slots::{
-    read_slot_value, ApoSlot, ChildApoKind, InstallMode, SlotValue, CHILD_APO_PATH_ROOT,
-    FX_PROPERTIES_KEY, INSTALL_VERSION,
+    ApoSlot, CHILD_APO_PATH_ROOT, ChildApoKind, FX_PROPERTIES_KEY, INSTALL_VERSION, InstallMode,
+    SlotValue, read_slot_value,
 };
 use crate::install::device::sysfx;
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
 use crate::sys::com::prelude::{
-    guid_to_string, CoCreateInstance, CoInitializeEx, IUnknown, CLSCTX_INPROC_SERVER,
-    COINIT_MULTITHREADED, GUID,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, GUID, IUnknown,
+    guid_to_string,
 };
 use crate::sys::registry::{RegKey, RegValue};
 use crate::utils::vx_error::{Result, VxApoError};

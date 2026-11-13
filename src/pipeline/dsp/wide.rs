@@ -20,7 +20,7 @@
 //! config 语法（EAPO 风格）：
 //! `Wide: Gain 0.0 Air 0.354331 Mix 0.6 Crossover 200`
 
-use crate::pipeline::dsp::biquad::{compute_coeffs, BiquadCoeffs, BiquadState, BiquadType};
+use crate::pipeline::dsp::biquad::{BiquadCoeffs, BiquadState, BiquadType, compute_coeffs};
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
 

@@ -9,10 +9,10 @@
 //! `L(f) = Σ IIR 段频响（dB）`，FIR 目标 `F(f) = T(f) − L(f)`——级联总响应
 //! `L + F = T`，幅度精确拟合目标曲线（跨分频点段自动处理）。
 
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
-use crate::pipeline::dsp::biquad::{compute_coeffs, BiquadType};
+use crate::pipeline::dsp::biquad::{BiquadType, compute_coeffs};
 use crate::pipeline::dsp::filter::Filter;
 use crate::pipeline::dsp::fir::PartitionedFir;
 use crate::pipeline::dsp::math::warn_rate_limited;

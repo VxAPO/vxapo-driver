@@ -3,14 +3,14 @@
 //! 组合 `endpoint`、`slots`、`format` 三个子模块，提供高层查询接口。
 //! 只读，不修改系统状态。
 
-use crate::install::device::endpoint::{query_endpoint, EndpointInfo, EndpointState, Flow};
-use crate::install::device::format::{read_audio_format, AudioFormat};
+use crate::install::device::endpoint::{EndpointInfo, EndpointState, Flow, query_endpoint};
+use crate::install::device::format::{AudioFormat, read_audio_format};
 use crate::install::device::slots::{
-    detect_install_mode as eapo_detect_mode, read_all_slots, ApoSlot, InstallMode, SlotValue,
-    FX_PROPERTIES_KEY, INSTALL_VERSION, INSTALL_VERSION_LEGACY,
+    ApoSlot, FX_PROPERTIES_KEY, INSTALL_VERSION, INSTALL_VERSION_LEGACY, InstallMode, SlotValue,
+    detect_install_mode as eapo_detect_mode, read_all_slots,
 };
 use crate::object::vx_reg_props::{CLSID_VXAPO_POST_MIX, CLSID_VXAPO_PRE_MIX};
-use crate::sys::registry::{is_windows_version_at_least, RegKey};
+use crate::sys::registry::{RegKey, is_windows_version_at_least};
 use crate::utils::guid::parse_guid_string;
 use crate::utils::vx_error::{Result, VxApoError};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;

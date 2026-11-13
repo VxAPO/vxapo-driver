@@ -13,8 +13,8 @@ use crate::config::error::ConfigError;
 use crate::pipeline::dsp::aural::AuralParams;
 use crate::pipeline::dsp::compressor::CompressorParams;
 use crate::pipeline::dsp::model::{
-    ChainModel, EffectConfig, EffectParams, EffectType, LoudnessParams, PeqBand, PeqBandType,
-    PeqParams, PreampParams, MAX_PEQ_BANDS, MIN_PEQ_BANDS,
+    ChainModel, EffectConfig, EffectParams, EffectType, LoudnessParams, MAX_PEQ_BANDS,
+    MIN_PEQ_BANDS, PeqBand, PeqBandType, PeqParams, PreampParams,
 };
 use crate::pipeline::dsp::reverb::ReverbParams;
 use crate::pipeline::dsp::wide::WideParams;

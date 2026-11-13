@@ -18,17 +18,17 @@ use crate::pipeline::chain::Chain;
 use crate::pipeline::context::PipelineContext;
 use crate::pipeline::dsp::filter::{DeviceType, DspContext, ProcessingStage};
 use crate::pipeline::dsp::math::init_audio_thread;
-use crate::pipeline::format::{extract_format, AudioFormat};
+use crate::pipeline::format::{AudioFormat, extract_format};
 use crate::pipeline::process::{
-    process_audio, process_chain_interleaved, ErrorPolicy, ProcessParams,
+    ErrorPolicy, ProcessParams, process_audio, process_chain_interleaved,
 };
 use crate::pipeline::realtime::contract::RtGuard;
 use crate::rt_assert_in_rt;
 use crate::sys::audio_defs::get_channel_names;
 use crate::sys::com::apo_interfaces::IAudioMediaType;
 use crate::sys::com::apo_types::{
-    APOERR_INVALID_CONNECTION_FORMAT, APOERR_NOT_INITIALIZED, APOERR_NUM_CONNECTIONS_INVALID,
-    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, BUFFER_SILENT, BUFFER_VALID,
+    APO_CONNECTION_DESCRIPTOR, APO_CONNECTION_PROPERTY, APOERR_INVALID_CONNECTION_FORMAT,
+    APOERR_NOT_INITIALIZED, APOERR_NUM_CONNECTIONS_INVALID, BUFFER_SILENT, BUFFER_VALID,
 };
 use crate::sys::com::prelude::{E_FAIL, HRESULT};
 

@@ -328,7 +328,9 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
         {
             let name = slot.value_name();
             if let Err(e) = fx_key.delete_value(&name) {
-                log::warn!("uninstall: delete slot {name} failed: {e} (write denied: handle rights or key ACL)");
+                log::warn!(
+                    "uninstall: delete slot {name} failed: {e} (write denied: handle rights or key ACL)"
+                );
                 any_failed = true;
             }
         }

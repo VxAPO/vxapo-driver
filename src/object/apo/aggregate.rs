@@ -21,7 +21,7 @@ use crate::sys::com::apo_interfaces::{
     IID_IAPO, IID_IAPO_CONFIG, IID_IAPO_RT, IID_IAUDIO_SYSTEM_EFFECTS,
 };
 use crate::sys::com::prelude::{
-    IUnknown, Interface, E_NOINTERFACE, E_POINTER, GUID, HRESULT, S_OK,
+    E_NOINTERFACE, E_POINTER, GUID, HRESULT, IUnknown, Interface, S_OK,
 };
 
 /// 聚合实例生命周期计数（诊断）：`create_aggregate` 成功 +1，

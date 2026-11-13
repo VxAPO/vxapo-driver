@@ -14,7 +14,7 @@
 //!
 //! 禁止：不包含任何实现逻辑。
 
-use crate::sys::com::prelude::{Interface, GUID};
+use crate::sys::com::prelude::{GUID, Interface};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 4 个 APO 接口结构体 re-export（windows-rs 提供，非自定义 trait）
@@ -33,9 +33,9 @@ pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration;
 
 // ── 对应 _Impl traits（#[implement] 实现对象时使用）───────────────────────────
+pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObject_Impl;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectConfiguration_Impl;
 pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObjectRT_Impl;
-pub use windows::Win32::Media::Audio::Apo::IAudioProcessingObject_Impl;
 
 // IAudioSystemEffects（marker 接口，EAPO 对齐）：`_Impl` 空体（windows-rs 0.62.2
 // Apo/mod.rs:1109 `pub trait IAudioSystemEffects_Impl: IUnknownImpl {}`）——

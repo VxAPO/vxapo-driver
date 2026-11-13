@@ -12,12 +12,6 @@ pub use windows::core::GUID;
 
 // ── windows-rs 已提供的类型（直接 re-export） ─────────────────────────────
 pub use windows::Win32::Media::Audio::Apo::{
-    // APOInitSystemEffects：Initialize 初始化数据（per-device 配置路径）。
-    // 实测字段：{ APOInit: APOInitBaseStruct, pAPOEndpointProperties,
-    //   pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>,
-    //   pReserved, pDeviceCollection }——端点 GUID 经 pAPOSystemEffectsProperties
-    //   ->IPropertyStore::GetValue(PKEY_AudioEndpoint_GUID) 提取（windows-rs 0.62.2 实测）。
-    APOInitSystemEffects,
     APO_BUFFER_FLAGS,
     APO_CONNECTION_DESCRIPTOR,
     APO_CONNECTION_PROPERTY,
@@ -30,6 +24,12 @@ pub use windows::Win32::Media::Audio::Apo::{
     APO_FLAG_NONE,
     APO_FLAG_SAMPLESPERFRAME_MUST_MATCH,
     APO_REG_PROPERTIES,
+    // APOInitSystemEffects：Initialize 初始化数据（per-device 配置路径）。
+    // 实测字段：{ APOInit: APOInitBaseStruct, pAPOEndpointProperties,
+    //   pAPOSystemEffectsProperties: ManuallyDrop<Option<IPropertyStore>>,
+    //   pReserved, pDeviceCollection }——端点 GUID 经 pAPOSystemEffectsProperties
+    //   ->IPropertyStore::GetValue(PKEY_AudioEndpoint_GUID) 提取（windows-rs 0.62.2 实测）。
+    APOInitSystemEffects,
 };
 
 // APOInit 基础结构（Initialize 参数校验 cb_size 用）

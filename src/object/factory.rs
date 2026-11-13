@@ -14,7 +14,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::core::{Error, Ref, BOOL};
+use windows::core::{BOOL, Error, Ref};
 
 use crate::object::vx_reg_props::is_vxapo_clsid;
 use crate::sys::com::prelude::*;
