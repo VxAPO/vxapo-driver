@@ -110,21 +110,21 @@ impl MatchIndex {
             None => {}
         }
         // ② 老端点键仍可读时的实例 ID（旧路径保留）。
-        if !record.device_instance_id.is_empty() {
-            if let Some(candidates) = self.by_instance.get(&record.device_instance_id) {
-                match unique_index(candidates.as_slice()) {
-                    Some(i) => return MatchOutcome::Matched(i, "device_instance_id"),
-                    None => return MatchOutcome::Ambiguous,
-                }
+        if !record.device_instance_id.is_empty()
+            && let Some(candidates) = self.by_instance.get(&record.device_instance_id)
+        {
+            match unique_index(candidates.as_slice()) {
+                Some(i) => return MatchOutcome::Matched(i, "device_instance_id"),
+                None => return MatchOutcome::Ambiguous,
             }
         }
         // ③ 记录键里落盘的实例 ID。
-        if !stored.instance_id.is_empty() {
-            if let Some(candidates) = self.by_instance.get(&stored.instance_id) {
-                match unique_index(candidates.as_slice()) {
-                    Some(i) => return MatchOutcome::Matched(i, "stored_identity"),
-                    None => return MatchOutcome::Ambiguous,
-                }
+        if !stored.instance_id.is_empty()
+            && let Some(candidates) = self.by_instance.get(&stored.instance_id)
+        {
+            match unique_index(candidates.as_slice()) {
+                Some(i) => return MatchOutcome::Matched(i, "stored_identity"),
+                None => return MatchOutcome::Ambiguous,
             }
         }
         // ④ 硬件 ID 相交 + 产品名一致，且唯一候选（USB 换口导致实例 ID 变化时兜底）。
@@ -183,12 +183,11 @@ pub(super) fn endpoint_device_instance_id(guid: &str) -> Option<String> {
         r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture",
     ] {
         let path = format!("{root}\\{guid}");
-        if let Ok(key) = RegKey::open(HKEY_LOCAL_MACHINE, &path) {
-            if let Ok(Some(info)) = query_endpoint(&key) {
-                if !info.device_id.is_empty() {
-                    return Some(normalize_device_id(&info.device_id));
-                }
-            }
+        if let Ok(key) = RegKey::open(HKEY_LOCAL_MACHINE, &path)
+            && let Ok(Some(info)) = query_endpoint(&key)
+            && !info.device_id.is_empty()
+        {
+            return Some(normalize_device_id(&info.device_id));
         }
     }
     None

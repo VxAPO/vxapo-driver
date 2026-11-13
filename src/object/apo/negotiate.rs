@@ -63,10 +63,11 @@ pub(crate) fn is_input_format_supported(
     let input = extract_format_ref(p_requested)?;
     check_format_supported(p_requested)?;
     // opposite 缺失/解析失败时跳过降混检查（保守接受，宁多勿误拒）。
-    if let Ok(output) = extract_format_ref(p_opposite_format) {
-        if input.channels > 2 && input.channels > output.channels {
-            return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
-        }
+    if let Ok(output) = extract_format_ref(p_opposite_format)
+        && input.channels > 2
+        && input.channels > output.channels
+    {
+        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
     }
     // 通过检查：返回请求格式（INPLACE 模式输入输出同格式）。
     let Some(req) = p_requested.as_ref() else {
@@ -83,10 +84,11 @@ pub(crate) fn is_output_format_supported(
 ) -> Result<IAudioMediaType> {
     let output = extract_format_ref(p_requested)?;
     check_format_supported(p_requested)?;
-    if let Ok(input) = extract_format_ref(p_opposite_format) {
-        if output.channels > 2 && output.channels > input.channels {
-            return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
-        }
+    if let Ok(input) = extract_format_ref(p_opposite_format)
+        && output.channels > 2
+        && output.channels > input.channels
+    {
+        return Err(windows::core::Error::from(APOERR_FORMAT_NOT_SUPPORTED));
     }
     let Some(req) = p_requested.as_ref() else {
         return Err(windows::core::Error::from(APOERR_INVALID_CONNECTION_FORMAT));

@@ -111,25 +111,25 @@ pub fn migrate_install(
     let mut config_migrated = false;
     let mut snapshot_migrated = false;
 
-    if let Some(source) = &config_source {
-        if !source.guid.eq_ignore_ascii_case(new_guid) {
-            archive_target_file(new_guid, "config.toml")?;
-            copy_file(
-                &source.path,
-                &Path::new(CONFIG_ROOT).join(new_guid).join("config.toml"),
-            )?;
-            config_migrated = true;
-        }
+    if let Some(source) = &config_source
+        && !source.guid.eq_ignore_ascii_case(new_guid)
+    {
+        archive_target_file(new_guid, "config.toml")?;
+        copy_file(
+            &source.path,
+            &Path::new(CONFIG_ROOT).join(new_guid).join("config.toml"),
+        )?;
+        config_migrated = true;
     }
-    if let Some(source) = &snapshot_source {
-        if !source.guid.eq_ignore_ascii_case(new_guid) {
-            archive_target_file(new_guid, "snapshot.json")?;
-            copy_file(
-                &source.path,
-                &Path::new(SNAPSHOT_DIR).join(format!("{new_guid}.json")),
-            )?;
-            snapshot_migrated = true;
-        }
+    if let Some(source) = &snapshot_source
+        && !source.guid.eq_ignore_ascii_case(new_guid)
+    {
+        archive_target_file(new_guid, "snapshot.json")?;
+        copy_file(
+            &source.path,
+            &Path::new(SNAPSHOT_DIR).join(format!("{new_guid}.json")),
+        )?;
+        snapshot_migrated = true;
     }
 
     let install_repaired = if repaired {
@@ -169,10 +169,10 @@ pub fn migrate_install(
         if source.guid.eq_ignore_ascii_case(new_guid) {
             continue;
         }
-        if let Ok(src_key) = open_child_apo_key(&source.guid) {
-            if let Err(e) = copy_values(&src_key, &target_key, repaired) {
-                warnings.push(format!("合并旧记录 {} 失败：{e}", source.guid));
-            }
+        if let Ok(src_key) = open_child_apo_key(&source.guid)
+            && let Err(e) = copy_values(&src_key, &target_key, repaired)
+        {
+            warnings.push(format!("合并旧记录 {} 失败：{e}", source.guid));
         }
     }
 
@@ -261,14 +261,14 @@ pub(super) fn choose_config_source(
 ) -> Result<Option<FileSource>> {
     let mut candidates = Vec::new();
     for record in group {
-        if let Some(path) = &record.config_path {
-            if let Some(mtime) = file_mtime_ms(path) {
-                candidates.push(FileSource {
-                    guid: record.guid.clone(),
-                    path: path.clone(),
-                    mtime,
-                });
-            }
+        if let Some(path) = &record.config_path
+            && let Some(mtime) = file_mtime_ms(path)
+        {
+            candidates.push(FileSource {
+                guid: record.guid.clone(),
+                path: path.clone(),
+                mtime,
+            });
         }
     }
     let target_config = Path::new(CONFIG_ROOT).join(new_guid).join("config.toml");
@@ -298,14 +298,14 @@ pub(super) fn choose_snapshot_source(
 ) -> Result<Option<FileSource>> {
     let mut candidates = Vec::new();
     for record in group {
-        if let Some(path) = &record.snapshot_path {
-            if let Some(mtime) = file_mtime_ms(path) {
-                candidates.push(FileSource {
-                    guid: record.guid.clone(),
-                    path: path.clone(),
-                    mtime,
-                });
-            }
+        if let Some(path) = &record.snapshot_path
+            && let Some(mtime) = file_mtime_ms(path)
+        {
+            candidates.push(FileSource {
+                guid: record.guid.clone(),
+                path: path.clone(),
+                mtime,
+            });
         }
     }
     let target_snapshot = Path::new(SNAPSHOT_DIR).join(format!("{new_guid}.json"));

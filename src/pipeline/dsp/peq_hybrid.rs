@@ -349,8 +349,7 @@ impl Filter for HybridPeqFilter {
             // 静音检测（整帧输入峰值）与淡入系数。
             let fade = if enable_gate {
                 let mut peak = 0.0f32;
-                for k in 0..n_ch {
-                    let slot = self.channel_indices[k];
+                for &slot in self.channel_indices.iter().take(n_ch) {
                     if slot < samples.len() {
                         peak = peak.max(samples[slot][f].abs());
                     }

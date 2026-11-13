@@ -35,15 +35,15 @@ pub(super) fn take_over_sysfx(
     // 端点 FxProperties 上的微软 MFX：默认模式（SfxEfx）下必须删掉。
     if config.install_mode != InstallMode::SfxMfx {
         let fx_path = format!("{}\\{}", endpoint_path, FX_PROPERTIES_KEY);
-        if let Ok(RegValue::Sz(mode)) = fx_key.read_value(sysfx::PKEY_FX_MODE_EFFECT_CLSID) {
-            if sysfx::is_ms_mode_clsid(&mode) || sysfx::is_vxapo_clsid(&mode) {
-                changes.push(sysfx::SysFxChange {
-                    key_path: fx_path,
-                    value_name: sysfx::PKEY_FX_MODE_EFFECT_CLSID.to_string(),
-                    original: Some(mode),
-                    target: None,
-                });
-            }
+        if let Ok(RegValue::Sz(mode)) = fx_key.read_value(sysfx::PKEY_FX_MODE_EFFECT_CLSID)
+            && (sysfx::is_ms_mode_clsid(&mode) || sysfx::is_vxapo_clsid(&mode))
+        {
+            changes.push(sysfx::SysFxChange {
+                key_path: fx_path,
+                value_name: sysfx::PKEY_FX_MODE_EFFECT_CLSID.to_string(),
+                original: Some(mode),
+                target: None,
+            });
         }
     }
 

@@ -160,10 +160,10 @@ fn extract_endpoint_guid(endpoint_key: &RegKey) -> String {
             return s;
         }
         // 备选：二进制 GUID 值（16 字节小端）→ 格式化。
-        if let Ok(raw) = props_key.read_binary_value(PKEY_AUDIO_ENDPOINT_GUID_NAME) {
-            if let Some(guid) = guid_from_bytes(&raw) {
-                return guid_to_string(&guid);
-            }
+        if let Ok(raw) = props_key.read_binary_value(PKEY_AUDIO_ENDPOINT_GUID_NAME)
+            && let Some(guid) = guid_from_bytes(&raw)
+        {
+            return guid_to_string(&guid);
         }
     }
     String::new()

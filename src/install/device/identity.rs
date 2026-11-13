@@ -150,10 +150,10 @@ pub fn normalize_endpoint_guid(value: &str) -> Option<String> {
 pub fn normalize_endpoint_history(values: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for v in values {
-        if let Some(guid) = normalize_endpoint_guid(v) {
-            if !out.contains(&guid) {
-                out.push(guid);
-            }
+        if let Some(guid) = normalize_endpoint_guid(v)
+            && !out.contains(&guid)
+        {
+            out.push(guid);
         }
     }
     out
@@ -164,10 +164,10 @@ pub fn merge_endpoint_history(lists: &[Vec<String>]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for list in lists {
         for guid in list {
-            if let Some(g) = normalize_endpoint_guid(guid) {
-                if !out.contains(&g) {
-                    out.push(g);
-                }
+            if let Some(g) = normalize_endpoint_guid(guid)
+                && !out.contains(&g)
+            {
+                out.push(g);
             }
         }
     }

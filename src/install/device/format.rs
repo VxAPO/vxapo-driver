@@ -145,10 +145,10 @@ pub fn resolve_channel_mask(
         return extensible_mask;
     }
 
-    if let Some(mask) = registry_mask {
-        if mask != 0 {
-            return mask;
-        }
+    if let Some(mask) = registry_mask
+        && mask != 0
+    {
+        return mask;
     }
 
     // 兜底：标准布局映射

@@ -123,10 +123,10 @@ impl DeviceInfo {
     ///
     /// Windows 的 `DisableEnhancements` 值为非零时表示禁用。
     pub fn is_enhancements_disabled(&self, endpoint_key: &RegKey) -> bool {
-        if let Ok(fx_key) = endpoint_key.open_sub_key(FX_PROPERTIES_KEY) {
-            if let Ok(val) = fx_key.read_dword_value("DisableEnhancements") {
-                return val != 0;
-            }
+        if let Ok(fx_key) = endpoint_key.open_sub_key(FX_PROPERTIES_KEY)
+            && let Ok(val) = fx_key.read_dword_value("DisableEnhancements")
+        {
+            return val != 0;
         }
         false
     }
@@ -224,10 +224,10 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
             };
             if let Some(mut info) = query_device_info(&endpoint_key)? {
                 // 只枚举活跃端点（DEVICE_STATE_ACTIVE=1）：禁用/未插入/拔出端点不参与安装选择。
-                if let Some(ep) = info.endpoint.as_ref() {
-                    if ep.state != EndpointState::Active {
-                        continue;
-                    }
+                if let Some(ep) = info.endpoint.as_ref()
+                    && ep.state != EndpointState::Active
+                {
+                    continue;
                 }
                 // 端点 GUID：优先 Properties 子键值；为空时回填 MMDevices 子键名
                 // （子键名即端点 GUID，reg 实测与 PKEY_AudioEndpoint_GUID 值一致）。
@@ -290,10 +290,10 @@ fn is_bluetooth_instance_id(instance_id: &str) -> bool {
 /// 再交给 `detect_mode_for_device`。定位失败返回 `default_mode()`（SfxEfx）。
 pub fn detect_mode_for_guid(device_guid: &str) -> InstallMode {
     for root_path in [RENDER_PATH, CAPTURE_PATH] {
-        if let Ok(root) = RegKey::open(HKEY_LOCAL_MACHINE, root_path) {
-            if let Ok(key) = root.open_sub_key(device_guid) {
-                return detect_mode_for_device(&key);
-            }
+        if let Ok(root) = RegKey::open(HKEY_LOCAL_MACHINE, root_path)
+            && let Ok(key) = root.open_sub_key(device_guid)
+        {
+            return detect_mode_for_device(&key);
         }
     }
     let empty = [SlotValue::NoKey; 5];

@@ -485,7 +485,7 @@ impl RegKey {
 /// UTF-16LE 字节流 → String（遇 null 停止）。
 fn utf16_bytes_to_string(buf: &[u8]) -> String {
     let mut units = Vec::with_capacity(buf.len() / 2);
-    for chunk in buf.chunks_exact(2) {
+    for chunk in buf.as_chunks::<2>().0 {
         let u = u16::from_le_bytes([chunk[0], chunk[1]]);
         if u == 0 {
             break;
@@ -499,7 +499,7 @@ fn utf16_bytes_to_string(buf: &[u8]) -> String {
 fn parse_multi_sz(buf: &[u8]) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = Vec::new();
-    for chunk in buf.chunks_exact(2) {
+    for chunk in buf.as_chunks::<2>().0 {
         let u = u16::from_le_bytes([chunk[0], chunk[1]]);
         if u == 0 {
             if current.is_empty() {
@@ -773,7 +773,9 @@ mod tests {
         // UTF-16LE with BOM。
         let content = String::from_utf16(
             &bytes[2..]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect::<Vec<_>>(),
         )

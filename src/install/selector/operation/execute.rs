@@ -323,13 +323,13 @@ pub fn uninstall_endpoint(device_guid: &str) -> Result<()> {
 
     let mut any_failed = false;
     for slot in ApoSlot::ALL {
-        if let SlotValue::Guid(g) = read_slot_value(&fx_key, slot) {
-            if g == CLSID_VXAPO_PRE_MIX || g == CLSID_VXAPO_POST_MIX {
-                let name = slot.value_name();
-                if let Err(e) = fx_key.delete_value(&name) {
-                    log::warn!("uninstall: delete slot {name} failed: {e} (write denied: handle rights or key ACL)");
-                    any_failed = true;
-                }
+        if let SlotValue::Guid(g) = read_slot_value(&fx_key, slot)
+            && (g == CLSID_VXAPO_PRE_MIX || g == CLSID_VXAPO_POST_MIX)
+        {
+            let name = slot.value_name();
+            if let Err(e) = fx_key.delete_value(&name) {
+                log::warn!("uninstall: delete slot {name} failed: {e} (write denied: handle rights or key ACL)");
+                any_failed = true;
             }
         }
     }

@@ -234,8 +234,7 @@ impl Filter for CompressorFilter {
         for f in 0..frame_count {
             // 1) 全声道瞬时功率 → 瞬时 dB 电平 + 慢轴 mean-square（主检测）。
             let mut sum_sq = 0.0f64;
-            for k in 0..n {
-                let slot = self.channel_indices[k];
+            for &slot in self.channel_indices.iter().take(n) {
                 if slot < samples.len() {
                     let x = samples[slot][f] as f64;
                     sum_sq += x * x;
@@ -289,8 +288,7 @@ impl Filter for CompressorFilter {
 
             // 5) 增益应用 + 等比干湿混合（权重和恒为1；lift=0 时 |out| ≤ |in|）。
             let gain = 10.0f32.powf(-self.gr_db / 20.0);
-            for k in 0..n {
-                let slot = self.channel_indices[k];
+            for &slot in self.channel_indices.iter().take(n) {
                 if slot >= samples.len() {
                     continue;
                 }

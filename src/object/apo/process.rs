@@ -422,10 +422,8 @@ pub(crate) fn lock_for_process(
     // Step 8()：Lock 末尾启动 watcher（config_path 已确定 + active_spec 基线就绪）。
     // PostMix 直通实例不启动 watcher（无配置可热重载，也避免双实例重复解析）。
     // 启动失败降级（仅日志），不阻塞锁定。
-    if !is_postmix {
-        if let Err(e) = start_watcher(apo) {
-            log::warn!("LockForProcess: watcher start failed: {e}");
-        }
+    if !is_postmix && let Err(e) = start_watcher(apo) {
+        log::warn!("LockForProcess: watcher start failed: {e}");
     }
 
     // 全部成功 → 解除守卫（不再回退状态）。
